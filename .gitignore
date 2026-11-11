@@ -1,0 +1,9 @@
+firmware/build/
+firmware/sdkconfig*
+host/__pycache__/
+host/.venv/
+host/dist/
+cad/backup/
+*.b#1
+*.s#1
+.DS_Store
