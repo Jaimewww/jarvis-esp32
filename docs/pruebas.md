@@ -1,81 +1,41 @@
-# Plan de Pruebas y Matriz de Riesgos
+# Plan de pruebas y riesgos
 
-Principio: cada fase de `planificacion.md` tiene su criterio de aceptación; esta lista es el
-detalle de qué se ejecuta al final (Fase 8) y qué checks rápidos corren en cada fase.
+Actualizado el **2026-11-11**. Son pruebas futuras: no hay firmware ni sistema integrado
+para ejecutarlas. Los roles corresponden al [plan](planificacion.md).
 
-Dueños: H1/H2/H3 = equipo de hardware, S1/S2 = equipo de software.
+## Checks por subsistema
 
-## A. Checks por subsistema
+| Responsable | Prueba prevista | Evidencia a registrar |
+|---|---|---|
+| H2 | «Jarvis» con voces del equipo, silencio y ruido de aula. | Aciertos, falsos rechazos y falsas activaciones; condiciones y modelo usado. |
+| H2 | Pulsador como respaldo y detección de fin del habla. | Captura completa sin botón en el flujo principal; respaldo operativo. |
+| H2/H3 | Captura a 16 kHz y reproducción I2S. | Claridad, clipping, cortes y efecto acústico de la caja. |
+| H1/H2 | Wi-Fi y audio simultáneos; 30 min de uso. | Ruido, consumo, brownouts, memoria y reinicios. |
+| H2/S1 | Envío a PC, respuesta de audio y pérdida de Wi-Fi. | Formatos acordados, tiempos, errores visibles y recuperación. |
+| S1 | Whisper frente a Parakeet local con los mismos audios en español. | Errores de transcripción, latencia y recursos; decisión justificada, no prefijada. |
+| S1/S2 | Proceso Gentle Shell, respuesta y tareas largas. | Integración real, fallos del proceso y estado pensando mientras trabaja. |
+| S2 | Abrir aplicación y cambiar volumen. | Efecto real en PC y registro de éxito/error en TUI. |
+| S2 | Acción fuera del catálogo acordado. | Rechazo visible sin ejecución no autorizada. |
+| Todos | Veinte turnos de voz consecutivos. | Éxitos/fallos, tiempos por etapa y estados de anillo/TUI. |
 
-### Audio — captura (H2, H3)
-- [ ] Grabar 5 s y volcar por serial: se escucha la voz clara, sin clipping (verificar con
-      Audacity: picos < 0 dBFS).
-- [ ] Silencio real ≈ silencio digital (línea base de ruido RMS medida y registrada).
-- [ ] Grabación de 30 s sin cortes ni buffers perdidos.
+La autenticación, los mensajes y los límites de tiempo deben acordarse antes de escribir
+pruebas de contrato. Si se usan APIs externas, incluir errores de credenciales/cuota;
+no asumir dependencia obligatoria de nube ni funcionamiento enteramente offline.
 
-### Audio — reproducción (H2)
-- [ ] WAV de prueba a 16/24/44,1 kHz se reproduce con tono correcto (sin chipmunk).
-- [ ] Reproducción mientras WiFi transmite: sin clics (el clásico caso del buzz).
+## Demo de aceptación prevista
 
-### Red (H2)
-- [ ] POST del WAV al orquestador con audio válido de 5 s: HTTP 200.
-- [ ] Reconexión automática al WiFi tras apagar el router 30 s.
-- [ ] Timeout de red (5 s) → estado ERROR → vuelve a IDLE sin reiniciar la placa.
+1. Encender por USB, con PC encendida y conectada a la misma red.
+2. Decir «Jarvis» y una pregunta sin pulsar: respuesta audible y conversación en TUI.
+3. Pedir abrir una aplicación y cambiar volumen: verificar efecto y registro.
+4. Observar reposo, escuchando, pensando, hablando y error; incluir una tarea larga.
+5. Probar pérdida de red y recuperación; ensayar el pulsador de respaldo por separado.
+6. Repetir con el prototipo en su carcasa, sin convertir el respaldo en modo principal.
 
-### Nube (S1)
-- [ ] 10 audios de prueba con acento rioplatense → transcripción correcta ≥ 9/10.
-- [ ] Orden de PC: "poné música" → JSON `{"type":"media_key","value":"play_pause"}`.
-- [ ] Orden de PC: "abrí Spotify" → JSON `{"type":"app","value":"open:spotify"}`.
-- [ ] Pregunta general ("¿qué hora es?") → respuesta hablada, `actions: []`.
-- [ ] Sin API key / cuota agotada → mensaje de error hablado, no crash del orquestador.
+No se prueban como capacidades del producto domótica, batería, operación sin PC,
+identificación de hablante ni multiusuario simultáneo: están fuera de alcance.
 
-### Host agent + TUI (S2)
-- [ ] Acción `media_key` ejecutada: el reproductor de la PC responde.
-- [ ] Acción `app` ejecutada: la app se abre (y se muestra ✓ en la TUI).
-- [ ] Acción `volume` ejecutada: el volumen del SO cambia al valor pedido.
-- [ ] Acción desconocida → ✗ en la TUI + reporte al backend, sin crash del agente.
-- [ ] Backend caído → la TUI marca la desconexión y reconecta sola al volver.
-- [ ] Acción llega **antes** de que termine la respuesta hablada (orden no espera al audio).
+## Riesgos prioritarios
 
-### Integración (todos)
-- [ ] 20 conversaciones seguidas: ≥ 18 exitosas, cero reinicios de la placa.
-- [ ] Latencia media registrada por etapa (tabla en arquitectura.md como referencia).
-- [ ] Orden de PC ejecutada en < 500 ms desde que el backend la emite.
-- [ ] Estado de la TUI sincronizado con el anillo LED (mismo ciclo).
-
-### Alimentación (H1)
-- [ ] WiFi TX pico + reproducción simultánea: sin brownout, sin buzz audible
-      (probar con y sin condensadores para documentar la diferencia).
-- [ ] 30 min de uso continuo sin `Guru Meditation` ni reinicios.
-
-## B. Prueba final de aceptación (demo)
-
-1. Prender el dispositivo → anillo azul (reposo); TUI marca ESP32 online.
-2. PTT: "J.A.R.V.I.S., ¿cómo estás?" → respuesta hablada sarcástica en el altavoz,
-   transcript visible en la TUI. *(anillo amarillo→verde)*
-3. PTT: "Poné música" → play/pause ejecutado en la PC + respuesta hablada + ✓ en TUI.
-4. PTT: "Abrí la calculadora" → app abierta en la PC.
-5. PTT: "Bajá el volumen" → volumen del SO cambia.
-6. Desconectar WiFi → comando → anillo rojo + error hablado + TUI muestra desconexión →
-   reconexión automática.
-7. Todo el prototipo montado en la caja V3.
-
-## C. Matriz de riesgos técnicos (consolidada)
-
-| Riesgo | Prob. | Impacto | Mitigación | Dueño |
-|---|---|---|---|---|
-| Zumbido de alimentación con WiFi TX | Alta | Medio | 1000 µF + 100 nF; fuente separada para el amp | H1 |
-| Reinicios por falta de RAM | Media | Alto | PSRAM obligatoria; buffers a `ps_malloc()` | H2 |
-| Latencia total > 4 s | Media | Medio | Streaming TTS, modelo LLM chico, keep-alive | S1 |
-| Permisos del SO bloquean control de la PC | Media | Alto | Probar acciones desde Fase 3; fallback pyautogui/pynput; fijar un SO de demo | S2 |
-| Falsos positivos con VAD | Media | Bajo | PTT como modo primario; VAD solo en v2 | H2 |
-| Acento no reconocido por Whisper | Baja | Medio | `language=es`, probar large-v3 vs distil | S1 |
-| Impresión con tolerancias flojas | Alta | Bajo | Pieza de prueba de tolerancias antes del modelo final | H3 |
-| Cuota de API agotada en la demo | Baja | Alto | Doble proveedor configurado; cache de errores | S1 |
-| Componente quemado (mic/amp) | Media | Medio | Comprar repuestos desde el día 1 | H1 |
-
-## D. Registro de bugs
-
-Llevar en `docs/bugs.md` (se crea cuando aparezca el primero) con formato:
-`ID | Fase | Síntoma | Causa raíz | Fix | Cómo se verificó`. Los bugs de integración
-(aquello de "en mi protoboard funciona") son oro para la documentación final.
+WakeNet con entrenamiento sintético puede no generalizar a voces reales; medir antes
+de prometer fiabilidad. Ruido eléctrico/acústico, memoria, permisos del SO y latencia
+del agente necesitan evidencia del montaje. No hay resultados aprobados todavía.

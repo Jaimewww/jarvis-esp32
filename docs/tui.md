@@ -1,82 +1,28 @@
-# Host Agent + TUI de J.A.R.V.I.S. (PC)
+# Agente y TUI en la computadora
 
-El host agent es un daemon de Python que corre en la computadora del usuario. Hace dos cosas:
-**ejecuta las órdenes** que el backend le manda por WebSocket y **muestra la interfaz** del
-asistente en la terminal (TUI).
+Diseño actualizado el **2026-11-11**; no existe aún implementación en `host/`.
+Gentle Shell corre en segundo plano sin interfaz propia. La TUI muestra conversación,
+estado y registro de acciones; no se presupone un daemon Python que sustituya al agente.
 
-Stack: **Python 3.11+ + Textual** (TUI) + `websockets` + `pynput`/`pyautogui` (control del
-sistema). Estructura propuesta en `host/`.
+## Responsabilidades previstas
 
-## Responsabilidades del host agent
+1. Mostrar lo que dijo el usuario y la respuesta del asistente.
+2. Registrar acciones sobre la PC, como abrir aplicaciones y cambiar volumen, y sus errores.
+3. Reflejar reposo, escuchando, pensando, hablando y error junto con el anillo.
+4. Indicar que una tarea del agente sigue en curso y mostrar fallos de conexión.
 
-1. **Ejecutar acciones.** Consume el JSON de acciones del backend y las aplica al sistema:
-   teclas multimedia, abrir/cerrar apps, volumen, screenshots.
-2. **Estado en vivo.** Se suscribe al ciclo del asistente (IDLE → THINKING → SPEAKING) para
-   reflejarlo en la TUI — sincronizado con el anillo LED del ESP32.
-3. **Transcripción.** Muestra la conversación (lo que dijo el usuario y lo que respondió
-   J.A.R.V.I.S.).
-4. **Input escrito (opcional v2).** Permitir tipear una pregunta en la TUI y enviarla por la
-   misma ruta del LLM; la respuesta se muestra en la TUI y se habla desde el ESP32.
+Gentle Dot es referencia para el proceso persistente y sus mensajes, no una integración
+probada. Python/Textual y bibliotecas de control del sistema del diseño anterior siguen
+como candidatas; no hay stack ni protocolo RPC/WebSocket confirmado.
 
-## TUI — Layout (Textual)
+## Antes de construir la interfaz
 
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│  J.A.R.V.I.S. ● online          backend ✓   esp32 ✓        12:04     │ header
-├──────────────────────────────────────────┬───────────────────────────┤
-│  Conversación                            │  Acciones                 │
-│                                          │                           │
-│  ▸ usuario: "poné música de focus"       │  12:03 ✓ app spotify      │
-│  ▸ jarvis:  "Con gusto, señor."          │  12:03 ✓ media play       │
-│                                          │  12:04 ✓ volume 60        │
-│  [estado: ● HABLANDO]                    │                           │
-├──────────────────────────────────────────┴───────────────────────────┤
-│  > tipeá acá para preguntar por texto (opcional)          q: salir   │ footer
-└──────────────────────────────────────────────────────────────────────┘
-```
+- Acordar con backend la conexión a Gentle Shell y el formato de conversación, estado
+  y resultados de acciones; no imponer el antiguo JSON como contrato vigente.
+- Fijar el sistema operativo de demostración y comprobar permisos de acciones.
+- Conservar el objetivo de seguridad de un catálogo acotado y rechazo de acciones
+  desconocidas; validar cómo aplicarlo al agente, sin afirmar que ya está garantizado.
+- Probar errores visibles y correspondencia entre resultado real y registro en TUI.
 
-- **Header:** estado de conexión (backend y ESP32 online por heartbeat), hora.
-- **Panel conversación:** transcript en vivo con el estado actual resaltado.
-- **Panel acciones:** log de acciones ejecutadas con ✓/✗ y timestamp.
-- **Footer:** input de texto opcional y atajos de teclado.
-
-## Catálogo de acciones v1 (contrato con `nube.md`)
-
-| type | value | Ejecución |
-|---|---|---|
-| `media_key` | `play_pause` \| `next` \| `prev` | `pynput` → tecla multimedia |
-| `volume` | `up` \| `down` \| `mute` \| `set:<n>` | Control de volumen del SO |
-| `app` | `open:<nombre>` | `subprocess` con la app mapeada (spotify, chrome, terminal…) |
-| `screenshot` | — | v2: captura + notificación |
-
-La app mapea `value` → operación nativa del SO (documentar diferencias Windows/Linux/mac;
-para la cátedra fijar un único SO de demostración).
-
-## Estructura propuesta (`host/`)
-
-```
-host/
-├── pyproject.toml
-├── host/
-│   ├── main.py          # bootstrap: conecta WS y lanza la TUI
-│   ├── agent.py         # cliente WebSocket + ejecutor de acciones
-│   ├── actions.py       # catálogo de acciones → implementación por SO
-│   ├── ui.py            # app Textual (layout, bindings, refresco)
-│   └── config.py        # URL del backend, token, mapa de apps
-└── tests/
-```
-
-## Seguridad
-
-- El host agent se autentica contra el backend con un **token por dispositivo**
-  (`X-Host-Token`): es el único canal con permiso para ejecutar acciones en la PC.
-- Nunca ejecutar comandos arbitrarios: solo el catálogo cerrado de acciones.
-- Si llega una acción desconocida: loguearla en la TUI como ✗ y reportar al backend
-  (no fallar en silencio).
-
-## Entregables de S2
-
-- [ ] `host/` con agent + TUI corriendo contra el orquestador de S1.
-- [ ] Schema de acciones congelado en Fase 2 (junto con S1).
-- [ ] Prueba automatizada del ejecutor de acciones (mock de backend → acción ejecutada).
-- [ ] Config por SO documentada en `host/README.md`.
+El input escrito y las capturas de pantalla del diseño anterior no son requisitos de
+esta actualización. Ver [backend](nube.md), [plan](planificacion.md) y [pruebas](pruebas.md).

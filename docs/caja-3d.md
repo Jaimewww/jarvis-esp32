@@ -1,7 +1,8 @@
 # Caja impresa en 3D — Especificaciones
 
 Diseño para el prototipo J.A.R.V.I.S. de escritorio. Herramienta sugerida: **Fusion 360**
-(para estudiantes es gratis) o FreeCAD. Archivos CAD en `cad/` (se crean en Fase 6).
+(para estudiantes es gratis) o FreeCAD. Archivos CAD previstos en `cad/` (Fase 7), aún inexistentes.
+Actualización 2026-11-11: alimentación USB, sin batería; pulsador solo como respaldo.
 
 ## Concepto de diseño
 
@@ -29,15 +30,15 @@ cambia de color según el estado y se ve desde afuera.
 | RF3 | Difusor del anillo LED | Pared de ~1,5 mm en PLA blanco/transparente, o TPU; separación de 3–5 mm entre LED y difusor |
 | RF4 | Ventilación/pasaje de cables | Tapa trasera con salida para USB y acceso a botón BOOT/RESET |
 | RF5 | Montaje sin cola (ideal) | Soportes internos con tornillos M2.5/M3 autorroscantes para ESP32, amp y altavoz |
-| RF6 | Botón PTT accesible | En el frente o arriba; taladro con tolerancia +0,3 mm |
+| RF6 | Pulsador de respaldo accesible | En el frente o arriba; taladro con tolerancia +0,3 mm; la activación principal es por voz |
 
 ## Medidas de referencia (medir las piezas físicas antes de cerrar el modelo)
 
 | Componente | Medida típica |
 |---|---|
 | ESP32-S3 DevKitC | 69 × 26 mm, pines altura 2–4 mm |
-| Altavoz 57 mm | Ø 57 mm × 28 mm prof. (medir el comprado) |
-| Anillo WS2812B 8/12 | Ø 37/44 mm, 10 mm de alto |
+| Altavoz 45 mm, 4 Ω, 3 W | Medir diámetro exterior, profundidad y fijaciones del comprado |
+| Anillo WS2812 de 8 LED | Medir diámetro y altura del comprado |
 | MAX98357A | 15,5 × 13,5 mm |
 
 **Diámetro interior sugerido: 70–80 mm; altura total: 100–130 mm.**
@@ -52,7 +53,7 @@ cambia de color según el estado y se ve desde afuera.
 - **Sin soportes** en lo posible: orientar rejillas del altavoz hacia arriba al imprimir, o
   diseñarlas en puente (bridge) de ≤ 10 mm.
 
-## Plan de iteración (Fase 6)
+## Plan de iteración (Fase 7)
 
 | Versión | Objetivo | Qué se prueba |
 |---|---|---|
@@ -65,6 +66,6 @@ cambia de color según el estado y se ve desde afuera.
 - [ ] Medidas tomadas de las piezas físicas con calibre, no del datasheet.
 - [ ] Agujero del mic alineado con el puerto del INMP441.
 - [ ] El anillo LED queda a 3–5 mm del difusor.
-- [ ] Acceso al botón PTT sin abrir la caja.
+- [ ] Acceso al pulsador de respaldo sin abrir la caja; validar «Jarvis» con la carcasa cerrada.
 - [ ] Cable USB entra sin forzar y la caja no se apoya sobre el cable.
 - [ ] Pieza de tolerancias impresa y validada en la impresora objetivo.
