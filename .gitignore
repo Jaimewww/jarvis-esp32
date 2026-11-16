@@ -1,6 +1,6 @@
 firmware/build/
 firmware/sdkconfig*
-host/__pycache__/
+host/**/__pycache__/
 host/.venv/
 host/dist/
 cad/backup/

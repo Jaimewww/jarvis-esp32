@@ -1,0 +1,4 @@
+# Host TUI client for the Gentle Dot daemon (see host/README.md).
+# The client speaks the daemon's WebSocket protocol v1; Textual renders the window.
+websockets>=13.0
+textual>=0.79
