@@ -7,3 +7,7 @@ cad/backup/
 *.b#1
 *.s#1
 .DS_Store
+backend/.venv/
+backend/**/__pycache__/
+backend/*.pyc
+backend/static/

@@ -1,0 +1,7 @@
+{
+  "venvPath": "backend",
+  "venv": ".venv",
+  "include": ["backend/app"],
+  "extraPaths": ["backend/.venv/lib/python3.14/site-packages"],
+  "reportMissingImports": "error"
+}

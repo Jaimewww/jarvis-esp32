@@ -60,3 +60,20 @@ Instrucciones de ejecución en [host/README.md](../host/README.md).
 El input escrito ya está implementado; las capturas de pantalla del diseño anterior
 siguen sin ser requisito. Ver [backend](nube.md), [plan](planificacion.md) y
 [pruebas](pruebas.md).
+
+## Estado del ESP32 en la TUI — decisión del 2026-11-16
+
+La TUI también muestra la presencia y el ciclo del terminal de voz. El ESP32 envía un
+heartbeat cada 5 s al orquestador (`POST /api/v1/heartbeat`) con su estado — `idle`,
+`recording`, `thinking`, `speaking` — y el orquestador lo reenvía por el WebSocket del
+anfitrión como evento `esp32_state`. Para que llegue a la TUI, el daemon debe
+reenviarlo a sus clientes: **pendiente en el fork** (`gentle-dot`), ya que hoy el
+protocolo v1 no incluye ese evento.
+
+Presentación propuesta en el encabezado:
+
+- `ESP32 ● idle` — online, en reposo; coincide con el color del anillo WS2812.
+- `ESP32 ● recording` (y el resto del ciclo) — sincronizado con el anillo.
+- `ESP32 ○ offline` — más de 15 s sin heartbeat, con la hora de la última señal.
+
+Así la desconexión del WiFi del ESP32 se ve desde la terminal, sin acercarse a la caja.

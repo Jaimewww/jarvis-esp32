@@ -34,5 +34,27 @@ de voz, sin promesas de precio o latencia. No se garantiza que toda la cadena se
 - Mantener credenciales de proveedores fuera del firmware y definir autenticación.
 - Medir costos y latencia según proveedores reales, incluyendo tareas largas del agente.
 
-Los ejemplos anteriores de JSON, endpoints y tokens no son contratos vigentes.
+Los ejemplos anteriores de JSON, endpoints y tokens no eran contratos vigentes; los
+que siguen sí lo son, en versión v0.
+
+## Orquestador v0 en la PC — decisión del 2026-11-16
+
+El orquestador corre en la computadora del usuario (FastAPI, puerto 8000) y el ESP32
+lo alcanza por la LAN; no hay despliegue del orquestador en la nube. El esqueleto
+vive en `backend/` y está probado con `curl`; los proveedores reales se integran
+después de medirlos, siguiendo las decisiones pendientes de arriba.
+
+| Endpoint | Entrada | Salida |
+| --- | --- | --- |
+| `POST /api/v1/converse` | WAV multipart + `X-Device-Token` | `reply_text`, `reply_audio_url`, `actions` |
+| `POST /api/v1/heartbeat` | JSON de ciclo (cada 5 s) | `200` y reenvío `esp32_state` por WebSocket |
+| `WS /api/v1/ws?token=…` | token del anfitrión | `esp32_snapshot`, `esp32_state`, `action` |
+| `GET /api/v1/health` | — | estado y dispositivos conectados |
+
+Marcadores de posición del esqueleto: STT, agente (Gentle Shell) y TTS —
+`/api/v1/converse` responde con un beep generado en el arranque y una acción de
+prueba hasta elegir y medir esos proveedores. Las acciones salen por el WebSocket
+hacia el anfitrión; el ESP32 no las recibe.
+
+Pruebas e instrucciones: [backend/README.md](../backend/README.md).
 Siguiente paso: acordar integración con [TUI](tui.md) y [firmware](firmware.md).

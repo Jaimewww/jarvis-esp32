@@ -42,6 +42,35 @@ batería, identificación del hablante y uso de varias personas a la vez. Alimen
 - Medir tiempos de captura, transferencia, STT, agente, acciones y TTS por separado.
   Las estimaciones anteriores de 1–3 s no son una garantía ni una medición vigente.
 
+## Transporte por red — decisión del 2026-11-16
+
+Topología elegida: el orquestador corre en la PC del usuario y el ESP32-S3 lo alcanza
+por la LAN; la nube queda reducida a los proveedores externos (STT, agente, TTS) que
+la PC llama. Esto cierra en versión v0 la pregunta abierta de transporte del informe:
+protocolo, mensajes y autenticación quedan definidos, implementados como esqueleto en
+`backend/` y verificables con `curl`.
+
+- Dirección del orquestador: `http://<IP-LAN>:8000`, con nombre estable por mDNS
+  (`jarvis-backend.local`) o reserva DHCP, para no depender de una IP que cambia.
+- Autenticación: header `X-Device-Token` en toda petición del ESP32; el daemon y la
+  TUI siguen el protocolo v1 de Gentle Dot con su propio token.
+- Heartbeat: cada 5 s el ESP32 informa su ciclo — `idle`, `recording`, `thinking`,
+  `speaking` — junto con RSSI e IP; es el mismo ciclo que pinta el anillo WS2812.
+- Sin heartbeat durante 15 s el orquestador marca el dispositivo offline y lo
+  notifica a los clientes anfitriones.
+
+### Endpoints v0 (esqueleto en `backend/`)
+
+| Endpoint | Método | Uso |
+| --- | --- | --- |
+| `/api/v1/converse` | POST | El ESP32 sube un WAV (multipart); responde texto, URL del audio de respuesta y acciones |
+| `/api/v1/heartbeat` | POST | Presencia y ciclo del ESP32 (cada 5 s) |
+| `/api/v1/ws` | WebSocket | Canal del anfitrión: snapshot, `esp32_state` y `action` |
+| `/api/v1/health` | GET | Prueba de vida y dispositivos conectados |
+
+Las acciones viajan al anfitrión por el WebSocket; el ESP32 no las recibe. La TUI
+muestra el estado del terminal como evento `esp32_state` (ver [TUI](tui.md)).
+
 ## Procedencia de esta actualización
 
 Fuente: informe «J.A.R.V.I.S. de escritorio», `body.md`, del 2026-11-11, secciones

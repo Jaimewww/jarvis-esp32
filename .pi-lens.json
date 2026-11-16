@@ -1,0 +1,13 @@
+{
+  "lsp": {
+    "serverOverrides": {
+      "python": {
+        "python": {
+          "pythonPath": "backend/.venv/bin/python3",
+          "venvPath": "backend",
+          "venv": ".venv"
+        }
+      }
+    }
+  }
+}
