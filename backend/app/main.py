@@ -3,17 +3,18 @@
 Implements the v0 transport contract defined on 2026-11-16 (docs/arquitectura.md,
 docs/nube.md):
 
-- POST /api/v1/converse  : ESP32 uploads a WAV clip; returns reply text, a reply
-                           audio URL and the PC actions.
+- POST /api/v1/converse  : ESP32 uploads a WAV clip; returns a turn id, reply
+                           text, a reply audio URL and the PC actions, and
+                           broadcasts ``turn_started`` / ``turn_done``.
 - POST /api/v1/heartbeat : ESP32 keepalive with device state; relayed to host
                            clients as ``esp32_state`` events.
-- WS   /api/v1/ws        : host clients (Gentle Dot daemon / TUI) receive actions
-                           and ``esp32_state`` events.
+- WS   /api/v1/ws        : host clients (Gentle Dot daemon / TUI) receive actions,
+                           ``esp32_state`` and turn events.
 - GET  /api/v1/health    : liveness probe.
 
 STT, the agent (Gentle Shell) and TTS are placeholders: ``/converse`` returns a
 canned reply plus a generated beep until those providers are chosen and measured
-(docs/nube.md). PC actions travel to the host over the WebSocket; the ESP32 never
+(docs/nube.md). The contracts are in docs/contratos.md. PC actions travel to the host over the WebSocket; the ESP32 never
 receives them.
 """
 
@@ -50,7 +51,7 @@ STATIC_DIR = BASE_DIR / "static"
 UPLOAD_DIR = STATIC_DIR / "uploads"
 REPLY_WAV = STATIC_DIR / "jarvis-reply.wav"
 
-VALID_STATES = {"idle", "recording", "thinking", "speaking"}
+VALID_STATES = {"idle", "recording", "thinking", "speaking", "error"}
 
 
 class Heartbeat(BaseModel):
@@ -66,6 +67,7 @@ class Action(BaseModel):
 
 
 class ConverseResponse(BaseModel):
+    turn_id: str
     reply_text: str
     reply_audio_url: str
     actions: list[Action]
@@ -218,9 +220,19 @@ async def heartbeat(hb: Heartbeat) -> dict:
 async def converse(audio: UploadFile) -> ConverseResponse:
     # Placeholder pipeline: save the clip, return a canned reply. STT, the agent
     # and TTS get wired here once the providers are chosen and measured.
+    started = time.perf_counter()
     data = await audio.read()
     if not data:
         raise HTTPException(status_code=422, detail="empty audio upload")
+    turn_id = uuid.uuid4().hex
+    await host_clients.broadcast(
+        {
+            "type": "turn_started",
+            "turn_id": turn_id,
+            "device_id": "esp32-s3",
+            "ts": time.time(),
+        }
+    )
     clip_path = UPLOAD_DIR / f"{time.time():.0f}-{uuid.uuid4().hex[:8]}.wav"
     clip_path.write_bytes(data)
 
@@ -233,8 +245,20 @@ async def converse(audio: UploadFile) -> ConverseResponse:
             "ts": time.time(),
         }
     )
+    reply_text = "En orden, señor."  # placeholder; real reply comes from the agent
+    await host_clients.broadcast(
+        {
+            "type": "turn_done",
+            "turn_id": turn_id,
+            "lane": "chat",
+            "total_ms": round((time.perf_counter() - started) * 1000, 1),
+            "reply_text": reply_text,
+            "ts": time.time(),
+        }
+    )
     return ConverseResponse(
-        reply_text="En orden, señor.",  # placeholder; real reply comes from the agent
+        turn_id=turn_id,
+        reply_text=reply_text,
         reply_audio_url=f"/static/{REPLY_WAV.name}",
         actions=actions,
     )
@@ -266,7 +290,10 @@ async def host_ws(ws: WebSocket, token: str = "") -> None:
             )
         )
         while True:
-            await ws.receive()  # keepalive; host clients are read-only in v0
+            # keepalive; host clients are read-only in v0
+            message = await ws.receive()
+            if message["type"] == "websocket.disconnect":
+                break
     except WebSocketDisconnect:
         pass
     finally:
