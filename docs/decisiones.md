@@ -1,6 +1,7 @@
 # Decisiones de arquitectura
 
-Registro de las decisiones de base tomadas el **2026-11-18**. Cada una indica qué se
+Registro de las decisiones de base tomadas el **2026-11-18**: D1–D12 fijan la
+arquitectura y D13–D19 el comportamiento del software. Cada una indica qué se
 decidió, por qué y qué se descartó. Ninguna está validada en hardware todavía: son las
 reglas con las que se construye, no resultados medidos.
 
@@ -15,11 +16,18 @@ reglas con las que se construye, no resultados medidos.
 | D5 | Enlace ESP32 ↔ PC | Wi-Fi, con el contrato HTTP v0 |
 | D6 | Formato de audio | PCM 16 kHz, mono, 16 bits, en WAV |
 | D7 | Fin del habla | Se detecta en el ESP32 |
-| D8 | Acciones en la PC | Lista cerrada, sin confirmación |
+| D8 | Acciones en la PC | Catálogo sin confirmación; lo demás va al agente |
 | D9 | Estado del ESP32 en la TUI | La TUI se conecta también al backend |
 | D10 | Primer hito | Turno completo desde la PC, sin hardware |
 | D11 | Estructura del repositorio | `firmware/`, `backend/`, `host/`, `cad/`, `docs/` |
 | D12 | Plataforma de la PC | Arch Linux con niri (Wayland) |
+| D13 | Camino rápido | Las órdenes del catálogo no pasan por el agente |
+| D14 | Carriles | Rápido, charla de voz y tarea larga en segundo plano |
+| D15 | Interrupción | Con la voz, por etapas; pulsador como respaldo |
+| D16 | Estados | Una máquina de estados por eventos, con tiempos máximos |
+| D17 | Latencia | Meta de 1,5 s en acciones y 4 s en preguntas |
+| D18 | Placa | ESP32-S3 N16R8, por duplicado |
+| D19 | Convenciones de software | Interfaces por etapa, pruebas, CI y configuración |
 
 ## D1 — Gentle Dot es una dependencia externa
 
@@ -97,13 +105,24 @@ No se comprime mientras una medición no lo justifique.
 El ESP32 detecta el final de la orden con el detector de voz de ESP-SR y solo entonces
 envía el audio, para no subir silencio.
 
-## D8 — Acciones: lista cerrada
+## D8 — Acciones: catálogo y agente
 
-Jarvis solo ejecuta acciones de bajo riesgo definidas de antemano (multimedia, volumen,
-abrir aplicaciones). Todo lo demás se rechaza. No hay confirmación en pantalla ni por voz.
+El catálogo reúne las acciones de bajo riesgo definidas de antemano (multimedia,
+volumen, abrir aplicaciones). Esas se ejecutan sin confirmación.
 
-**Por qué:** mantiene el uso sin manos y acota lo que una transcripción errónea puede
-provocar.
+Un pedido fuera del catálogo va al agente, limitado por los resguardos del fork. Si el
+agente pide aprobación durante un turno de voz, Jarvis la niega y lo dice en voz alta;
+la acción se puede pedir después desde la TUI.
+
+**Por qué:** el catálogo acota lo que una transcripción errónea puede provocar sin
+preguntar, y negar las aprobaciones evita turnos colgados y acciones riesgosas por voz.
+
+**Cambio:** la primera versión de esta decisión rechazaba todo lo que estuviera fuera
+del catálogo. Se abrió al agente para poder usar aplicaciones aún no probadas.
+
+**Sin verificar:** los resguardos del fork (permiso, parada de emergencia, lista de
+bloqueo, límite de frecuencia, confirmaciones) se conocen por su documentación, no por
+haber revisado su código.
 
 **Implementación:** el catálogo se adapta a la plataforma de D12. La base son
 `playerctl` (multimedia), `wpctl` (volumen) y `gtk-launch` (aplicaciones), que no
@@ -150,8 +169,112 @@ pero eso no se verifica.
 **Pendiente:** confirmar si el segundo equipo tiene GPU NVIDIA. Uno tiene una RTX 4050;
 si el otro no, el modelo de STT debe rendir también en CPU.
 
+## D13 — Camino rápido
+
+El backend reconoce las órdenes del catálogo en el texto transcrito y las ejecuta
+directamente. Solo lo que no reconoce llega al agente.
+
+**Por qué:** el agente es la etapa más lenta y menos predecible del turno. Una orden
+conocida no necesita razonamiento.
+
+## D14 — Tres carriles
+
+| Carril | Qué atiende | Contexto |
+|---|---|---|
+| Rápido | Órdenes del catálogo | Ninguno |
+| Charla de voz | Preguntas cortas y seguimientos | Conversación propia, que se reinicia tras un tiempo de silencio o un número de turnos |
+| Tarea larga | Lo que requiere explorar, como una aplicación no probada | Una conversación por tarea, que se descarta al terminar |
+
+La tarea larga corre en segundo plano: Jarvis confirma que empezó, sigue disponible y
+avisa al terminar. A la charla solo vuelve el resultado, en una frase.
+
+**Por qué:** el agente tarda más cuanto más contexto acumula, y lo que más pesa son
+las capturas de pantalla y los resultados de herramientas. Separarlos mantiene liviana
+la charla. Una acción que se prueba y funciona pasa al catálogo y deja de usar el agente.
+
+**Sin verificar:** que el daemon pueda atender dos conversaciones a la vez. Si no
+puede, la tarea larga necesita una cola o una segunda instancia del agente.
+
+## D15 — Interrupción con la voz, por etapas
+
+Decir «Jarvis» corta el turno en curso. Se construye en este orden:
+
+1. Con el pulsador, que ya era el respaldo de la activación.
+2. Con la voz mientras Jarvis piensa. El parlante está en silencio, así que no hay eco.
+3. Con la voz mientras Jarvis habla. Requiere cancelación de eco con una referencia por
+   software, porque el MAX98357A no devuelve la señal reproducida.
+
+**Riesgo:** la etapa 3 puede provocar activaciones falsas con un solo micrófono. Se
+conserva solo si pasa una prueba de activaciones falsas; si no, queda la etapa 2. La
+caja debe separar el micrófono del parlante.
+
+## D16 — Estados
+
+- **Una máquina de estados en el firmware**, que avanza solo por eventos: reposo →
+  escuchando → pensando → hablando → reposo, más error.
+- **Todo estado distinto de reposo tiene un tiempo máximo** y vuelve solo a reposo.
+- **El estado se informa al cambiar**, por el mismo `heartbeat`. El envío periódico
+  queda para saber si el dispositivo sigue activo.
+- **Un turno de voz a la vez.** El backend rechaza un segundo pedido mientras hay uno
+  en curso. Las tareas largas de D14 no cuentan como turno.
+- **Un identificador por turno**, presente en cada registro, evento y medición.
+- **El backend no guarda conversación.** El contexto vive en el agente; el backend
+  mantiene en memoria los dispositivos y el turno en curso, y escribe un registro de
+  turnos en disco.
+- **Cada falla tiene salida audible:** un audio de error pregrabado y el anillo en
+  estado de error. Nunca silencio.
+
+**Pendiente:** añadir `error` a los estados que acepta el backend, que hoy son `idle`,
+`recording`, `thinking` y `speaking`.
+
+## D17 — Latencia
+
+Meta, medida desde el fin del habla hasta que empieza a sonar la respuesta: **1,5 s en
+acciones del catálogo y 4 s en preguntas**. Las tareas largas no tienen meta; se mide
+la confirmación inicial.
+
+Se mide antes de optimizar: cada turno registra el tiempo de cada etapa. Las mejoras se
+aplican en este orden:
+
+1. Modelos de STT y TTS cargados una sola vez, al arrancar.
+2. Camino rápido (D13).
+3. Respuesta por frases: se sintetiza la primera frase mientras el agente sigue.
+4. Respuesta percibida: luz y sonido corto al detectar «Jarvis», y una frase pregrabada
+   si el agente tarda.
+
+El audio en transmisión continua queda fuera hasta que una medición lo justifique.
+
+## D18 — Placa: ESP32-S3 N16R8
+
+Se mantiene el ESP32-S3. Es la plataforma principal de ESP-SR, ejecuta WakeNet9 con
+aceleración e incluye Wi-Fi.
+
+- **Variante N16R8** (16 MB de flash, 8 MB de PSRAM). Los modelos de voz necesitan la PSRAM.
+- **Dos placas y dos micrófonos**, para no detener las pruebas si uno se daña.
+- **Con dos puertos USB** (UART y USB nativo).
+- **Sin usar los GPIO 35, 36 y 37**, que en esta variante ocupa la PSRAM.
+
+**Descartado:** ESP32-P4 (más potente, pero sin Wi-Fi propio y más caro) y ESP32
+clásico, C3, C5 y C6 (solo ejecutan modelos de activación reducidos).
+
+**Pendiente:** actualizar el presupuesto de [materiales](materiales.md) con las
+unidades duplicadas.
+
+## D19 — Convenciones de software
+
+- **Cada etapa detrás de una interfaz** (STT, agente, TTS, acciones), para comparar
+  modelos y probar con dobles.
+- **Pruebas de contrato** de `/converse` con etapas falsas, y un conjunto de audios en
+  español para comparar STT.
+- **Integración continua mínima:** formato, tipos y pruebas en cada envío.
+- **Configuración por variables de entorno**, con tokens generados en el primer
+  arranque en lugar de valores por defecto.
+- **Un solo comando** para iniciar el backend y el daemon.
+
 ## Decisiones abiertas
 
+- **Resguardos del fork** (D8) y **conversaciones simultáneas del daemon** (D14): hay
+  que revisarlos en su código.
 - **GPU del segundo equipo** (D12), que condiciona el tamaño del modelo de STT.
 - **Modelos concretos** de STT y TTS (D4) y modelo del agente.
 - **Lista concreta de acciones** (D8).

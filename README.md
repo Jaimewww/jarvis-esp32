@@ -44,7 +44,7 @@ están en [decisiones](docs/decisiones.md) y prevalecen donde difieran.
 | Captura | Orden a 16 kHz, detección de fin del habla en el ESP32 y envío por Wi-Fi con el contrato HTTP v0. |
 | Transcripción y voz | STT y TTS locales en la PC. Modelo por elegir: Whisper frente a Parakeet para STT, Piper como primer candidato de TTS. |
 | Agente | Daemon de Gentle Dot como dependencia externa, detrás de un adaptador del backend. Integración sin verificar. |
-| Acciones | Lista cerrada de acciones de bajo riesgo en la PC, sin confirmación. |
+| Acciones | Catálogo de acciones de bajo riesgo sin confirmación y por camino rápido; lo demás va al agente. |
 | Estado | Reposo, escuchando, pensando, hablando y error en anillo y TUI. |
 | Hardware | ESP32-S3 N16R8, INMP441, MAX98357A, parlante de 45 mm y anillo de 8 LED. |
 | Presupuesto | USD 50,64 obligatorios + 13,94 opcionales = 64,58; sin envío ni filamento, con salvedades de IVA. |
