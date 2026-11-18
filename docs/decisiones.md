@@ -22,7 +22,7 @@ reglas con las que se construye, no resultados medidos.
 | D11 | Estructura del repositorio | `firmware/`, `backend/`, `host/`, `cad/`, `docs/` |
 | D12 | Plataforma de la PC | Arch Linux con niri (Wayland) |
 | D13 | Camino rápido | Las órdenes del catálogo no pasan por el agente |
-| D14 | Carriles | Rápido, charla de voz y tarea larga en segundo plano |
+| D14 | Carriles | Rápido, charla de voz y tarea larga, con dos motores |
 | D15 | Interrupción | Con la voz, por etapas; pulsador como respaldo |
 | D16 | Estados | Una máquina de estados por eventos, con tiempos máximos |
 | D17 | Latencia | Meta de 1,5 s en acciones y 4 s en preguntas |
@@ -110,9 +110,9 @@ envía el audio, para no subir silencio.
 El catálogo reúne las acciones de bajo riesgo definidas de antemano (multimedia,
 volumen, abrir aplicaciones). Esas se ejecutan sin confirmación.
 
-Un pedido fuera del catálogo va al agente, limitado por los resguardos del fork. Si el
-agente pide aprobación durante un turno de voz, Jarvis la niega y lo dice en voz alta;
-la acción se puede pedir después desde la TUI.
+Un pedido fuera del catálogo va al agente, limitado por los resguardos de Gentle Dot.
+Si el agente pide aprobación por el protocolo durante un turno de voz, Jarvis la niega
+y lo dice en voz alta; la acción se puede pedir después desde la TUI.
 
 **Por qué:** el catálogo acota lo que una transcripción errónea puede provocar sin
 preguntar, y negar las aprobaciones evita turnos colgados y acciones riesgosas por voz.
@@ -120,9 +120,24 @@ preguntar, y negar las aprobaciones evita turnos colgados y acciones riesgosas p
 **Cambio:** la primera versión de esta decisión rechazaba todo lo que estuviera fuera
 del catálogo. Se abrió al agente para poder usar aplicaciones aún no probadas.
 
-**Sin verificar:** los resguardos del fork (permiso, parada de emergencia, lista de
-bloqueo, límite de frecuencia, confirmaciones) se conocen por su documentación, no por
-haber revisado su código.
+**Resguardos de Gentle Dot**, leídos en el código del proyecto original (`main`,
+`f97d56d`), no en la rama del fork:
+
+| Resguardo | Comportamiento |
+|---|---|
+| Permiso | Diálogo nativo; dura 30 minutos y solo se guarda en memoria |
+| Parada de emergencia | `Alt+Shift+Esc`; termina la sesión y descarta las acciones en curso |
+| Lista de bloqueo | Solo aplicaciones: gestores de contraseñas, ajustes del sistema y diálogos de seguridad |
+| Límite | 10 acciones por segundo |
+| Confirmación | Diálogo nativo ante acciones con palabras como enviar, pagar, comprar, eliminar o transferir |
+
+**Límites que esto impone:**
+
+- Las confirmaciones del control de la PC son ventanas en pantalla, no mensajes del
+  protocolo. El backend no puede negarlas ni anunciarlas; alguien debe responderlas.
+- El permiso vence a los 30 minutos, la misma duración que la prueba de estabilidad.
+- El proyecto original no tiene soporte de Linux. Las acciones y la lista de bloqueo
+  para Arch están solo en la rama del fork, que **no se revisó**.
 
 **Implementación:** el catálogo se adapta a la plataforma de D12. La base son
 `playerctl` (multimedia), `wpctl` (volumen) y `gtk-launch` (aplicaciones), que no
@@ -182,8 +197,8 @@ conocida no necesita razonamiento.
 | Carril | Qué atiende | Contexto |
 |---|---|---|
 | Rápido | Órdenes del catálogo | Ninguno |
-| Charla de voz | Preguntas cortas y seguimientos | Conversación propia, que se reinicia tras un tiempo de silencio o un número de turnos |
-| Tarea larga | Lo que requiere explorar, como una aplicación no probada | Una conversación por tarea, que se descarta al terminar |
+| Charla de voz | Preguntas cortas y seguimientos | Agente liviano propio del backend, con instrucciones de responder corto; su conversación se reinicia tras un tiempo de silencio o un número de turnos |
+| Tarea larga | Lo que requiere explorar, como una aplicación no probada | Daemon de Gentle Dot, una tarea a la vez |
 
 La tarea larga corre en segundo plano: Jarvis confirma que empezó, sigue disponible y
 avisa al terminar. A la charla solo vuelve el resultado, en una frase.
@@ -192,8 +207,21 @@ avisa al terminar. A la charla solo vuelve el resultado, en una frase.
 las capturas de pantalla y los resultados de herramientas. Separarlos mantiene liviana
 la charla. Una acción que se prueba y funciona pasa al catálogo y deja de usar el agente.
 
-**Sin verificar:** que el daemon pueda atender dos conversaciones a la vez. Si no
-puede, la tarea larga necesita una cola o una segunda instancia del agente.
+**Dos motores:** la charla y la tarea larga usan agentes distintos, ambos detrás de la
+interfaz de D1. El daemon tiene un solo agente y una sola conversación activa para
+todos sus clientes: no trabaja en paralelo, cambiar de conversación aborta el turno en
+curso y sus instrucciones son globales. Por eso no puede atender la charla mientras
+ejecuta una tarea.
+
+El daemon ya limita el peso de las capturas: en cada llamada al modelo conserva solo
+la última y compacta el contexto por su cuenta.
+
+**Pendiente:** elegir el motor de la charla midiendo las alternativas en el primer
+hito (un proceso propio de Gentle Shell, un modelo local u otro), y definir qué pasa
+con un segundo pedido de tarea larga mientras hay una en curso.
+
+**Descartado:** todo en el daemon en secuencia (se pierde el segundo plano) y dos
+instancias del daemon (no se verificó que puedan convivir).
 
 ## D15 — Interrupción con la voz, por etapas
 
@@ -273,8 +301,9 @@ unidades duplicadas.
 
 ## Decisiones abiertas
 
-- **Resguardos del fork** (D8) y **conversaciones simultáneas del daemon** (D14): hay
-  que revisarlos en su código.
+- **Rama del fork** (D8): qué acciones y qué lista de bloqueo tiene en Arch.
+- **Motor de la charla de voz** (D14).
+- **Renovación del permiso de 30 minutos** durante la demostración (D8).
 - **GPU del segundo equipo** (D12), que condiciona el tamaño del modelo de STT.
 - **Modelos concretos** de STT y TTS (D4) y modelo del agente.
 - **Lista concreta de acciones** (D8).
