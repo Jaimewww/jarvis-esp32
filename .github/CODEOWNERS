@@ -1,0 +1,14 @@
+# Owners by folder (decision D21 in docs/decisiones.md).
+# GitHub requests a review from the owner when a pull request touches their paths.
+# The last matching pattern wins.
+
+# Shared: both must see changes to contracts, decisions and the top-level docs.
+*                                   @Jaimewww @AlejandroTatum
+
+# Voice track (S1)
+/backend/                           @Jaimewww
+/tools/                             @Jaimewww
+
+# Agent and screen track (S2)
+/host/                              @AlejandroTatum
+/backend/app/agents/gentle_dot.py   @AlejandroTatum

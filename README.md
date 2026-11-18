@@ -24,6 +24,7 @@ verificadas en hardware. No hay mediciones de latencia del sistema.
 | [Arquitectura](docs/arquitectura.md) | Responsabilidades, flujo y alcance |
 | [Materiales](docs/materiales.md) | BOM consultada el 2026-11-11 y conexiones propuestas |
 | [Planificación](docs/planificacion.md) | Fases y cinco roles funcionales |
+| [Tareas](docs/tareas.md) | Tareas de cada pista, en orden, y reglas para no pisarse |
 | [Firmware](docs/firmware.md) | Activación local, audio, red y decisiones pendientes |
 | [Backend e IA](docs/nube.md) | Comparación STT, Gentle Shell y alternativas |
 | [Host y TUI](docs/tui.md) | Conversación, estado y registro de acciones |
