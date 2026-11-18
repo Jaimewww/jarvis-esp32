@@ -66,9 +66,11 @@ siguen sin ser requisito. Ver [backend](nube.md), [plan](planificacion.md) y
 La TUI también muestra la presencia y el ciclo del terminal de voz. El ESP32 envía un
 heartbeat cada 5 s al orquestador (`POST /api/v1/heartbeat`) con su estado — `idle`,
 `recording`, `thinking`, `speaking` — y el orquestador lo reenvía por el WebSocket del
-anfitrión como evento `esp32_state`. Para que llegue a la TUI, el daemon debe
-reenviarlo a sus clientes: **pendiente en el fork** (`gentle-dot`), ya que hoy el
-protocolo v1 no incluye ese evento.
+anfitrión como evento `esp32_state`.
+
+Desde el 2026-11-18 ([decisión D9](decisiones.md#d9--la-tui-se-conecta-también-al-backend)),
+la TUI recibe ese evento abriendo ella misma el WebSocket del backend, en lugar de
+esperar a que el daemon lo reenvíe. **Esa conexión aún no está implementada.**
 
 Presentación propuesta en el encabezado:
 

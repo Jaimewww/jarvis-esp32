@@ -20,12 +20,12 @@ La detección de fin del habla pertenece al alcance actual, no a una futura v2 o
 | Capa | Trabajo pendiente |
 |---|---|
 | Audio y activación | INMP441 por I2S, adaptación del audio, WakeNet y detección de fin del habla. |
-| Red | Enviar la orden a 16 kHz por Wi-Fi a la PC y recibir audio; contrato por definir. |
-| Reproducción | MAX98357A por I2S; acordar formato, frecuencia y buffering de la respuesta. |
+| Red | Enviar la orden a 16 kHz por Wi-Fi a la PC y recibir audio con el contrato HTTP v0 ([backend](nube.md)). |
+| Reproducción | MAX98357A por I2S; la respuesta llega en WAV PCM de 16 kHz, mono, 16 bits. Buffering por definir. |
 | Estado | Anillo WS2812: reposo, escuchando, pensando, hablando y error. |
 
-Arduino IDE/core 3.x y ESP-IDF eran opciones del diseño anterior. Evaluar la integración
-con ESP-SR antes de cerrar entorno y librerías; ESP-IDF no queda limitado a optimización.
+El firmware se escribe con **ESP-IDF**, porque ESP-SR y WakeNet son componentes suyos
+([decisión D3](decisiones.md#d3--firmware-con-esp-idf)). Arduino core 3.x quedó descartado.
 
 ## Validaciones técnicas necesarias
 

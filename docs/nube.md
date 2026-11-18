@@ -11,17 +11,19 @@ en la PC y síntesis de respuesta → audio al ESP32. La TUI muestra conversaci�
 
 | Etapa | Estado de la decisión |
 |---|---|
-| STT | Comparar Whisper con Parakeet ejecutado localmente en la primera fase. No hay selección final ni modalidad de despliegue de Whisper cerrada. |
-| Agente | Gentle Shell como proceso sin interfaz propia. Gentle Dot sirve de referencia para proceso persistente y mensajes, no de integración verificada. |
-| TTS | Pendiente de selección y pruebas de audio con el ESP32. |
-| Transporte | Wi-Fi entre ESP32 y PC; protocolo, mensajes y autenticación pendientes. No hay RPC cerrado. |
+| STT | Local en la PC. Modelo por elegir: comparar Whisper con Parakeet con los mismos audios en español. |
+| Agente | Daemon de Gentle Dot como dependencia externa; el backend le habla por un adaptador propio. Integración sin verificar. |
+| TTS | Local en la PC. Piper es el primer candidato; faltan pruebas de audio con el ESP32. |
+| Transporte | Wi-Fi entre ESP32 y PC con el contrato HTTP v0 descrito abajo. Los tokens actuales son de desarrollo. |
+
+El porqué de cada punto está en [decisiones](decisiones.md).
 
 ## Alternativas del diseño anterior
 
-Groq Whisper, OpenAI Whisper API y Deepgram permanecen como candidatos de STT, no
-como proveedores elegidos. Para el modelo del agente, Groq/Llama, GPT-4o-mini y Gemini
-son alternativas por evaluar. OpenAI TTS-1, Piper, ElevenLabs y edge-tts son candidatos
-de voz, sin promesas de precio o latencia. No se garantiza que toda la cadena sea offline.
+Los servicios en línea de STT (Groq Whisper, OpenAI Whisper API, Deepgram) y de TTS
+(OpenAI TTS-1, ElevenLabs, edge-tts) ya no son candidatos para el camino de voz; sirven
+solo como referencia de comparación. El modelo del agente sigue abierto, así que no se
+garantiza que toda la cadena sea offline.
 
 ## Acuerdos previos a implementar
 

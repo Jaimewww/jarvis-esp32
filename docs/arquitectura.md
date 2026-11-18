@@ -15,17 +15,17 @@ todavía no está implementado ni validado en hardware.
 
 1. WakeNet de ESP-SR detecta «Jarvis» en el ESP32-S3; el pulsador queda como respaldo.
 2. Se captura la orden a 16 kHz hasta detectar fin del habla y se envía por Wi-Fi a la PC.
-3. La PC transcribe; la primera fase compara Whisper y Parakeet local, sin ganador fijado.
-4. Gentle Shell, como proceso en segundo plano sin interfaz propia, recibe el texto.
+3. El backend transcribe en la PC; la primera fase compara Whisper y Parakeet, ambos
+   locales, sin ganador fijado.
+4. El backend entrega el texto al agente (daemon de Gentle Dot) mediante su adaptador.
 5. La PC ejecuta las acciones solicitadas (por ejemplo, abrir una aplicación o cambiar
    volumen), sintetiza la respuesta y devuelve el audio al ESP32 para reproducirlo.
 6. Anillo y TUI reflejan reposo, escuchando, pensando, hablando y error. Los colores
    exactos y la sincronización quedan por acordar; deben indicar tareas largas en curso.
 
-Gentle Dot es una referencia para mantener vivo un proceso de agente y conversar mediante
-mensajes, no evidencia de una integración funcional. El informe no define RPC ni cierra
-HTTP/WebSocket, esquemas de mensajes, autenticación o formato de audio de respuesta.
-La PC puede recurrir a proveedores externos: no se promete funcionamiento totalmente offline.
+Las decisiones que fijan este flujo están en [decisiones](decisiones.md). La unión entre
+el backend y el daemon todavía no está implementada ni probada. STT y TTS son locales,
+pero el modelo del agente sigue abierto: no se promete funcionamiento totalmente offline.
 
 ## Alcance
 
@@ -38,7 +38,7 @@ batería, identificación del hablante y uso de varias personas a la vez. Alimen
 - WakeNet y `wn9_jarvis_tts` tienen respaldo documental, no pruebas en esta placa.
   Espressif advierte que la generalización de modelos entrenados con TTS no está garantizada.
 - Medir aciertos y activaciones falsas con voces del equipo y ruido de aula.
-- Definir STT final, TTS, modelo del agente y contratos de comunicación antes de integrar.
+- Elegir los modelos de STT y TTS, el modelo del agente y el catálogo de acciones.
 - Medir tiempos de captura, transferencia, STT, agente, acciones y TTS por separado.
   Las estimaciones anteriores de 1–3 s no son una garantía ni una medición vigente.
 
