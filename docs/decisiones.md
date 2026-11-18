@@ -19,6 +19,7 @@ reglas con las que se construye, no resultados medidos.
 | D9 | Estado del ESP32 en la TUI | La TUI se conecta también al backend |
 | D10 | Primer hito | Turno completo desde la PC, sin hardware |
 | D11 | Estructura del repositorio | `firmware/`, `backend/`, `host/`, `cad/`, `docs/` |
+| D12 | Plataforma de la PC | Arch Linux con niri (Wayland) |
 
 ## D1 — Gentle Dot es una dependencia externa
 
@@ -104,10 +105,12 @@ abrir aplicaciones). Todo lo demás se rechaza. No hay confirmación en pantalla
 **Por qué:** mantiene el uso sin manos y acota lo que una transcripción errónea puede
 provocar.
 
-**Pendiente:** definir el catálogo y con qué se implementa. La propuesta es usar
-herramientas que no dependen del escritorio (`playerctl`, `wpctl`, `gtk-launch`), que
-funcionan en cualquier distribución. El control por teclas del fork (`grim`, `wtype`)
-depende del compositor de Wayland y quedaría como extra.
+**Implementación:** el catálogo se adapta a la plataforma de D12. La base son
+`playerctl` (multimedia), `wpctl` (volumen) y `gtk-launch` (aplicaciones), que no
+dependen del compositor. El control por teclas del fork (`grim`, `wtype`) queda como
+extra y requiere instalar `wtype`.
+
+**Pendiente:** la lista concreta de acciones y comprobar `grim` y `wtype` en niri.
 
 ## D9 — La TUI se conecta también al backend
 
@@ -135,11 +138,22 @@ se integra contra un backend que ya responde de verdad.
 
 Cada carpeta lleva su README y sus pruebas.
 
+## D12 — Plataforma: Arch Linux con niri
+
+La demostración corre en dos equipos del grupo, ambos con Arch Linux y niri sobre
+Wayland. Es la única plataforma que se prueba y se garantiza.
+
+**Por qué:** acotar la plataforma evita cubrir escritorios que nadie del equipo usa. El
+backend, el STT, el TTS y la TUI son Python y deberían correr en otras distribuciones,
+pero eso no se verifica.
+
+**Pendiente:** confirmar si el segundo equipo tiene GPU NVIDIA. Uno tiene una RTX 4050;
+si el otro no, el modelo de STT debe rendir también en CPU.
+
 ## Decisiones abiertas
 
-- **PC de la demostración:** equipo, escritorio y si tiene GPU NVIDIA. Condiciona el
-  tamaño del modelo de STT y qué acciones de D8 funcionan.
+- **GPU del segundo equipo** (D12), que condiciona el tamaño del modelo de STT.
 - **Modelos concretos** de STT y TTS (D4) y modelo del agente.
-- **Catálogo de acciones** y su implementación (D8).
+- **Lista concreta de acciones** (D8).
 - **Autenticación:** los tokens actuales son valores de desarrollo.
 - **Pruebas e integración continua:** no hay ninguna todavía.
