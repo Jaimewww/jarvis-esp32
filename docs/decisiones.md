@@ -195,8 +195,8 @@ Wayland. Es la única plataforma que se prueba y se garantiza.
 backend, el STT, el TTS y la TUI son Python y deberían correr en otras distribuciones,
 pero eso no se verifica.
 
-**Pendiente:** confirmar si el segundo equipo tiene GPU NVIDIA. Uno tiene una RTX 4050;
-si el otro no, el modelo de STT debe rendir también en CPU.
+**GPU:** los dos equipos tienen tarjeta NVIDIA (uno, una RTX 4050; el modelo del otro no
+está anotado), así que el STT puede usar aceleración en ambos.
 
 ## D13 — Camino rápido
 
@@ -357,7 +357,6 @@ contra la interfaz de agente del contrato C3.
 ## Decisiones abiertas
 
 - **Motor de la charla de voz** (D14).
-- **GPU del segundo equipo** (D12), que condiciona el tamaño del modelo de STT.
 - **Modelos concretos** de STT y TTS (D4) y modelo del agente.
 - **Lista concreta de acciones** (D8).
 - **Autenticación:** los tokens actuales son valores de desarrollo.
