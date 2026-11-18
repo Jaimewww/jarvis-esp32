@@ -20,6 +20,7 @@ verificadas en hardware. No hay mediciones de latencia del sistema.
 | Documento | Contenido |
 |---|---|
 | [Decisiones](docs/decisiones.md) | Decisiones de arquitectura del 2026-11-18 y su porqué |
+| [Contratos](docs/contratos.md) | Fronteras entre firmware, backend y host, y dobles para probar |
 | [Arquitectura](docs/arquitectura.md) | Responsabilidades, flujo y alcance |
 | [Materiales](docs/materiales.md) | BOM consultada el 2026-11-11 y conexiones propuestas |
 | [Planificación](docs/planificacion.md) | Fases y cinco roles funcionales |

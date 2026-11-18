@@ -5,6 +5,8 @@ arquitectura y D13–D19 el comportamiento del software. Cada una indica qué se
 decidió, por qué y qué se descartó. Ninguna está validada en hardware todavía: son las
 reglas con las que se construye, no resultados medidos.
 
+Los contratos que derivan de estas decisiones están en [contratos](contratos.md).
+
 ## Resumen
 
 | # | Tema | Decisión |

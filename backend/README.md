@@ -1,22 +1,27 @@
 # Orquestador J.A.R.V.I.S. v0 — corre en la PC
 
 Esqueleto del contrato de transporte v0 (decisión del 2026-11-16, ver
-`docs/arquitectura.md` y `docs/nube.md`). Corre en la computadora del usuario; el
+`docs/arquitectura.md` y `docs/nube.md`). Los contratos vigentes con el
+dispositivo y el anfitrión están en [`docs/contratos.md`](../docs/contratos.md). Corre en la computadora del usuario; el
 ESP32 lo alcanza por la LAN.
 
 ## Qué está implementado
 
 - `POST /api/v1/converse` — recibe el WAV del ESP32 (multipart), lo guarda y
-  responde `reply_text`, `reply_audio_url` y `actions`. **Marcador de posición:**
-  STT, agente (Gentle Shell) y TTS no están integrados; responde con un beep
-  generado en el arranque y una acción de prueba.
+  responde `turn_id`, `reply_text`, `reply_audio_url` y `actions`, y emite
+  `turn_started` y `turn_done` por el WebSocket. **Marcador de posición:** STT,
+  agente (Gentle Shell) y TTS no están integrados; responde con un beep generado
+  en el arranque y una acción de prueba.
 - `POST /api/v1/heartbeat` — estado del ESP32 (`idle`/`recording`/`thinking`/
-  `speaking` + RSSI e IP); lo reenvía a los clientes anfitriones como
+  `speaking`/`error` + RSSI e IP); lo reenvía a los clientes anfitriones como
   `esp32_state`.
 - `WS /api/v1/ws?token=…` — canal del anfitrión: snapshot inicial
-  (`esp32_snapshot`) y eventos `esp32_state` y `action`. Sin heartbeat durante
+  (`esp32_snapshot`) y eventos `esp32_state`, `action`, `turn_started` y
+  `turn_done`. Sin heartbeat durante
   15 s el dispositivo se marca `offline` y se notifica.
 - `GET /api/v1/health` — prueba de vida y estado de los dispositivos.
+- `app/ports.py` — interfaces `Transcriber`, `Agent` y `Synthesizer` (contrato C3).
+- `app/fakes.py` — dobles de esas interfaces con salidas fijas, para pruebas.
 
 ## Cómo correrlo
 
@@ -30,6 +35,23 @@ uvicorn app.main:app --port 8000
 
 Tokens por defecto (solo para desarrollo, redefinir con variables de entorno):
 `JARVIS_DEVICE_TOKEN=dev-jarvis-token`, `JARVIS_HOST_TOKEN=dev-host-token`.
+
+## Pruebas
+
+```bash
+cd backend
+.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/python -m pytest tests -q
+```
+
+## Simulador del dispositivo
+
+`tools/sim_device.py` hace un turno completo como el ESP32 (latidos, WAV a
+`/converse`, descarga del audio). Ver [contratos](../docs/contratos.md#dobles-para-avanzar-sin-la-otra-parte).
+
+```bash
+python tools/sim_device.py --url http://127.0.0.1:8000 --token dev-jarvis-token
+```
 
 ## Prueba con curl
 
@@ -56,3 +78,5 @@ curl -s -X POST http://127.0.0.1:8000/api/v1/converse \
 3. Elegir y probar TTS con el ESP32 (formato y sample rate de salida).
 4. Que el daemon del fork reenvíe `esp32_state` a sus clientes (la TUI ya
    consumiría el evento).
+5. Lo pendiente de los contratos: `409` ante un segundo turno, eventos
+   `turn_stage` y `turn_error`, y el resultado `{ok, detail}` de las acciones.
