@@ -1,7 +1,8 @@
 # Decisiones de arquitectura
 
 Registro de las decisiones de base tomadas el **2026-11-18**: D1–D12 fijan la
-arquitectura y D13–D19 el comportamiento del software. Cada una indica qué se
+arquitectura, D13–D19 el comportamiento del software y D20–D21 el uso de Gentle Dot
+y el reparto del trabajo. Cada una indica qué se
 decidió, por qué y qué se descartó. Ninguna está validada en hardware todavía: son las
 reglas con las que se construye, no resultados medidos.
 
@@ -30,24 +31,35 @@ Los contratos que derivan de estas decisiones están en [contratos](contratos.md
 | D17 | Latencia | Meta de 1,5 s en acciones y 4 s en preguntas |
 | D18 | Placa | ESP32-S3 N16R8, por duplicado |
 | D19 | Convenciones de software | Interfaces por etapa, pruebas, CI y configuración |
+| D20 | Control de la PC por el agente | Fuera de la demostración; al final, si sobra tiempo |
+| D21 | Reparto del trabajo | Dos pistas en la PC, con un responsable por carpeta |
 
 ## D1 — Gentle Dot es una dependencia externa
 
-Jarvis vive en este repositorio y usa el daemon de Gentle Dot (fork
-`Jaimewww/gentle-dot`, rama `feat/linux-computer-use`) como agente, sin construir sobre
-su código.
+Jarvis vive en este repositorio y usa el daemon de Gentle Dot como agente, sin
+construir sobre su código.
 
-- **Fork mínimo y fijado a un commit.** En el fork solo va lo que no se puede hacer
-  desde afuera. La lógica de Jarvis no entra ahí.
+- **Daemon original, sin modificar y fijado a una versión.** Corre en segundo plano
+  como servicio del sistema, sin la aplicación de escritorio. El proyecto original no
+  trae un archivo de servicio; hay que escribirlo.
 - **Adaptador en el backend.** El backend habla con «un agente» por una interfaz
-  propia; Gentle Dot es una implementación. Si el fork falla, se reemplaza por una
-  llamada directa a un modelo sin tocar el resto.
+  propia; Gentle Dot es una implementación. Si falla, se reemplaza por una llamada
+  directa a un modelo sin tocar el resto.
 
-**Por qué:** el protocolo v1 se tomó del código del fork, no de un contrato acordado, y
-un cambio allí rompe a sus clientes. El adaptador limita ese riesgo a un solo módulo.
+**Por qué:** el protocolo v1 se tomó del código de Gentle Dot, no de un contrato
+acordado, y un cambio allí rompe a sus clientes. El adaptador limita ese riesgo a un
+solo módulo, y usar el daemon sin modificar evita mantener un fork.
 
-**Descartado:** construir Jarvis dentro del fork (se hereda una aplicación Tauri completa
-y el trabajo propio queda diluido) y prescindir de Gentle Dot (se rehace el agente).
+**Cambio:** la primera versión de esta decisión usaba el fork `Jaimewww/gentle-dot`,
+rama `feat/linux-computer-use`. Dejó de ser una dependencia; queda como referencia
+para D20.
+
+**Descartado:** construir Jarvis dentro del fork o recompilar la aplicación completa
+(el soporte de Windows del proyecto original supera las 2000 líneas y hay que
+mantenerlo contra sus cambios) y prescindir de Gentle Dot (se rehace el agente).
+
+**Sin verificar:** el arranque del daemon como servicio se leyó en el código
+(`packages/daemon/src/cli.ts`, Node 24 o superior); no se probó.
 
 ## D2 — El backend es la pasarela de voz
 
@@ -56,10 +68,10 @@ agente mediante el adaptador de D1, espera la respuesta, la sintetiza y devuelve
 
 **Por qué:** hoy el backend (`:8000`) y el daemon (`:4317`) no se comunican, y nadie
 entrega al agente el texto transcrito. Poner la unión en el backend la deja en este
-repositorio, sin depender de cambios en el fork.
+repositorio, sin depender de cambios en Gentle Dot.
 
 **Descartado:** que el daemon sea el centro y reciba el audio o reenvíe eventos del
-ESP32, porque obliga a modificar el fork.
+ESP32, porque obliga a modificar Gentle Dot.
 
 ## D3 — Firmware con ESP-IDF
 
@@ -138,22 +150,22 @@ del catálogo. Se abrió al agente para poder usar aplicaciones aún no probadas
 - Las confirmaciones del control de la PC son ventanas en pantalla, no mensajes del
   protocolo. El backend no puede negarlas ni anunciarlas; alguien debe responderlas.
 - El permiso vence a los 30 minutos, la misma duración que la prueba de estabilidad.
-- El proyecto original no tiene soporte de Linux. Las acciones y la lista de bloqueo
-  para Arch están solo en la rama del fork, que **no se revisó**.
+- El proyecto original no tiene control de la PC en Linux, así que en la demostración
+  estos resguardos no intervienen: el agente no ve la pantalla ni maneja el teclado o
+  el cursor (D20). Sigue pudiendo ejecutar órdenes del sistema.
 
 **Implementación:** el catálogo se adapta a la plataforma de D12. La base son
 `playerctl` (multimedia), `wpctl` (volumen) y `gtk-launch` (aplicaciones), que no
-dependen del compositor. El control por teclas del fork (`grim`, `wtype`) queda como
-extra y requiere instalar `wtype`.
+dependen del compositor.
 
-**Pendiente:** la lista concreta de acciones y comprobar `grim` y `wtype` en niri.
+**Pendiente:** la lista concreta de acciones.
 
 ## D9 — La TUI se conecta también al backend
 
 Además de su conexión al daemon, la TUI abre el WebSocket del backend
 (`/api/v1/ws`) para mostrar el estado del ESP32 y las acciones.
 
-**Por qué:** evita esperar a que el fork reenvíe el evento `esp32_state`, que su
+**Por qué:** evita esperar a que el daemon reenvíe el evento `esp32_state`, que su
 protocolo v1 no incluye.
 
 ## D10 — Primer hito: un turno completo desde la PC
@@ -301,11 +313,50 @@ unidades duplicadas.
   arranque en lugar de valores por defecto.
 - **Un solo comando** para iniciar el backend y el daemon.
 
+## D20 — Control de la PC por el agente: al final
+
+Capturas de pantalla, teclado y cursor manejados por el agente quedan fuera de la
+demostración. Se intentan al final, solo si el turno completo ya funciona.
+
+**Cómo se haría:** un programa propio arranca el daemon y ocupa el lugar de la
+aplicación de escritorio para registrarle un control de la PC para Linux. El daemon
+solo acepta ese registro por el canal privado de quien lo arranca; por el WebSocket lo
+rechaza a propósito. Es un añadido sobre el servicio de D1, no un reemplazo.
+
+**Riesgos:**
+
+- El mecanismo esquiva una protección deliberada del proyecto original y puede
+  romperse si este la cambia. No se probó.
+- El daemon confía en que el control de la PC se protege solo. El permiso, la lista de
+  bloqueo y las confirmaciones habría que escribirlos.
+- Mover el cursor en Wayland requiere un dispositivo virtual con permisos propios.
+
+**Por qué al final:** el catálogo y el camino rápido no lo necesitan, y es la parte
+de mayor costo y menor aporte a un asistente de voz.
+
+## D21 — Reparto del trabajo
+
+Programan dos personas, con los roles S1 y S2 del [plan](planificacion.md). Cada
+carpeta tiene un responsable, y las fronteras son los
+[contratos](contratos.md).
+
+| Pista | Rol | Incluye | Carpeta |
+|---|---|---|---|
+| Voz | S1 | STT, TTS, motor de la charla, camino rápido y catálogo, registro de turnos | `backend/` |
+| Agente y pantalla | S2 | TUI y su conexión al backend, servicio del daemon, adaptador de tareas largas | `host/` |
+| Dispositivo | Por asignar cuando llegue la placa | Activación, captura, reproducción, luces, máquina de estados | `firmware/` |
+
+- **Ramas y solicitudes de fusión** en lugar de enviar directo a `main`.
+- **Un cambio de contrato va primero al documento**, en su propia solicitud.
+- **Nadie espera a nadie:** el simulador de dispositivo y las etapas falsas permiten
+  avanzar sin la placa y sin el agente.
+
+El adaptador de tareas largas vive en `backend/` pero lo escribe la pista de agente,
+contra la interfaz de agente del contrato C3.
+
 ## Decisiones abiertas
 
-- **Rama del fork** (D8): qué acciones y qué lista de bloqueo tiene en Arch.
 - **Motor de la charla de voz** (D14).
-- **Renovación del permiso de 30 minutos** durante la demostración (D8).
 - **GPU del segundo equipo** (D12), que condiciona el tamaño del modelo de STT.
 - **Modelos concretos** de STT y TTS (D4) y modelo del agente.
 - **Lista concreta de acciones** (D8).
