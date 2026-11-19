@@ -15,7 +15,12 @@ does not vendor.
   in [docs/contratos.md](../docs/contratos.md)): ESP32 state and voice-turn events,
   reconnect with backoff, unknown event types and fields ignored.
 * `jarvis/tui.py` — Textual app: conversation, agent-state chip, ESP32 line, voice
-  turns, action log, input, connection indicators.
+  turns, action log, input, connection indicators. Two views in one window (F2).
+* `jarvis/model.py` — what both views show, without any UI toolkit: devices, links,
+  agent, voice turns with their stages, typed conversation, PC activity, and the
+  derived figures (stage medians, lane targets, over-target, lane verdicts).
+* `jarvis/devview.py` — the developer view (approved mockup
+  `design/tui-developer/06-pipeline-refined.html`).
 * `requirements.txt` — `websockets` and `textual`, both `>=`.
 * `requirements-dev.txt` and `tests/` — pytest suite against in-process fake
   WebSocket servers; no daemon, backend, or board needed.
@@ -73,7 +78,19 @@ python tools/sim_device.py --url http://127.0.0.1:8000
 ```
 
 Keys: **Enter** sends the text in the input box, **Ctrl+A** stops the answer that is
-running, **Ctrl+Q** quits.
+running, **Ctrl+Q** quits, **F2** switches between the user view and the developer
+view.
+
+The window opens in the user view. The developer view shows the device and both
+connections, the live turn as a four-stage pipeline (stt, route, agent, tts) with the
+median of each stage, the finished voice turns newest first with a bar against the
+lane target (fast 1.5 s, chat 4.0 s, task none) and the amount over it, a summary per
+lane, the typed conversation, the agent and the PC actions. Colour only marks state:
+live, within, over target, failed. Both views are fed by every event, so switching
+always shows current data. Two gaps of contract C2 show on screen: an `action` has no
+`turn_id`, so it is listed under the open turn of the same device; the lane of a live
+turn is only known when it ends (`lane —` until then). The backend does not emit
+`turn_stage` or `turn_error` yet, so stage figures stay empty against it today.
 
 Without a daemon the client retries with backoff (500 ms, 1 s, 2 s, 5 s) with no
 traceback and no freeze: the status line shows `LINK DISCONNECTED` and the detail line

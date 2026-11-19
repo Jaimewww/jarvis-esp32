@@ -28,7 +28,7 @@ from rich.markup import escape
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.widgets import Footer, Input, RichLog, Static
+from textual.widgets import ContentSwitcher, Footer, Input, RichLog, Static
 
 from .backend import (
     DEFAULT_BACKEND_TOKEN,
@@ -37,7 +37,6 @@ from .backend import (
     ActionEvent,
     BackendClient,
     BackendEvent,
-    Device,
     DeviceEvent,
     SnapshotEvent,
     TurnDone,
@@ -67,6 +66,8 @@ from .client import (
     ToastEvent,
     UserMessageEvent,
 )
+from .devview import DeveloperFooter, DeveloperView
+from .model import HostModel
 
 logger = logging.getLogger(__name__)
 
@@ -160,11 +161,32 @@ class JarvisApp(App[None]):
     #prompt {
         height: 3;
     }
+    #views {
+        height: 1fr;
+    }
+    #developer-footer {
+        display: none;
+    }
+    Screen.-developer #prompt {
+        height: 1;
+        border: none;
+        padding: 0 2;
+        background: #251d2b;
+    }
+    Screen.-developer #developer-footer {
+        display: block;
+    }
+    Screen.-developer Footer {
+        display: none;
+    }
     """
     BINDINGS = (
         Binding("ctrl+a", "abort_run", "Abort", priority=True),
         Binding("ctrl+q", "quit", "Quit"),
+        Binding("f2", "toggle_view", "Developer view"),
     )
+    USER_VIEW = "user"
+    DEVELOPER_VIEW = "developer"
 
     def __init__(
         self,
@@ -177,6 +199,9 @@ class JarvisApp(App[None]):
         backend_token: str | None = None,
     ) -> None:
         super().__init__()
+        # What both views show; every event goes through it.
+        self._host = HostModel()
+        self._developer = DeveloperView(self._host, id=self.DEVELOPER_VIEW)
         self._backend = BackendClient(
             on_event=self._on_backend_event,
             on_status=self._on_backend_status,
@@ -184,8 +209,6 @@ class JarvisApp(App[None]):
             token=backend_token,
         )
         self._backend_task: asyncio.Task[None] | None = None
-        self._backend_status = ConnectionStatus.DISCONNECTED
-        self._devices: dict[str, Device] = {}
         self._closing = False
         self._client = JarvisClient(
             on_event=self._on_event,
@@ -196,10 +219,6 @@ class JarvisApp(App[None]):
             token_path=token_path,
         )
         self._client_task: asyncio.Task[None] | None = None
-        self._agent_state = "starting"
-        self._model: str | None = None
-        self._conversation_title: str | None = None
-        self._queue_total = 0
         self._last_detail = ""
         self._message_widgets: dict[str, Static] = {}
         self._message_bodies: dict[str, str] = {}
@@ -207,19 +226,32 @@ class JarvisApp(App[None]):
     # Layout
 
     def compose(self) -> ComposeResult:
-        yield Static("", id="status")
-        yield Static("", id="device")
-        yield Static("", id="detail")
-        with Horizontal(id="body"):
-            yield VerticalScroll(id="conversation")
-            with Vertical(id="side"):
-                yield RichLog(id="turns", highlight=False, markup=True, wrap=True)
-                yield RichLog(id="actions", highlight=False, markup=True, wrap=True)
+        # Two views in one window (F2); the input, keys and connections stay shared.
+        with ContentSwitcher(id="views", initial=self.USER_VIEW):
+            with Vertical(id=self.USER_VIEW):
+                yield Static("", id="status")
+                yield Static("", id="device")
+                yield Static("", id="detail")
+                with Horizontal(id="body"):
+                    yield VerticalScroll(id="conversation")
+                    with Vertical(id="side"):
+                        yield RichLog(id="turns", highlight=False, markup=True, wrap=True)
+                        yield RichLog(id="actions", highlight=False, markup=True, wrap=True)
+            yield self._developer
         yield Input(
             placeholder="Message Jarvis — Enter sends, Ctrl+A stops the answer",
             id="prompt",
         )
+        yield DeveloperFooter(id="developer-footer")
         yield Footer()
+
+    def action_toggle_view(self) -> None:
+        switcher = self.query_one("#views", ContentSwitcher)
+        developer = switcher.current != self.DEVELOPER_VIEW
+        switcher.current = self.DEVELOPER_VIEW if developer else self.USER_VIEW
+        self.screen.set_class(developer, "-developer")
+        self._developer.refresh()
+        self.query_one("#prompt", Input).focus()
 
     def on_mount(self) -> None:
         self._render_status()
@@ -263,6 +295,8 @@ class JarvisApp(App[None]):
     def _on_status(self, status: ConnectionStatus, detail: str) -> None:
         if self._closing:
             return
+        self._host.set_daemon_status(status)
+        self._developer.refresh()
         self._render_status()
         if status is ConnectionStatus.CONNECTED:
             self._set_detail(f"connected to {self._client.url}")
@@ -282,8 +316,9 @@ class JarvisApp(App[None]):
         self.query_one("#detail", Static).update(escape(shortened))
 
     def _render_status(self) -> None:
-        label = STATE_LABELS.get(self._agent_state, self._agent_state.upper() or "UNKNOWN")
-        state_style = STATE_STYLES.get(self._agent_state, "white")
+        agent_state = self._host.agent_state
+        label = STATE_LABELS.get(agent_state, agent_state.upper() or "UNKNOWN")
+        state_style = STATE_STYLES.get(agent_state, "white")
         link_label, link_style = LINK_LABELS.get(
             self._client.status, (self._client.status.value.upper(), "white")
         )
@@ -291,12 +326,12 @@ class JarvisApp(App[None]):
             f"[{state_style}]AGENT {label}[/]",
             f"[{link_style}]LINK {link_label}[/]",
         ]
-        if self._model:
-            parts.append(f"[dim]{escape(self._model)}[/]")
-        if self._conversation_title:
-            parts.append(f"[dim]{escape(self._conversation_title)}[/]")
-        if self._queue_total:
-            parts.append(f"[yellow]{self._queue_total} queued[/]")
+        if self._host.agent_model:
+            parts.append(f"[dim]{escape(self._host.agent_model)}[/]")
+        if self._host.chat_title:
+            parts.append(f"[dim]{escape(self._host.chat_title)}[/]")
+        if self._host.queue_total:
+            parts.append(f"[yellow]{self._host.queue_total} queued[/]")
         self.query_one("#status", Static).update(" │ ".join(parts))
 
     # Backend: ESP32 state and voice turns
@@ -304,7 +339,9 @@ class JarvisApp(App[None]):
     def _on_backend_status(self, status: ConnectionStatus, detail: str) -> None:
         if self._closing:
             return
-        previous, self._backend_status = self._backend_status, status
+        previous = self._host.backend_status
+        self._host.set_backend_status(status)
+        self._developer.refresh()
         self._render_device()
         # Every retry changes the detail; only a change of state is worth a line.
         if status is previous or status is ConnectionStatus.CONNECTING:
@@ -316,9 +353,9 @@ class JarvisApp(App[None]):
 
     def _render_device(self) -> None:
         parts: list[str] = []
-        if not self._devices:
+        if not self._host.devices:
             parts.append("[dim]ESP32 no device yet[/]")
-        for device in self._devices.values():
+        for device in self._host.devices.values():
             name = escape(device.device_id)
             if not device.online:
                 parts.append(f"[red]ESP32 {name} OFFLINE[/]")
@@ -328,19 +365,17 @@ class JarvisApp(App[None]):
                 parts.append(f"[dim]{device.rssi} dBm[/]")
             if device.ip:
                 parts.append(f"[dim]{escape(device.ip)}[/]")
+        backend_status = self._host.backend_status
         link_label, link_style = LINK_LABELS.get(
-            self._backend_status, (self._backend_status.value.upper(), "white")
+            backend_status, (backend_status.value.upper(), "white")
         )
         parts.append(f"[{link_style}]BACKEND {link_label}[/]")
         self.query_one("#device", Static).update(" │ ".join(parts))
 
     def _on_backend_event(self, event: BackendEvent) -> None:
-        if isinstance(event, SnapshotEvent):
-            self._devices = {device.device_id: device for device in event.devices}
-            self._render_device()
-            return
-        if isinstance(event, DeviceEvent):
-            self._devices[event.device.device_id] = event.device
+        self._host.apply_backend(event)
+        self._developer.refresh()
+        if isinstance(event, (SnapshotEvent, DeviceEvent)):
             self._render_device()
             return
         if isinstance(event, ActionEvent):
@@ -399,12 +434,9 @@ class JarvisApp(App[None]):
     # Daemon events
 
     def _on_event(self, event: Event) -> None:
-        if isinstance(event, Ready):
-            self._agent_state = event.agent_state
-            self._model = event.model
-            self._render_status()
-        elif isinstance(event, AgentStateEvent):
-            self._agent_state = event.state
+        self._host.apply_daemon(event)
+        self._developer.refresh()
+        if isinstance(event, (Ready, AgentStateEvent)):
             self._render_status()
         elif isinstance(event, UserMessageEvent):
             self._show_message(event.message_id, "user", event.text)
@@ -446,15 +478,9 @@ class JarvisApp(App[None]):
         elif isinstance(event, ConversationsEvent):
             self._show_conversations(event)
         elif isinstance(event, QueueEvent):
-            self._queue_total = len(event.steering) + len(event.follow_up)
             self._render_status()
 
     def _show_conversations(self, event: ConversationsEvent) -> None:
-        if event.active_id is not None:
-            for conversation in event.conversations:
-                if conversation.id == event.active_id:
-                    self._conversation_title = conversation.title
-                    break
         self._render_status()
         if len(event.conversations) > 1:
             self._log("info", f"{len(event.conversations)} conversations exist")
