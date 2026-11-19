@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # backend/.venv is pinned to Python 3.14 by pyrightconfig.json (extraPaths).
+  PYTHON_VERSION: "3.14"
+
+jobs:
+  backend-tests:
+    name: backend · pytest
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+      - name: Install dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Run tests
+        run: python -m pytest tests -q
+
+  host-tests:
+    name: host · pytest
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: host
+    steps:
+      - uses: actions/checkout@v5
+      # host/ gains its test suite and requirements-dev.txt in a later pull
+      # request; until that file exists every step below is skipped.
+      - uses: actions/setup-python@v6
+        if: hashFiles('host/requirements-dev.txt') != ''
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: host/requirements*.txt
+      - name: Install dependencies
+        if: hashFiles('host/requirements-dev.txt') != ''
+        run: python -m pip install -r requirements-dev.txt
+      - name: Run tests
+        if: hashFiles('host/requirements-dev.txt') != ''
+        run: python -m pytest tests -q
+
+  typecheck:
+    name: pyright
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+      - name: Create backend/.venv (pyrightconfig.json resolves imports from it)
+        run: |
+          python -m venv backend/.venv
+          backend/.venv/bin/python -m pip install -r backend/requirements-dev.txt
+      - name: Install pyright
+        run: python -m pip install pyright==1.1.414
+      - name: Type-check
+        run: pyright
