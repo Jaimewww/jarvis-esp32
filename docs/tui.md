@@ -70,9 +70,14 @@ anfitrión como evento `esp32_state`.
 
 Desde el 2026-11-18 ([decisión D9](decisiones.md#d9--la-tui-se-conecta-también-al-backend)),
 la TUI recibe ese evento abriendo ella misma el WebSocket del backend, en lugar de
-esperar a que el daemon lo reenvíe. **Esa conexión aún no está implementada.**
+esperar a que el daemon lo reenvíe. Esa conexión está implementada en
+`host/jarvis/backend.py` (contrato C2 de [contratos](contratos.md)): es de solo
+lectura, se reconecta sola y no depende de que el daemon esté arriba. La TUI muestra
+hoy una línea `ESP32 <id> <ESTADO> │ <rssi> dBm │ <ip> │ BACKEND <enlace>` y un panel
+con los turnos de voz (`turn_started`, `turn_stage`, `action`, `turn_done`,
+`turn_error`). Se prueba sin hardware con `tools/sim_device.py`.
 
-Presentación propuesta en el encabezado:
+Presentación propuesta en el encabezado (pendiente, tarea P2):
 
 - `ESP32 ● idle` — online, en reposo; coincide con el color del anillo WS2812.
 - `ESP32 ● recording` (y el resto del ciclo) — sincronizado con el anillo.

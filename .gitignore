@@ -3,6 +3,7 @@ firmware/sdkconfig*
 host/**/__pycache__/
 host/.venv/
 host/dist/
+host/.pytest_cache/
 cad/backup/
 *.b#1
 *.s#1
