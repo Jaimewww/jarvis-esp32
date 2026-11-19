@@ -9,7 +9,9 @@ síntesis de voz y acciones sobre la propia PC. El anillo WS2812 muestra el esta
 Hay dos piezas de software iniciadas y ninguna de hardware:
 
 - `backend/`: contrato de transporte v0 (latido, conversación y WebSocket). La
-  transcripción, el agente y la síntesis todavía devuelven respuestas de prueba.
+  transcripción, el agente y la síntesis todavía devuelven respuestas de prueba. El
+  adaptador de Gentle Dot para tareas largas (`backend/app/agents/gentle_dot.py`)
+  existe y está probado contra un daemon falso; todavía no está conectado al turno.
 - `host/`: TUI cliente del daemon de Gentle Dot. Aún no se conecta al backend.
 
 No hay firmware ni modelos CAD. Las capacidades siguientes son objetivos, no funciones
