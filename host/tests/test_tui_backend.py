@@ -1,8 +1,14 @@
-"""The window shows the ESP32 state and the voice turns the backend reports."""
+"""The window shows the ESP32 state and the voice turns the backend reports.
+
+The user view says it in plain words; the developer detail (state names, dBm, address,
+turn id, lane, time) is on the developer view, one f2 away.
+"""
 
 from __future__ import annotations
 
 import asyncio
+import html
+import re
 from pathlib import Path
 from typing import Any
 
@@ -52,13 +58,23 @@ def _screen_text(app: JarvisApp) -> str:
     return app.export_screenshot().replace("&#160;", " ")
 
 
+def _plain(app: JarvisApp) -> str:
+    # The SVG splits a row at every change of style and drops runs of spaces between
+    # them; without tags and spaces a phrase can still be found.
+    return re.sub(r"\s+", "", html.unescape(re.sub(r"<[^>]+>", "", app.export_screenshot())))
+
+
+def _has(screen: str, phrase: str) -> bool:
+    return re.sub(r"\s+", "", phrase) in screen
+
+
 def test_shows_device_state_and_turns_from_the_backend(tmp_path: Path, caplog: Any) -> None:
     async def handler(socket: Any) -> None:
         for item in FRAMES:
             await socket.send(item)
         await socket.wait_closed()
 
-    async def scenario() -> str:
+    async def scenario() -> tuple[str, str]:
         async with fake_server(handler) as port:
             app = JarvisApp(
                 # Nothing listens here and the token file is missing: the daemon side
@@ -67,22 +83,34 @@ def test_shows_device_state_and_turns_from_the_backend(tmp_path: Path, caplog: A
                 token_path=tmp_path / "missing-token",
                 backend_url=f"ws://127.0.0.1:{port}/api/v1/ws",
                 backend_token="t",
+                animate=False,
             )
             async with app.run_test(size=(140, 40)) as pilot:
                 await wait_for(lambda: "Entendido" in _screen_text(app), timeout=5.0)
                 await pilot.pause()
-                return _screen_text(app)
+                user = _plain(app)
+                await pilot.press("f2")
+                await pilot.pause()
+                return user, _plain(app)
 
-    screen = asyncio.run(scenario())
+    user, developer = asyncio.run(scenario())
 
-    assert "ESP32 esp32-s3 LISTENING" in screen
-    assert "-52 dBm" in screen
-    assert "192.168.1.40" in screen
-    assert "BACKEND CONNECTED" in screen
-    assert "turn abc12345 started" in screen
-    assert "media_key play_pause" in screen
-    assert "chat" in screen and "812 ms" in screen
-    assert "Entendido" in screen
+    # User view: the device in plain words, the exchange and what it did on the PC.
+    assert _has(user, "Voice device esp32-s3")
+    assert _has(user, "Listening · talk any time")
+    assert _has(user, "connected to this PC") and _has(user, "good signal")
+    assert _has(user, "said ◎") and _has(user, "you spoke")  # C2 sent no transcript
+    assert _has(user, "◆ Entendido")
+    assert _has(user, "on your PC ✓ played or paused the music")
+    for detail in ("LISTENING", "-52dBm", "192.168.1.40", "abc12345", "media_key", "812", "0.8s"):
+        assert detail not in user, detail
+    # Developer view: the same events with their detail.
+    assert _has(developer, "esp32-s3 ◐ LISTENING")
+    assert _has(developer, "-52 dBm") and "192.168.1.40" in developer
+    assert _has(developer, "● backend connected")
+    assert "abc12345" in developer
+    assert _has(developer, "→ media_key play_pause Entendido")
+    assert _has(developer, "chat") and _has(developer, "0.8 s")
     # Closing the window must not report a status to widgets that are already gone.
     assert [record.getMessage() for record in caplog.records if record.levelname == "ERROR"] == []
 

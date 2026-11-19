@@ -126,6 +126,19 @@ class Message:
     role: str
     text: str
     streaming: bool = False
+    #: When the host first saw it; ``None`` for history, which carries no time.
+    at: float | None = None
+    error: str | None = None
+    stopped: bool = False
+
+    @property
+    def answer(self) -> str:
+        """The text without the ``[error: …]`` line the developer view shows."""
+
+        if self.error is None:
+            return self.text
+        suffix = f"[error: {self.error}]"
+        return self.text.removesuffix(suffix).removesuffix("\n")
 
 
 @dataclass(slots=True, frozen=True)
@@ -167,6 +180,8 @@ class HostModel:
         self.devices: dict[str, Device] = {}
         self.backend_status = ConnectionStatus.DISCONNECTED
         self.daemon_status = ConnectionStatus.DISCONNECTED
+        #: Why the daemon link is down, as the client words it for a person.
+        self.daemon_detail = ""
         self.agent_state = "starting"
         self.agent_model: str | None = None
         self.chat_title: str | None = None
@@ -178,14 +193,17 @@ class HostModel:
         self.messages: list[Message] = []
         self._messages_by_id: dict[str, Message] = {}
         self._activities: dict[str, Activity] = {}
+        #: Activity ids per message, in arrival order (the user view nests them).
+        self._activity_ids: dict[str, list[str]] = {}
 
     # Connections
 
     def set_backend_status(self, status: ConnectionStatus) -> None:
         self.backend_status = status
 
-    def set_daemon_status(self, status: ConnectionStatus) -> None:
+    def set_daemon_status(self, status: ConnectionStatus, detail: str = "") -> None:
         self.daemon_status = status
+        self.daemon_detail = "" if status is ConnectionStatus.CONNECTED else detail
 
     # Backend events
 
@@ -345,26 +363,28 @@ class HostModel:
         elif isinstance(event, AgentStateEvent):
             self.agent_state = event.state
         elif isinstance(event, UserMessageEvent):
-            self._message(event.message_id, "user", event.text, streaming=False)
+            self._message(event.message_id, "user", event.text, streaming=False, at=self._clock())
         elif isinstance(event, MessageDeltaEvent):
             known = self._messages_by_id.get(event.message_id)
-            body = (known.text if known else "") + event.delta
-            self._message(event.message_id, "assistant", body, streaming=True)
+            body = (known.answer if known else "") + event.delta
+            self._message(event.message_id, "assistant", body, streaming=True, at=self._clock())
         elif isinstance(event, MessageDoneEvent):
             known = self._messages_by_id.get(event.message_id)
-            body = event.text or (known.text if known else "")
+            body = event.text or (known.answer if known else "")
             if event.error:
                 body = f"{body}\n[error: {event.error}]" if body else f"[error: {event.error}]"
-            self._message(event.message_id, "assistant", body, streaming=False)
+            message = self._message(event.message_id, "assistant", body, streaming=False, at=self._clock())
+            message.error = event.error
+            message.stopped = event.stopped
         elif isinstance(event, ActivityEvent):
-            self._activity(event.activity)
+            self._activity(event.activity, event.message_id)
         elif isinstance(event, HistoryEvent):
             self.messages.clear()
             self._messages_by_id.clear()
             for message in event.messages:
                 self._message(message.id, message.role, message.text, streaming=False)
                 for activity in message.activities:
-                    self._activity(activity)
+                    self._activity(activity, message.id)
         elif isinstance(event, ConversationsEvent):
             if event.active_id is not None:
                 for conversation in event.conversations:
@@ -380,18 +400,31 @@ class HostModel:
 
         return list(reversed(self._activities.values()))
 
-    def _message(self, message_id: str, role: str, text: str, *, streaming: bool) -> None:
+    def activities_of(self, message_id: str) -> list[Activity]:
+        """The PC activity of one message, oldest first."""
+
+        ids = self._activity_ids.get(message_id, [])
+        return [self._activities[i] for i in ids if i in self._activities]
+
+    def _message(
+        self, message_id: str, role: str, text: str, *, streaming: bool, at: float | None = None
+    ) -> Message:
         message = self._messages_by_id.get(message_id)
         if message is None:
-            message = Message(message_id, role, text, streaming)
+            message = Message(message_id, role, text, streaming, at)
             self.messages.append(message)
             self._messages_by_id[message_id] = message
-            return
+            return message
         message.text = text
         message.streaming = streaming
+        return message
 
-    def _activity(self, activity: Activity) -> None:
+    def _activity(self, activity: Activity, message_id: str = "") -> None:
         # An update keeps the place of the activity it updates.
         self._activities[activity.id] = activity
+        if message_id:
+            ids = self._activity_ids.setdefault(message_id, [])
+            if activity.id not in ids:
+                ids.append(activity.id)
         while len(self._activities) > MAX_ACTIVITIES:
             self._activities.pop(next(iter(self._activities)))

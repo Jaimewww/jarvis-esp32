@@ -2,14 +2,18 @@
 # without it cannot resolve the import; that is not a defect in this module.
 # pyright: reportMissingImports=false
 
-"""Developer view: the approved mockup ``design/tui-developer/06-pipeline-refined.html``.
+"""Developer view: the approved mockup ``design/tui-developer/06-pipeline-refined.html``,
+repainted with the unified conventions of the theme artboards (``design/tui-theme``).
 
 Every row is laid out on one shared column grid, as in the mockup generator
 (``design/tui-developer/.preview/opt6.py``): glyph, time or name, turn id, heard text,
 then lane, bar against the lane target, total, over-by and four stage columns anchored
-to the right edge. Colour marks state only: live (accent), within (green), over
-target (yellow) and failed (red). Everything comes from ``HostModel``; with no data
-each region shows an empty state instead of demo figures.
+to the right edge. The device status and the live-turn pipeline share one rounded card
+(the device in its top border, a gradient pulse under the live stage), the agent and
+its PC actions another; open sections have a sentence-case title followed by a rule.
+Colours come only from the active theme (``jarvis.theme``) and mark state only: live,
+within, over target and failed; the gradient fills the bars. Everything comes from
+``HostModel``; with no data each region shows an empty state instead of demo figures.
 
 At 140 columns the grid is the mockup's. Narrower windows drop the stage columns and
 then the bars; fewer rows shrink the turn table first.
@@ -23,35 +27,17 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Final
 
-from rich.style import Style
 from rich.text import Text
 from textual.widget import Widget
 
 from .client import ConnectionStatus
 from .model import STAGES, HostModel, StageState, Turn
-
-# Palette of the mockup (design/tui-developer/.preview/lib.py), AA contrast checked there.
-PALETTE: Final = {
-    "bc": "#19141d",  # canvas
-    "bs": "#251d2b",  # surface
-    "br": "#201926",  # rail
-    "bw": "#2b2320",  # over-target tint
-    "be": "#331d27",  # failed tint
-    "bd": "#4a3d54",  # border lines
-    "t1": "#f3ebf5",
-    "t2": "#cdc0d3",
-    "mu": "#a898b0",
-    "ac": "#f4a873",
-    "ok": "#97d4a4",
-    "wa": "#ecd27e",
-    "er": "#f7889a",
-}
-BACKGROUNDS: Final = frozenset({"bc", "bs", "br", "bw", "be"})
+from .theme import DEFAULT_DARK, THEMES, Theme, gradient_class, to_text
 
 Seg = tuple[str, str]
 Item = tuple[int, list[Seg]]
 
-LIVE: Final[Seg] = ("◐", "ac")
+LIVE: Final[Seg] = ("◐", "lv")
 OVER: Final[Seg] = ("▲", "wa b")
 FAIL: Final[Seg] = ("✗", "er b")
 OK: Final[Seg] = ("✓", "ok")
@@ -72,6 +58,7 @@ LINKS: Final = {
     ConnectionStatus.PROTOCOL_MISMATCH: (FAIL, "bad protocol"),
 }
 QUIET_STATES: Final = frozenset({"starting", "restarting", "unknown"})
+JARVIS: Final[Seg] = ("◆", "ac")
 LEGEND: Final = (
     (("●", "ok"), "connected"),
     (LIVE, "live"),
@@ -81,7 +68,6 @@ LEGEND: Final = (
     (FAIL, "failed"),
     (("┊", "t2"), "lane target"),
 )
-KEYS: Final = (("enter", "send"), ("ctrl+a", "stop"), ("ctrl+q", "quit"), ("f2", "user view"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,21 +173,75 @@ def header(title: str, meta: str = "", extra: Sequence[list[Seg]] = ()) -> list[
     return segs
 
 
-def _style(cls: str) -> Style:
-    parts = cls.split()
-    fg = next((PALETTE[p] for p in parts if p in PALETTE and p not in BACKGROUNDS), None)
-    bg = next((PALETTE[p] for p in parts if p in BACKGROUNDS), None)
-    return Style(color=fg, bgcolor=bg, bold="b" in parts, italic="i" in parts)
+def cells(row: Sequence[Seg]) -> list[Seg]:
+    """One ``(char, classes)`` pair per cell."""
+
+    return [(ch, cls) for text, cls in row for ch in text]
 
 
-def to_text(rows: Sequence[Sequence[Seg]]) -> Text:
-    text = Text(no_wrap=True, overflow="crop", end="")
-    for index, row in enumerate(rows):
-        if index:
-            text.append("\n")
-        for chunk, cls in row:
-            text.append(chunk, _style(cls))
-    return text
+def merge(row: Sequence[Seg]) -> list[Seg]:
+    out: list[Seg] = []
+    for text, cls in row:
+        if out and out[-1][1] == cls:
+            out[-1] = (out[-1][0] + text, cls)
+        else:
+            out.append((text, cls))
+    return out
+
+
+def sides(row: Sequence[Seg], x0: int, x1: int) -> list[Seg]:
+    """``row`` with the card's side lines at absolute ``x0`` and ``x1``."""
+
+    out = cells(row)
+    for x in (x0, x1):
+        if 0 <= x < len(out):
+            bg = " ".join(c for c in out[x][1].split() if c in ("bc", "bs", "bw", "be"))
+            out[x] = ("│", f"bd {bg}".strip())
+    return merge(out)
+
+
+def rule_to(segs: list[Seg], x_start: int, x_end: int) -> list[Seg]:
+    """``segs`` (starting at ``x_start``) followed by a space and a rule up to ``x_end``."""
+
+    n = x_end - (x_start + width(segs) + 1) + 1
+    return segs + [S(" "), S("─" * n, "bd")] if n > 0 else segs
+
+
+def card_top(
+    x0: int, x1: int, title: list[Seg], inline: Sequence[Item] = (), right: list[Seg] | None = None
+) -> list[Seg]:
+    """``╭─ Title  inline … ── right ─╮`` from ``x0`` to ``x1``, on the canvas."""
+
+    right_part = ([S(" ")] + right + [S(" "), S("─╮", "bd")]) if right else [S("╮", "bd")]
+    segs: list[Seg] = [S("╭─", "bd"), S(" ")] + title
+    cur = x0 + width(segs)
+    stop = x1 + 1 - width(right_part)
+    if right and cur + 2 > stop:  # too narrow for the right-hand meta
+        right_part, stop = [S("╮", "bd")], x1
+    for x, part in inline:
+        x = max(x, cur + 2)
+        if x + width(part) + 2 > stop:
+            break
+        segs += [S(" " * (x - cur))] + part
+        cur = x + width(part)
+    if stop - cur >= 2:
+        segs += [S(" "), S("─" * (stop - cur - 1), "bd")]
+    else:
+        segs = _cut(segs, stop - x0)
+        segs.append(S(" " * (stop - x0 - width(segs))))
+    return [(text, f"{cls} bc".strip()) for text, cls in segs + right_part]
+
+
+def card_bottom(x0: int, x1: int, pulse: tuple[int, int] | None = None) -> list[Seg]:
+    """``╰───╯`` from ``x0`` to ``x1``; ``pulse`` = (absolute x, length) in the gradient."""
+
+    out = [S("╰", "bd")] + [S("─", "bd")] * (x1 - x0 - 1) + [S("╯", "bd")]
+    if pulse is not None:
+        at, n = pulse
+        for j in range(n):
+            if x0 < at + j < x1:
+                out[at + j - x0] = S("━", gradient_class(j, n))
+    return merge([(text, f"{cls} bc") for text, cls in out])
 
 
 # --- Formatting -----------------------------------------------------------------
@@ -232,34 +272,36 @@ def state_glyph(state: str) -> tuple[Seg, str]:
         return FAIL, "er b"
     if state in QUIET_STATES:
         return WAIT, "t2 b"
-    return LIVE, "ac b"
+    return LIVE, "lv b"
 
 
 # --- Regions --------------------------------------------------------------------
 
 
 def device_row(model: HostModel, g: Grid) -> list[Seg]:
+    """The top border of the status card: device, its state and links, both connections."""
+
     items: list[Item] = []
     devices = list(model.devices.values())
     if not devices:
-        items.append((X_G, [S("no device yet", "mu i")]))
+        title = [S("no device yet", "mu i")]
     else:
         device = devices[0]
-        items.append((X_G, [S(device.device_id, "t1 b")]))
+        title = [S(device.device_id, "t2 b")]
         glyph, cls = state_glyph(device.state)
-        items.append((X_ID, [S(glyph[0] + " ", glyph[1]), S(device.state.upper(), cls)]))
+        items.append((X_ID + 1, [S(glyph[0] + " ", glyph[1]), S(device.state.upper(), cls)]))
         if device.rssi is not None:
-            items.append((X_H + 2, [S(f"{device.rssi} dBm", "t2")]))
+            items.append((X_H + 3, [S(f"{device.rssi} dBm", "t2")]))
         if device.ip:
-            items.append((X_H + 12, [S(device.ip, "t2")]))
+            items.append((X_H + 13, [S(device.ip, "t2")]))
         if device.online:
-            items.append((X_H + 28, [S("● ", "ok"), S("online", "t2")]))
+            items.append((X_H + 29, [S("● ", "ok"), S("online", "t2")]))
         else:
-            items.append((X_H + 28, [S("✗ ", "er b"), S("offline", "t2")]))
+            items.append((X_H + 29, [S("✗ ", "er b"), S("offline", "t2")]))
         if len(devices) > 1:
-            items.append((X_H + 38, [S(f"+{len(devices) - 1} more", "mu")]))
+            items.append((X_H + 39, [S(f"+{len(devices) - 1} more", "mu")]))
     right = link("daemon", model.daemon_status) + [S("   ")] + link("backend", model.backend_status)
-    return place(items, g.w, "bs", right=right)
+    return card_top(0, g.w - 1, title, items, right)
 
 
 def live_band(model: HostModel, g: Grid) -> list[list[Seg]]:
@@ -269,20 +311,20 @@ def live_band(model: HostModel, g: Grid) -> list[list[Seg]]:
     arw = 7 if (space - 21) // 4 >= 18 else 3
     boxw = max(8, (space - 3 * arw) // 4)
     xs = [X_H + i * (boxw + arw) for i in range(4)]
-    arrow = "  ──▸  " if arw == 7 else " ▸ "
+    arrow = "  ──→  " if arw == 7 else " → "
 
     def box(i: int, kind: str) -> list[Seg]:
         name = STAGES[i]
         stage = turn.stage(name) if turn else None
         state = stage.state if stage else None
         live = state is StageState.LIVE
-        border = "ac" if live else "bd"
+        border = "lv" if live else "bd"
         if kind == "top":
-            return [S("┌" + "─" * (boxw - 2) + "┐", border)]
+            return [S("╭" + "─" * (boxw - 2) + "╮", border)]
         if kind == "bot":
-            return [S("└" + "─" * (boxw - 2) + "┘", border)]
+            return [S("╰" + "─" * (boxw - 2) + "╯", border)]
         if live:
-            glyph, label, word = LIVE, "ac b", [S(LIVE_WORDS[name], "ac")]
+            glyph, label, word = LIVE, "lv b", [S(LIVE_WORDS[name], "lv")]
         elif state is StageState.DONE and stage is not None:
             ms = "?" if stage.ms is None else f"{stage.ms:.0f}"
             glyph, label, word = OK, "t2", [S(ms, "t1"), S(" ms", "mu")]
@@ -307,7 +349,7 @@ def live_band(model: HostModel, g: Grid) -> list[list[Seg]]:
                 items.append((xs[i], box(i, kind)))
                 if i < 3 and kind == "mid":
                     items.append((xs[i] + boxw, [S(arrow, "mu")]))
-        return place(items, g.w, "bs")
+        return sides(place(items, g.w, "bc"), 0, g.w - 1)
 
     if turn is None:
         mid: list[Item] = [(X_G, [S(*WAIT)]), (X_T, [S("idle", "mu")])]
@@ -316,11 +358,17 @@ def live_band(model: HostModel, g: Grid) -> list[list[Seg]]:
         mid = [(X_G, [S(*LIVE)]), (X_T, [S(clock(turn.started_at), "mu")]),
                (X_ID, [S(turn.turn_id[:8] or "?", "t1 b")])]
         bot = [(X_G, [S("lane — until done", "mu i")])]
+    live = next(
+        (i for i, name in enumerate(STAGES) if turn and turn.stage(name).state is StageState.LIVE), None
+    )
+    pulse = None if live is None else (xs[live], boxw)
     return [
-        row([(X_G, header("LIVE TURN"))], "top"),
+        sides(blank(g.w, "bc"), 0, g.w - 1),
+        row([(X_G, header("Live turn"))], "top"),
         row(mid, "mid"),
         row(bot, "bot"),
         row([(X_G, [S("stage median", "mu")])], "med"),
+        card_bottom(0, g.w - 1, pulse),
     ]
 
 
@@ -328,8 +376,11 @@ def bar(turn: Turn, target: float) -> list[Seg]:
     total = turn.total_s or 0.0
     k = int(total / target * BAR_N + 0.5)
     inside, out_k = min(k, BAR_N), min(BAR_X, max(0, k - BAR_N))
-    fill = "wa" if turn.over_target else "mu"
-    return [S("█" * inside, fill), S("░" * (BAR_N - inside), "bd"), S("┊", "t2"), S("█" * out_k, "wa")]
+    if turn.over_target:
+        filled = [S("█" * inside, "wa")]
+    else:  # within target: the accent gradient, one step per cell of the full bar
+        filled = [S("█", gradient_class(i, BAR_N)) for i in range(inside)]
+    return filled + [S("░" * (BAR_N - inside), "dm"), S("┊", "t2"), S("█" * out_k, "wa")]
 
 
 def stage_cells(turn: Turn) -> list[Seg]:
@@ -351,9 +402,10 @@ def turns_header(model: HostModel, g: Grid) -> list[list[Seg]]:
         [S("▲ ", "wa b"), S(f"{counts.over_target} over target", "wa")],
         [S("✗ ", "er b"), S(f"{counts.failed} failed", "er")],
     ]
+    newest = [S("newest first", "mu")]
+    title = header("Voice turns", f"{counts.finished} finished", extra)
     first = place(
-        [(X_G, header("VOICE TURNS", f"{counts.finished} finished", extra))],
-        g.w, "bc", right=[S("newest first", "mu")],
+        [(X_G, rule_to(title, X_G, g.right - width(newest) - 2))], g.w, "bc", right=newest
     )
     cols: list[Item] = [
         (X_T, [S("time", "mu")]), (X_ID, [S("turn", "mu")]), (X_H, [S("heard", "mu")]),
@@ -411,7 +463,7 @@ def turn_rows(turn: Turn, g: Grid) -> list[list[Seg]]:
             action.action_type + ("" if action.value is None else f" {action.value}")
             for action in turn.actions
         )
-        sub += [S("▸ ", "mu"), S(names, "t2"), S("  ")]
+        sub += [S("→ ", "mu"), S(names, "t2"), S("  ")]
     if turn.reply:
         sub.append(S(turn.reply.replace("\n", " "), "mu"))
     if sub:
@@ -421,7 +473,7 @@ def turn_rows(turn: Turn, g: Grid) -> list[list[Seg]]:
 
 def lanes_rows(model: HostModel, g: Grid) -> list[list[Seg]]:
     w = g.split
-    out = [place([(X_G, header("LANES", "finished turns"))], w, "bc")]
+    out = [place([(X_G, rule_to(header("Lanes", "finished turns"), X_G, w - 3))], w, "bc")]
     for lane in model.lane_stats():
         over = lane.verdict == "over"
         glyph = OVER if over else (OK if lane.verdict == "within" else DOT)
@@ -468,10 +520,12 @@ def conversation_rows(model: HostModel, g: Grid) -> list[list[Seg]]:
             if j == 0:
                 if live:
                     items.append((X_G, [S(*LIVE)]))
-                items.append((X_T, [S(who, "ac b" if live else ("t2 b" if who == "you" else "t1 b"))]))
+                elif who == "jarvis":
+                    items.append((X_G, [S(*JARVIS)]))
+                items.append((X_T, [S(who, "lv b" if live else ("t2 b" if who == "you" else "t1 b"))]))
             body = [S(line, "t2" if who == "you" else "t1")]
             if live and j == len(lines) - 1:
-                body.append(S("▍", "ac"))
+                body.append(S("▍", "lv"))
             items.append((X_ID, body))
             out.append(place(items, w, "bc"))
         if who == "jarvis" and i < len(messages) - 1:
@@ -479,42 +533,50 @@ def conversation_rows(model: HostModel, g: Grid) -> list[list[Seg]]:
     return out
 
 
-def rail_rows(model: HostModel, g: Grid) -> list[list[Seg]]:
+def rail_rows(model: HostModel, g: Grid, n: int) -> list[list[Seg]]:
+    """The agent card, ``n`` rows tall: agent facts, then its PC actions."""
+
     x0, w = g.split, g.w - g.split
     xr = x0 + PAD
     xv = xr + 14
 
+    def inside(items: Sequence[Item], right: list[Seg] | None = None) -> list[Seg]:
+        return sides(place(items, w, "bc", x0, right=right, edge=g.right), 0, w - 1)
+
     def kv(key: str, value: list[Seg]) -> list[Seg]:
-        return place([(xr, [S(key, "mu")]), (xv, value)], w, "br", x0)
+        return inside([(xr, [S(key, "mu")]), (xv, value)])
 
     glyph, cls = state_glyph(model.agent_state)
     state = model.agent_state.replace("_", " ").upper() or "UNKNOWN"
     queue = [S(f"{model.queue_total} queued", "t1")] if model.queue_total else [S("empty", "mu")]
-    rows = [
-        blank(w, "br"),
-        place([(xr, header("AGENT"))], w, "br", x0),
+    body = [
         kv("state", [S(glyph[0] + " ", glyph[1]), S(state, cls)]),
         kv("model", [S(model.agent_model, "t1")] if model.agent_model else [S("—", "mu")]),
         kv("chat", [S(model.chat_title, "t1")] if model.chat_title else [S("—", "mu")]),
         kv("queue", queue),
-        blank(w, "br"),
+        inside([]),
     ]
     activities = model.activities
-    rows.append(place([(xr, header("PC ACTIONS", str(len(activities))))], w, "br", x0))
+    body.append(inside([(xr, header("PC actions", str(len(activities))))]))
     if not activities:
-        rows.append(place([(xr, [S("nothing yet", "mu i")])], w, "br", x0))
+        body.append(inside([(xr, [S("nothing yet", "mu i")])]))
     for activity in activities:
         running = activity.status == "running"
         mark = {"running": LIVE, "done": OK, "failed": FAIL}.get(activity.status, DOT)
         room = g.right + 1 - len(activity.status) - 1 - xv
-        rows.append(
-            place(
+        body.append(
+            inside(
                 [(xr, [S(*mark)]), (xr + 2, [S(clip(activity.kind, 11), "t2")]),
                  (xv, [S(clip(activity.title, room), "t1" if running else "t2")])],
-                w, "br", x0, right=[S(activity.status, "ac" if running else "mu")], edge=g.right,
+                right=[S(activity.status, "lv" if running else "mu")],
             )
         )
-    return rows
+    top = [blank(w, "bc"), card_top(0, w - 1, [S("Agent", "t2 b")])]
+    if n < 3:
+        return (top + body)[:n]
+    rows = top + body[: n - 3]
+    rows += [inside([])] * (n - 1 - len(rows))
+    return rows + [card_bottom(0, w - 1)]
 
 
 def render_rows(model: HostModel, w: int, h: int) -> list[list[Seg]]:
@@ -523,9 +585,9 @@ def render_rows(model: HostModel, w: int, h: int) -> list[list[Seg]]:
     if w <= 0 or h <= 0:
         return []
     g = grid(w)
-    rows: list[list[Seg]] = [device_row(model, g), blank(w, "bs")]
+    rows: list[list[Seg]] = [device_row(model, g)]
     rows += live_band(model, g)
-    rows += [blank(w, "bs"), blank(w, "bc")]
+    rows += [blank(w, "bc")]
     rows += turns_header(model, g)
 
     lower_min = min(LOWER_FULL, max(0, (h - len(rows)) // 2))
@@ -543,36 +605,39 @@ def render_rows(model: HostModel, w: int, h: int) -> list[list[Seg]]:
     lower = h - len(rows)
     if lower > 0:
         top = [blank(g.split, "bc")] + lanes_rows(model, g)
-        conv_head = [place([(X_G, header("CONVERSATION", "typed"))], g.split, "bc")]
+        conv_head = [
+            place([(X_G, rule_to(header("Conversation", "typed"), X_G, g.split - 3))], g.split, "bc")
+        ]
         room = lower - len(top) - 1 - len(conv_head)
         conv = conversation_rows(model, g)[-room:] if room > 0 else []
         filler = max(0, lower - len(top) - len(conv_head) - len(conv))
         left = (top + [blank(g.split, "bc")] * filler + conv_head + conv)[:lower]
         left += [blank(g.split, "bc")] * (lower - len(left))
-        rail = rail_rows(model, g)[:lower]
-        rail += [blank(w - g.split, "br")] * (lower - len(rail))
+        rail = rail_rows(model, g, lower)
         rows += [a + b for a, b in zip(left, rail)]
     return rows[:h]
 
 
-def footer_row(w: int) -> list[Seg]:
-    keys: list[Seg] = []
-    for key, action in KEYS:
-        if keys:
-            keys.append(S("   "))
-        keys += [S(key, "t2 b"), S(" " + action, "mu")]
-    room = w - PAD * 2 - width(keys) - 2
-    legend: list[Seg] = []
-    for sep in ("   ", "  "):
-        legend = []
+def footer_row(w: int, keys: Sequence[tuple[str, str]], legend: bool) -> list[Seg]:
+    """Keys at column 2 (bold key, muted label); the glyph legend right-aligned if asked."""
+
+    segs: list[Seg] = []
+    for key, action in keys:
+        if segs:
+            segs.append(S("   "))
+        segs += [S(key, "t2 b"), S(" " + action, "mu")]
+    room = w - PAD * 2 - width(segs) - 2
+    found: list[Seg] = []
+    for sep in ("   ", "  ") if legend else ():
+        found = []
         for glyph, word in LEGEND:
-            part = ([S(sep)] if legend else []) + [S(glyph[0] + " ", glyph[1]), S(word, "mu")]
-            if width(legend) + width(part) > room:
+            part = ([S(sep)] if found else []) + [S(glyph[0] + " ", glyph[1]), S(word, "mu")]
+            if width(found) + width(part) > room:
                 break
-            legend += part
-        if len(legend) >= 3 * len(LEGEND) - 1:
+            found += part
+        if len(found) >= 3 * len(LEGEND) - 1:
             break
-    return place([(X_G, keys)], w, "bc", right=legend or None)
+    return place([(X_G, segs)], w, "bc", right=found or None)
 
 
 class DeveloperView(Widget):
@@ -581,27 +646,14 @@ class DeveloperView(Widget):
     DEFAULT_CSS = """
     DeveloperView {
         height: 1fr;
-        background: #19141d;
+        background: $jarvis-background;
     }
     """
 
     def __init__(self, model: HostModel, **kwargs: object) -> None:
         super().__init__(**kwargs)  # type: ignore[arg-type]
         self.model = model
+        self.palette: Theme = THEMES[DEFAULT_DARK]
 
     def render(self) -> Text:
-        return to_text(render_rows(self.model, self.size.width, self.size.height))
-
-
-class DeveloperFooter(Widget):
-    """Keys and the glyph legend of the developer view."""
-
-    DEFAULT_CSS = """
-    DeveloperFooter {
-        height: 1;
-        background: #19141d;
-    }
-    """
-
-    def render(self) -> Text:
-        return to_text([footer_row(self.size.width)])
+        return to_text(render_rows(self.model, self.size.width, self.size.height), self.palette)

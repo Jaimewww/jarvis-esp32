@@ -270,3 +270,30 @@ def test_agent_conversation_and_pc_activity() -> None:
     model.apply_daemon(ActivityEvent("m1", Activity("a1", "type", "Escribir", "done")))
     model.apply_daemon(ActivityEvent("m1", Activity("a2", "open_app", "Abrir Okular", "running")))
     assert [(a.id, a.status) for a in model.activities] == [("a2", "running"), ("a1", "done")]
+
+
+def test_messages_keep_arrival_time_error_and_their_activities() -> None:
+    from jarvis.client import HistoryEvent, HistoryMessage
+
+    now = [500.0]
+    model = HostModel(clock=lambda: now[0])
+    model.apply_daemon(
+        HistoryEvent((HistoryMessage("h1", "user", "antes", (Activity("a0", "type", "Viejo", "done"),)),))
+    )
+    assert model.messages[0].at is None  # history carries no time
+    assert [a.id for a in model.activities_of("h1")] == ["a0"]
+
+    model.apply_daemon(UserMessageEvent("u1", "Abrí el informe"))
+    now[0] = 503.0
+    model.apply_daemon(MessageDeltaEvent("m1", "Abriendo"))
+    model.apply_daemon(ActivityEvent("m1", Activity("a1", "open_app", "Abrir Okular", "running")))
+    model.apply_daemon(ActivityEvent("m1", Activity("a1", "open_app", "Abrir Okular", "done")))
+    model.apply_daemon(ActivityEvent("m1", Activity("a2", "screenshot", "Captura", "running")))
+    now[0] = 510.0
+    model.apply_daemon(MessageDoneEvent("m1", "", error="tool crashed"))
+    user, answer = model.messages[1:]
+    assert (user.at, answer.at) == (500.0, 503.0)  # first seen, not last updated
+    assert answer.error == "tool crashed" and answer.answer == "Abriendo"
+    assert answer.text == "Abriendo\n[error: tool crashed]"  # the developer view's form
+    assert [(a.id, a.status) for a in model.activities_of("m1")] == [("a1", "done"), ("a2", "running")]
+    assert model.activities_of("nope") == []
