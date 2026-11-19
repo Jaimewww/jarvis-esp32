@@ -185,7 +185,8 @@ Corre en un `HOME` y `XDG_CONFIG_HOME` temporales con `systemctl`, `node` e `id`
 salida de `--dry-run` al instalar y desinstalar, idempotencia, negativa como root, con
 Node viejo, con un checkout en otro commit o sin dependencias, y que no se escribe nada
 fuera del directorio de unidades. Si `systemd-analyze` está instalado, además valida la
-unidad con `systemd-analyze --user verify`. Todavía no corre en CI.
+unidad con `systemd-analyze --user verify`. Corre en CI en el paso
+`host · systemd unit`.
 
 ## Running it
 
