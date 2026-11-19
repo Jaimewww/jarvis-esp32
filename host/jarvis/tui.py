@@ -2,12 +2,16 @@
 # without it cannot resolve the import; that is not a defect in this module.
 # pyright: reportMissingImports=false
 
-"""Textual front end for the Gentle Dot daemon.
+"""Textual front end for the Gentle Dot daemon and the Jarvis backend.
 
-The window holds three things: the conversation, the agent's state, and the log of
-what the agent did on the computer. It sends what the user types and can stop a run;
-it never answers an ``ask`` approval, because those belong to the desktop app that
-owns the private channel to the daemon (S4).
+The window holds the conversation, the agent's state, and the log of what the agent
+did on the computer, all from the Gentle Dot daemon. It sends what the user types and
+can stop a run; it never answers an ``ask`` approval, because those belong to the
+desktop app that owns the private channel to the daemon (S4).
+
+A second, read-only connection to the Jarvis backend (contract C2) adds the state of
+the ESP32 and the progress of each voice turn. The two connections are independent:
+either one can be down without hiding the other.
 """
 
 from __future__ import annotations
@@ -23,9 +27,24 @@ from pathlib import Path
 from rich.markup import escape
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, VerticalScroll
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Footer, Input, RichLog, Static
 
+from .backend import (
+    DEFAULT_BACKEND_TOKEN,
+    DEFAULT_BACKEND_URL,
+    TOKEN_ENV,
+    ActionEvent,
+    BackendClient,
+    BackendEvent,
+    Device,
+    DeviceEvent,
+    SnapshotEvent,
+    TurnDone,
+    TurnError,
+    TurnStage,
+    TurnStarted,
+)
 from .client import (
     DEFAULT_HOST,
     DEFAULT_PORT,
@@ -79,6 +98,11 @@ LINK_LABELS = {
 ACTIVITY_STYLES = {"running": "yellow", "done": "green", "failed": "bold red"}
 TOAST_STYLES = {"info": "cyan", "warning": "yellow", "error": "bold red"}
 ROLE_LABELS = {"user": "You", "assistant": "Jarvis"}
+TURN_ID_WIDTH = 8
+
+
+def _milliseconds(value: float | None) -> str:
+    return "? ms" if value is None else f"{value:.0f} ms"
 
 
 class JarvisApp(App[None]):
@@ -91,6 +115,11 @@ class JarvisApp(App[None]):
         layout: vertical;
     }
     #status {
+        height: 1;
+        padding: 0 1;
+        background: $boost;
+    }
+    #device {
         height: 1;
         padding: 0 1;
         background: $boost;
@@ -118,8 +147,15 @@ class JarvisApp(App[None]):
     .message-assistant {
         color: $text;
     }
-    #actions {
+    #side {
         width: 2fr;
+    }
+    #turns {
+        height: 1fr;
+        border-bottom: solid $boost;
+    }
+    #actions {
+        height: 2fr;
     }
     #prompt {
         height: 3;
@@ -137,8 +173,19 @@ class JarvisApp(App[None]):
         port: int = DEFAULT_PORT,
         url: str | None = None,
         token_path: Path | None = None,
+        backend_url: str = DEFAULT_BACKEND_URL,
+        backend_token: str | None = None,
     ) -> None:
         super().__init__()
+        self._backend = BackendClient(
+            on_event=self._on_backend_event,
+            on_status=self._on_backend_status,
+            url=backend_url,
+            token=backend_token,
+        )
+        self._backend_task: asyncio.Task[None] | None = None
+        self._backend_status = ConnectionStatus.DISCONNECTED
+        self._devices: dict[str, Device] = {}
         self._client = JarvisClient(
             on_event=self._on_event,
             on_status=self._on_status,
@@ -160,10 +207,13 @@ class JarvisApp(App[None]):
 
     def compose(self) -> ComposeResult:
         yield Static("", id="status")
+        yield Static("", id="device")
         yield Static("", id="detail")
         with Horizontal(id="body"):
             yield VerticalScroll(id="conversation")
-            yield RichLog(id="actions", highlight=False, markup=True, wrap=True)
+            with Vertical(id="side"):
+                yield RichLog(id="turns", highlight=False, markup=True, wrap=True)
+                yield RichLog(id="actions", highlight=False, markup=True, wrap=True)
         yield Input(
             placeholder="Message Jarvis — Enter sends, Ctrl+A stops the answer",
             id="prompt",
@@ -172,18 +222,30 @@ class JarvisApp(App[None]):
 
     def on_mount(self) -> None:
         self._render_status()
+        self._render_device()
         self._log("info", f"connecting to {self._client.url}")
         self.query_one("#prompt", Input).focus()
         self._client_task = asyncio.create_task(self._client.run(), name="jarvis-client")
         self._client_task.add_done_callback(self._client_finished)
+        self._backend_task = asyncio.create_task(self._backend.run(), name="jarvis-backend")
+        self._backend_task.add_done_callback(self._backend_finished)
 
     async def on_unmount(self) -> None:
         await self._client.close()
-        task = self._client_task
-        if task is not None and not task.done():
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+        await self._backend.close()
+        for task in (self._client_task, self._backend_task):
+            if task is not None and not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+
+    def _backend_finished(self, task: asyncio.Task[None]) -> None:
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            logger.warning("the backend client stopped", exc_info=error)
+            self._turn_log("error", f"the backend client stopped: {escape(str(error))}")
 
     def _client_finished(self, task: asyncio.Task[None]) -> None:
         if task.cancelled():
@@ -231,6 +293,83 @@ class JarvisApp(App[None]):
         if self._queue_total:
             parts.append(f"[yellow]{self._queue_total} queued[/]")
         self.query_one("#status", Static).update(" │ ".join(parts))
+
+    # Backend: ESP32 state and voice turns
+
+    def _on_backend_status(self, status: ConnectionStatus, detail: str) -> None:
+        previous, self._backend_status = self._backend_status, status
+        self._render_device()
+        # Every retry changes the detail; only a change of state is worth a line.
+        if status is previous or status is ConnectionStatus.CONNECTING:
+            return
+        level = "info" if status is ConnectionStatus.CONNECTED else "warning"
+        if status is ConnectionStatus.UNAUTHORIZED:
+            level = "error"
+        self._turn_log(level, escape(detail))
+
+    def _render_device(self) -> None:
+        parts: list[str] = []
+        if not self._devices:
+            parts.append("[dim]ESP32 no device yet[/]")
+        for device in self._devices.values():
+            name = escape(device.device_id)
+            if not device.online:
+                parts.append(f"[red]ESP32 {name} OFFLINE[/]")
+                continue
+            parts.append(f"[green]ESP32 {name} {escape(device.state.upper())}[/]")
+            if device.rssi is not None:
+                parts.append(f"[dim]{device.rssi} dBm[/]")
+            if device.ip:
+                parts.append(f"[dim]{escape(device.ip)}[/]")
+        link_label, link_style = LINK_LABELS.get(
+            self._backend_status, (self._backend_status.value.upper(), "white")
+        )
+        parts.append(f"[{link_style}]BACKEND {link_label}[/]")
+        self.query_one("#device", Static).update(" │ ".join(parts))
+
+    def _on_backend_event(self, event: BackendEvent) -> None:
+        if isinstance(event, SnapshotEvent):
+            self._devices = {device.device_id: device for device in event.devices}
+            self._render_device()
+            return
+        if isinstance(event, DeviceEvent):
+            self._devices[event.device.device_id] = event.device
+            self._render_device()
+            return
+        if isinstance(event, ActionEvent):
+            value = "" if event.value is None else f" {escape(str(event.value))}"
+            self._turn_log("action", f"action {escape(event.action_type)}{value}")
+            return
+        turn = escape(event.turn_id[:TURN_ID_WIDTH] or "?")
+        if isinstance(event, TurnStarted):
+            self._turn_log("info", f"turn {turn} started ({escape(event.device_id)})")
+        elif isinstance(event, TurnStage):
+            text = f": {escape(event.text)}" if event.text else ""
+            self._turn_log(
+                "info", f"turn {turn} {escape(event.stage)} {_milliseconds(event.ms)}{text}"
+            )
+        elif isinstance(event, TurnDone):
+            self._turn_log(
+                "done",
+                f"turn {turn} done — {escape(event.lane)}, {_milliseconds(event.total_ms)}: "
+                f"{escape(event.reply_text)}",
+            )
+        elif isinstance(event, TurnError):
+            self._turn_log(
+                "error",
+                f"turn {turn} failed at {escape(event.stage)}: {escape(event.message)}",
+            )
+
+    def _turn_log(self, level: str, message: str) -> None:
+        style = {
+            "info": "dim",
+            "warning": "yellow",
+            "error": "bold red",
+            "action": "cyan",
+            "done": "green",
+        }.get(level, "white")
+        stamp = datetime.now().strftime("%H:%M:%S")
+        self.query_one("#turns", RichLog).write(f"[dim]{stamp}[/] [{style}]{message}[/]")
 
     # Actions
 
@@ -396,7 +535,10 @@ class JarvisApp(App[None]):
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m jarvis.tui",
-        description="Host TUI for the Gentle Dot daemon (protocol v1).",
+        description=(
+            "Host TUI for the Gentle Dot daemon (protocol v1) and the Jarvis backend "
+            "(ESP32 state and voice turns)."
+        ),
     )
     parser.add_argument("--host", default=DEFAULT_HOST, help="daemon host (default: %(default)s)")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="daemon port (default: %(default)s)")
@@ -405,6 +547,19 @@ def main(argv: list[str] | None = None) -> int:
         "--token-file",
         default=None,
         help=f"access token file (default: {DEFAULT_TOKEN_PATH})",
+    )
+    parser.add_argument(
+        "--backend-url",
+        default=DEFAULT_BACKEND_URL,
+        help="Jarvis backend WebSocket URL, without the token (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--backend-token",
+        default=None,
+        help=(
+            f"Jarvis backend token (default: the {TOKEN_ENV} environment variable, "
+            f"or {DEFAULT_BACKEND_TOKEN})"
+        ),
     )
     parser.add_argument(
         "--log-level",
@@ -423,6 +578,8 @@ def main(argv: list[str] | None = None) -> int:
         port=args.port,
         url=args.url,
         token_path=token_path,
+        backend_url=args.backend_url,
+        backend_token=args.backend_token,
     ).run()
     return 0
 

@@ -11,9 +11,14 @@ does not vendor.
   `message_delta`, `message_done`, `activity`, `ask`, `ask_resolved`, `toast`,
   `history`, `earlier`, `conversations`, `queue`, `error`), `send`/`steer`/`abort`,
   and a `get_history` repair when a `seq` gap shows a frame was lost.
-* `jarvis/tui.py` — Textual app: conversation, agent-state chip, action log, input,
-  connection indicator.
+* `jarvis/backend.py` — read-only WebSocket client for the Jarvis backend (contract C2
+  in [docs/contratos.md](../docs/contratos.md)): ESP32 state and voice-turn events,
+  reconnect with backoff, unknown event types and fields ignored.
+* `jarvis/tui.py` — Textual app: conversation, agent-state chip, ESP32 line, voice
+  turns, action log, input, connection indicators.
 * `requirements.txt` — `websockets` and `textual`, both `>=`.
+* `requirements-dev.txt` and `tests/` — pytest suite against in-process fake
+  WebSocket servers; no daemon, backend, or board needed.
 
 ## Requirements
 
@@ -50,7 +55,21 @@ python -m jarvis.tui                          # ws://127.0.0.1:4317/ws, ~/.gentl
 python -m jarvis.tui --port 4318              # another port
 python -m jarvis.tui --url ws://127.0.0.1:4317/ws
 python -m jarvis.tui --token-file /path/to/token
+python -m jarvis.tui --backend-url ws://192.168.1.10:8000/api/v1/ws
+python -m jarvis.tui --backend-token <token>  # default: $JARVIS_HOST_TOKEN, then dev-host-token
 python -m jarvis.tui --log-level debug        # client log on stderr (noisy under Textual)
+```
+
+The window opens two independent connections: the Gentle Dot daemon (conversation and
+actions) and the Jarvis backend (`ws://127.0.0.1:8000/api/v1/ws` by default; ESP32
+state and voice turns). Either can be down without hiding the other. The backend
+token is sent in the URL query and is never shown in the window or the log. A refused
+token shows `BACKEND UNAUTHORIZED` and stops retrying; restart with the right token.
+
+To see it without a board, start the backend and run the simulator from the repo root:
+
+```bash
+python tools/sim_device.py --url http://127.0.0.1:8000
 ```
 
 Keys: **Enter** sends the text in the input box, **Ctrl+A** stops the answer that is
@@ -65,8 +84,10 @@ says why (`connection refused (is the daemon running?)`, `No access token at …
 | Part | Content |
 |---|---|
 | Status line | agent state (`IDLE`, `THINKING`, `WORKING`, `NEEDS YOU`, `RESTARTING`, `ERROR`, `STARTING`), link state (`CONNECTED`, `CONNECTING`, `DISCONNECTED`, `UNAUTHORIZED`, `BAD PROTOCOL`), model, conversation title, queued messages |
-| Detail line | the last connection message, for example a refused token or a protocol mismatch |
+| ESP32 line | per device: id and state (`IDLE`, `RECORDING`, … or `OFFLINE`), signal in dBm, IP; then the backend link state |
+| Detail line | the last daemon connection message, for example a refused token or a protocol mismatch |
 | Conversation | the user's messages and the assistant's answer, streamed as it arrives; the latest page of the chat's history on connect |
+| Voice turns | one line per backend event: turn started, each stage with its milliseconds, catalogue actions, turn done (lane, total time, reply) or failed, and backend link changes |
 | Action log | `activity` frames (kind, what it did, running/done/failed), toasts, server errors, and the connection's own messages |
 | Input | one line of text; sent with Enter |
 
@@ -77,6 +98,14 @@ What it deliberately does not do:
   a server is answered in the browser.
 * No file attachments, no attachments upload, no conversation switching, no sign-in
   flows, and no paging back past the first history page.
+
+## Tests
+
+```bash
+cd host
+pip install -r requirements-dev.txt
+python -m pytest tests -q
+```
 
 ## Security caveat: the catalog is bounded in the backend
 
