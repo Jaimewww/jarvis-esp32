@@ -1,0 +1,56 @@
+# Gentle Dot daemon as a systemd user service (Jarvis D1, task P3).
+#
+# Template: host/systemd/install.sh replaces @NODE@ and @GENTLE_DOT_DIR@ and writes the
+# result to ~/.config/systemd/user/gentle-dot.service. Do not install this file by hand.
+#
+# Upstream, unmodified and pinned (docs/decisiones.md D1; D8 names upstream `main`, `f97d56d`):
+#   https://github.com/Gentleman-Programming/gentle-dot
+#   commit f97d56d884b1d3c178f415b95d486464e7b220bf
+# Start command = upstream `pnpm start` (package.json): node packages/daemon/src/cli.ts
+# Node 24 or newer (upstream package.json "engines"). Listens on 127.0.0.1:4317 and keeps
+# its access token in ~/.gentle-dot/token (0600); the TUI reads that file.
+#
+# No secrets live here. Local overrides go in a drop-in:
+#   systemctl --user edit gentle-dot.service
+
+[Unit]
+Description=Gentle Dot daemon (Jarvis agent, upstream f97d56d)
+Documentation=https://github.com/Gentleman-Programming/gentle-dot
+# At most 10 starts in 10 minutes; then the unit stays failed until `reset-failed`.
+StartLimitIntervalSec=10min
+StartLimitBurst=10
+
+[Service]
+Type=simple
+WorkingDirectory=@GENTLE_DOT_DIR@
+# Same values as the upstream defaults and the TUI's defaults (host/jarvis/client.py).
+Environment=GENTLE_DOT_HOST=127.0.0.1
+Environment=GENTLE_DOT_PORT=4317
+# Upstream `--self-check`: resolves the engine files without starting anything or using
+# the network and exits 1 when one is missing (for example, no `pnpm install`).
+ExecStartPre="@NODE@" "@GENTLE_DOT_DIR@/packages/daemon/src/cli.ts" --self-check
+ExecStart="@NODE@" "@GENTLE_DOT_DIR@/packages/daemon/src/cli.ts"
+# The daemon closes its engine on SIGTERM; anything left is killed after the timeout.
+KillMode=mixed
+TimeoutStopSec=20s
+
+# Restart on failure with back-off: 2 s growing to 1 min over 5 steps.
+Restart=on-failure
+RestartSec=2s
+RestartSteps=5
+RestartMaxDelaySec=1min
+
+# Journal: journalctl --user -u gentle-dot
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gentle-dot
+
+# Hardening that a user manager can apply without namespaces and that leaves the
+# engine's shell usable. NoNewPrivileges also stops `sudo` from the agent's shell.
+UMask=0077
+NoNewPrivileges=yes
+LockPersonality=yes
+RestrictRealtime=yes
+
+[Install]
+WantedBy=default.target

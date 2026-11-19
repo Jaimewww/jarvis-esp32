@@ -80,7 +80,14 @@ y en cada solicitud de fusión, con Python 3.14 (la versión de `backend/.venv` 
 - `backend · pytest`: las pruebas de `backend/tests`.
 - `pyright`: el chequeo de tipos de `pyrightconfig.json` sobre `backend/app`.
 
-`host/` y `tools/` aún no tienen pruebas automáticas, así que no hay paso para ellos.
+- `host · pytest`: las pruebas de `host/tests`; se omite mientras `host/` no tenga
+  `requirements-dev.txt`.
+- `host · systemd unit`: `host/systemd/test_install.sh`, que prueba el servicio del
+  daemon y su instalador contra un directorio temporal, sin instalar nada.
+
+`tools/` aún no tiene pruebas automáticas, así que no hay paso para él.
+El servicio del daemon tiene pruebas propias que por ahora se corren a mano:
+`bash host/systemd/test_install.sh` (ver [host/README.md](host/README.md#daemon-de-gentle-dot-como-servicio)).
 Para correr lo mismo en local:
 
 ```bash
