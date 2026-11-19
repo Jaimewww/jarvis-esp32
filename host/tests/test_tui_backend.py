@@ -52,7 +52,7 @@ def _screen_text(app: JarvisApp) -> str:
     return app.export_screenshot().replace("&#160;", " ")
 
 
-def test_shows_device_state_and_turns_from_the_backend(tmp_path: Path) -> None:
+def test_shows_device_state_and_turns_from_the_backend(tmp_path: Path, caplog: Any) -> None:
     async def handler(socket: Any) -> None:
         for item in FRAMES:
             await socket.send(item)
@@ -83,6 +83,8 @@ def test_shows_device_state_and_turns_from_the_backend(tmp_path: Path) -> None:
     assert "media_key play_pause" in screen
     assert "chat" in screen and "812 ms" in screen
     assert "Entendido" in screen
+    # Closing the window must not report a status to widgets that are already gone.
+    assert [record.getMessage() for record in caplog.records if record.levelname == "ERROR"] == []
 
 
 def test_help_documents_the_backend_options(capsys: Any) -> None:

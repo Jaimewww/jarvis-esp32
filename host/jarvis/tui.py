@@ -186,6 +186,7 @@ class JarvisApp(App[None]):
         self._backend_task: asyncio.Task[None] | None = None
         self._backend_status = ConnectionStatus.DISCONNECTED
         self._devices: dict[str, Device] = {}
+        self._closing = False
         self._client = JarvisClient(
             on_event=self._on_event,
             on_status=self._on_status,
@@ -231,6 +232,8 @@ class JarvisApp(App[None]):
         self._backend_task.add_done_callback(self._backend_finished)
 
     async def on_unmount(self) -> None:
+        # The clients report "not connected" while closing; the widgets are gone by then.
+        self._closing = True
         await self._client.close()
         await self._backend.close()
         for task in (self._client_task, self._backend_task):
@@ -258,6 +261,8 @@ class JarvisApp(App[None]):
     # Connection status
 
     def _on_status(self, status: ConnectionStatus, detail: str) -> None:
+        if self._closing:
+            return
         self._render_status()
         if status is ConnectionStatus.CONNECTED:
             self._set_detail(f"connected to {self._client.url}")
@@ -297,6 +302,8 @@ class JarvisApp(App[None]):
     # Backend: ESP32 state and voice turns
 
     def _on_backend_status(self, status: ConnectionStatus, detail: str) -> None:
+        if self._closing:
+            return
         previous, self._backend_status = self._backend_status, status
         self._render_device()
         # Every retry changes the detail; only a change of state is worth a line.
