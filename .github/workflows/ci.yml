@@ -60,6 +60,17 @@ jobs:
         if: hashFiles('host/requirements-dev.txt') != ''
         run: python -m pytest tests -q
 
+  host-systemd:
+    name: host · systemd unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      # Runs against a temporary HOME with stubbed systemctl/node: nothing is
+      # installed or started on the runner.
+      - name: Test the Gentle Dot unit and its install script
+        run: bash host/systemd/test_install.sh
+
   typecheck:
     name: pyright
     runs-on: ubuntu-latest
