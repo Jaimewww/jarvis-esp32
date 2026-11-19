@@ -100,7 +100,7 @@ def test_f2_switches_to_the_developer_view_and_back(tmp_path: Path, caplog: Any)
 
     # The window starts in the user view, which offers the key in its footer.
     assert "Voice turns" not in user
-    assert "f2 developer view" in user
+    assert "f2 view" in user
 
     # Device and connections band.
     assert DEVICE in developer and "SPEAKING" in developer
@@ -126,7 +126,7 @@ def test_f2_switches_to_the_developer_view_and_back(tmp_path: Path, caplog: Any)
     # Lanes and the rest of the screen.
     assert "Lanes" in developer and "all within" in developer and "1 over by 0.6 s" in developer
     assert re.search(r"╭─\s*Agent", developer) and "PC actions" in developer and "Conversation" in developer
-    assert "f2 user view" in developer and "over target" in developer
+    assert "f2 view" in developer and "over target" in developer
     for shouting in ("LIVE TURN", "VOICE TURNS", "LANES", "AGENT", "PC ACTIONS", "CONVERSATION"):
         assert shouting not in developer
 
@@ -179,8 +179,8 @@ def test_developer_view_marks_jarvis_and_draws_cards_without_textual() -> None:
         assert all(sum(len(t) for t, _ in row) == w for row in rows), (w, h)
     text = ["".join(t for t, _ in row) for row in render_rows(model, 140, 40)]
     jarvis = [line for line in text if "jarvis" in line]
-    # A finished answer carries the Jarvis mark; the live one the live glyph and cursor.
-    assert jarvis[0].lstrip().startswith("◆ jarvis")
+    # A finished answer has no mark (as in the mockup); the live one the live glyph and cursor.
+    assert jarvis[0].lstrip().startswith("jarvis") and "◆" not in jarvis[0]
     assert jarvis[1].lstrip().startswith("◐ jarvis") and "▍" in jarvis[1]
     # The agent card closes on the row above the input.
     assert text[-1].rstrip().endswith("╯") and "╰" in text[-1]

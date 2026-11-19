@@ -122,8 +122,9 @@ class KeysFooter(Widget):
             ("enter", "send"),
             ("ctrl+a", "stop"),
             ("ctrl+q", "quit"),
-            ("f2", "user view" if self.developer else "developer view"),
-            ("f3", "light mode" if self.palette.dark else "dark mode"),
+            # Short hints, the same in both views, so the legend keeps its room.
+            ("f2", "view"),
+            ("f3", "mode"),
         )
         return to_text([footer_row(self.size.width, keys, self.developer)], self.palette)
 

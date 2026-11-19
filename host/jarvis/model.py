@@ -51,6 +51,8 @@ STAGES: Final = ("stt", "route", "agent", "tts")
 LANE_TARGETS: Final[dict[str, float | None]] = {"fast": 1.5, "chat": 4.0, "task": None}
 #: The PC activity kept for the views, newest first.
 MAX_ACTIVITIES: Final = 50
+#: ``HostModel.agent_status`` while the daemon link is down.
+OFFLINE: Final = "offline"
 
 
 class StageState(StrEnum):
@@ -204,6 +206,30 @@ class HostModel:
     def set_daemon_status(self, status: ConnectionStatus, detail: str = "") -> None:
         self.daemon_status = status
         self.daemon_detail = "" if status is ConnectionStatus.CONNECTED else detail
+
+    @property
+    def agent_status(self) -> str:
+        """The agent's availability, as both views show it.
+
+        ``offline`` while the daemon link is down (whatever state the agent last
+        reported), otherwise the agent's own state (``idle``, ``working``…).
+        """
+
+        return self.agent_state if self.daemon_status is ConnectionStatus.CONNECTED else OFFLINE
+
+    @property
+    def agent_offline_reason(self) -> str | None:
+        """Why the agent is offline: ``no_token``, ``refused``, ``mismatch`` or ``not_running``."""
+
+        if self.daemon_status is ConnectionStatus.CONNECTED:
+            return None
+        if self.daemon_status is ConnectionStatus.UNAUTHORIZED:
+            return "refused"
+        if self.daemon_status is ConnectionStatus.PROTOCOL_MISMATCH:
+            return "mismatch"
+        if "access token" in self.daemon_detail:
+            return "no_token"
+        return "not_running"
 
     # Backend events
 

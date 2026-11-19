@@ -143,7 +143,7 @@ def test_user_view_through_the_real_event_path(tmp_path: Path, caplog: Any) -> N
         assert detail not in plain, detail
     # Input row and the one footer.
     assert "Message Jarvis" in screen and "▸" in screen
-    assert _has(screen, "enter send") and _has(screen, "f2 developer view")
+    assert _has(screen, "enter send") and _has(screen, "f2 view")
     assert [r.getMessage() for r in caplog.records if r.levelname == "ERROR"] == []
 
 

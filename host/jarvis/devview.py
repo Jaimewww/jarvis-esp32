@@ -57,8 +57,7 @@ LINKS: Final = {
     ConnectionStatus.UNAUTHORIZED: (FAIL, "unauthorized"),
     ConnectionStatus.PROTOCOL_MISMATCH: (FAIL, "bad protocol"),
 }
-QUIET_STATES: Final = frozenset({"starting", "restarting", "unknown"})
-JARVIS: Final[Seg] = ("◆", "ac")
+QUIET_STATES: Final = frozenset({"starting", "restarting", "unknown", "offline"})
 LEGEND: Final = (
     (("●", "ok"), "connected"),
     (LIVE, "live"),
@@ -68,6 +67,8 @@ LEGEND: Final = (
     (FAIL, "failed"),
     (("┊", "t2"), "lane target"),
 )
+#: Legend entries dropped first when the footer is short of room.
+LEGEND_DROP_ORDER: Final = ("connected", "waiting", "lane target", "within", "live", "over target", "failed")
 
 
 @dataclass(frozen=True, slots=True)
@@ -312,6 +313,12 @@ def live_band(model: HostModel, g: Grid) -> list[list[Seg]]:
     boxw = max(8, (space - 3 * arw) // 4)
     xs = [X_H + i * (boxw + arw) for i in range(4)]
     arrow = "  ──→  " if arw == 7 else " → "
+    # One rule per kind of word, sized for the longest stage name: a kind of word shows
+    # in every box or in none, never cut and never in some boxes only.
+    word_room = boxw - 2 - (3 + max(len(name) for name in STAGES)) - 2
+    show_live = word_room >= max(len(word) for word in LIVE_WORDS.values())
+    show_ms = word_room >= len("0000 ms")
+    show_waiting = word_room >= len("waiting")
 
     def box(i: int, kind: str) -> list[Seg]:
         name = STAGES[i]
@@ -324,14 +331,14 @@ def live_band(model: HostModel, g: Grid) -> list[list[Seg]]:
         if kind == "bot":
             return [S("╰" + "─" * (boxw - 2) + "╯", border)]
         if live:
-            glyph, label, word = LIVE, "lv b", [S(LIVE_WORDS[name], "lv")]
+            glyph, label, word = LIVE, "lv b", [S(LIVE_WORDS[name], "lv")] if show_live else []
         elif state is StageState.DONE and stage is not None:
             ms = "?" if stage.ms is None else f"{stage.ms:.0f}"
-            glyph, label, word = OK, "t2", [S(ms, "t1"), S(" ms", "mu")]
+            glyph, label, word = OK, "t2", [S(ms, "t1"), S(" ms", "mu")] if show_ms else []
         elif turn is None:
             glyph, label, word = WAIT, "t2", [S("—", "mu")]
         else:
-            glyph, label, word = WAIT, "t2", [S("waiting", "mu")]
+            glyph, label, word = WAIT, "t2", [S("waiting", "mu")] if show_waiting else []
         left = [S(" "), S(*glyph), S(" "), S(name, label)]
         gap = boxw - 2 - width(left) - width(word) - 1
         if gap < 1:
@@ -471,22 +478,21 @@ def turn_rows(turn: Turn, g: Grid) -> list[list[Seg]]:
     return rows
 
 
+#: Lanes table columns after the turn count, in screen order, and the order in which
+#: they are kept when the table is narrow (the verdict glyph stays in every case).
+LANE_COLUMNS: Final = ("median", "worst", "target", "verdict")
+LANE_KEEP: Final = ("median", "worst", "verdict", "target")
+
+
 def lanes_rows(model: HostModel, g: Grid) -> list[list[Seg]]:
     w = g.split
     out = [place([(X_G, rule_to(header("Lanes", "finished turns"), X_G, w - 3))], w, "bc")]
+    rows: list[tuple[list[Item], dict[str, list[Seg]]]] = []
     for lane in model.lane_stats():
         over = lane.verdict == "over"
         glyph = OVER if over else (OK if lane.verdict == "within" else DOT)
         unit = "turn" if lane.n == 1 else "turns"
         target = fmt_s(lane.target_s) if lane.target_s is not None else "—"
-        items: list[Item] = [
-            (X_G, [S(*glyph)]), (X_T, [S(lane.lane, "t1 b")]), (X_ID, [S(f"{lane.n} {unit}", "t2")]),
-            (X_H, [S("median", "mu")]), (X_H + 7, [S(fmt_s(lane.median_s).rjust(5), "t1")]),
-            (X_H + 14, [S("worst", "mu")]),
-            (X_H + 20, [S(fmt_s(lane.worst_s).rjust(5), "wa b" if over else "t1")]),
-            (X_H + 27, [S("target", "mu")]),
-            (X_H + 34, [S(target.rjust(5), "t2" if lane.target_s is not None else "mu")]),
-        ]
         if lane.verdict == "empty":
             verdict = [S("no turns yet", "mu i")]
         elif lane.verdict == "no_target":
@@ -495,7 +501,41 @@ def lanes_rows(model: HostModel, g: Grid) -> list[list[Seg]]:
             verdict = [S(f"{lane.n_over} over by {lane.over_by_s or 0:.1f} s", "wa b")]
         else:
             verdict = [S("all within", "t2")]
-        items.append((X_H + 42, verdict))
+        lead: list[Item] = [
+            (X_G, [S(*glyph)]), (X_T, [S(lane.lane, "t1 b")]), (X_ID, [S(f"{lane.n} {unit}", "t2")]),
+        ]
+        columns = {
+            "median": [S("median", "mu"), S(" "), S(fmt_s(lane.median_s).rjust(5), "t1")],
+            "worst": [S("worst", "mu"), S(" "), S(fmt_s(lane.worst_s).rjust(5), "wa b" if over else "t1")],
+            "target": [S("target", "mu"), S(" "),
+                       S(target.rjust(5), "t2" if lane.target_s is not None else "mu")],
+            "verdict": verdict,
+        }
+        rows.append((lead, columns))
+
+    # Whole columns only: keep them by priority while they fit, then lay them out in
+    # screen order (at full width this is the mockup's grid: 21, 35, 48, 63).
+    widths = {name: max(width(cols[name]) for _, cols in rows) for name in LANE_COLUMNS}
+
+    def gap(name: str) -> int:
+        return 3 if name == "verdict" else 2
+
+    def span(names: list[str]) -> int:
+        shown = [name for name in LANE_COLUMNS if name in names]
+        return sum(widths[name] for name in shown) + sum(gap(name) for name in shown[1:])
+
+    kept: list[str] = []
+    for name in LANE_KEEP:
+        if X_H + span(kept + [name]) <= w - PAD:
+            kept.append(name)
+    shown = [name for name in LANE_COLUMNS if name in kept]
+    for lead, columns in rows:
+        items = list(lead)
+        x = X_H
+        for i, name in enumerate(shown):
+            x += gap(name) if i else 0
+            items.append((x, columns[name]))
+            x += widths[name]
         out.append(place(items, w, "bc"))
     return out
 
@@ -520,8 +560,6 @@ def conversation_rows(model: HostModel, g: Grid) -> list[list[Seg]]:
             if j == 0:
                 if live:
                     items.append((X_G, [S(*LIVE)]))
-                elif who == "jarvis":
-                    items.append((X_G, [S(*JARVIS)]))
                 items.append((X_T, [S(who, "lv b" if live else ("t2 b" if who == "you" else "t1 b"))]))
             body = [S(line, "t2" if who == "you" else "t1")]
             if live and j == len(lines) - 1:
@@ -546,8 +584,9 @@ def rail_rows(model: HostModel, g: Grid, n: int) -> list[list[Seg]]:
     def kv(key: str, value: list[Seg]) -> list[Seg]:
         return inside([(xr, [S(key, "mu")]), (xv, value)])
 
-    glyph, cls = state_glyph(model.agent_state)
-    state = model.agent_state.replace("_", " ").upper() or "UNKNOWN"
+    agent = model.agent_status  # "offline" while the daemon link is down, as in the user view
+    glyph, cls = state_glyph(agent)
+    state = agent.replace("_", " ").upper() or "UNKNOWN"
     queue = [S(f"{model.queue_total} queued", "t1")] if model.queue_total else [S("empty", "mu")]
     body = [
         kv("state", [S(glyph[0] + " ", glyph[1]), S(state, cls)]),
@@ -618,26 +657,49 @@ def render_rows(model: HostModel, w: int, h: int) -> list[list[Seg]]:
     return rows[:h]
 
 
-def footer_row(w: int, keys: Sequence[tuple[str, str]], legend: bool) -> list[Seg]:
-    """Keys at column 2 (bold key, muted label); the glyph legend right-aligned if asked."""
-
+def _keys(keys: Sequence[tuple[str, str]], sep: str) -> list[Seg]:
     segs: list[Seg] = []
     for key, action in keys:
         if segs:
-            segs.append(S("   "))
+            segs.append(S(sep))
         segs += [S(key, "t2 b"), S(" " + action, "mu")]
-    room = w - PAD * 2 - width(segs) - 2
+    return segs
+
+
+def _legend(entries: Sequence[tuple[Seg, str]], sep: str) -> list[Seg]:
+    segs: list[Seg] = []
+    for glyph, word in entries:
+        segs += ([S(sep)] if segs else []) + [S(glyph[0] + " ", glyph[1]), S(word, "mu")]
+    return segs
+
+
+def footer_row(w: int, keys: Sequence[tuple[str, str]], legend: bool) -> list[Seg]:
+    """Keys at column 2 (bold key, muted label); the glyph legend right-aligned if asked.
+
+    The spacing is chosen for the developer view's legend, so both views show the same
+    keys at the same width: wide spacing when the whole legend fits, tighter spacing
+    next, and only then whole legend entries go, the least telling first.
+    """
+
+    def room(segs: list[Seg]) -> int:
+        return w - PAD * 2 - width(segs) - 2
+
     found: list[Seg] = []
-    for sep in ("   ", "  ") if legend else ():
-        found = []
-        for glyph, word in LEGEND:
-            part = ([S(sep)] if found else []) + [S(glyph[0] + " ", glyph[1]), S(word, "mu")]
-            if width(found) + width(part) > room:
-                break
-            found += part
-        if len(found) >= 3 * len(LEGEND) - 1:
+    for key_sep, legend_sep in (("   ", "   "), ("   ", "  "), ("  ", "  ")):
+        segs = _keys(keys, key_sep)
+        found = _legend(LEGEND, legend_sep)
+        if width(found) <= room(segs):
             break
-    return place([(X_G, segs)], w, "bc", right=found or None)
+    else:
+        entries = list(LEGEND)
+        for word in LEGEND_DROP_ORDER:
+            found = _legend(entries, "  ")
+            if width(found) <= room(segs):
+                break
+            entries = [entry for entry in entries if entry[1] != word]
+        else:
+            found = []
+    return place([(X_G, segs)], w, "bc", right=found if legend and found else None)
 
 
 class DeveloperView(Widget):

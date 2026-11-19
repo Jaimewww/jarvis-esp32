@@ -227,3 +227,38 @@ def test_narrow_windows_degrade_without_crashing(size: tuple[int, int]) -> None:
     if w >= 80:
         screen = "\n".join(_text(render_rows(model, w, h)))
         assert "Voice device" in screen and "Estoy redactando" in screen
+
+
+@pytest.mark.parametrize(
+    ("stages", "doing"),
+    [((), "Listening…"), (("stt",), "Thinking…"), (("stt", "route", "agent"), "Speaking…")],
+)
+def test_live_voice_turn_says_its_stage_in_user_words(stages: tuple[str, ...], doing: str) -> None:
+    model, _ = _model()
+    model.apply_backend(TurnStarted("t-live", DEVICE, 999.0))
+    for stage in stages:
+        model.apply_backend(TurnStage("t-live", stage, 100, "hola" if stage == "stt" else None, 999.5))
+    [exchange] = exchanges(model)
+    assert exchange.live and exchange.doing == doing
+    screen = "\n".join(_text(render_rows(model, 140, 40)))
+    assert f"◆ {doing}" in screen and not re.search(r"◆\s*▍", screen)
+
+
+@pytest.mark.parametrize(
+    ("status", "detail", "first", "second"),
+    [
+        (ConnectionStatus.UNAUTHORIZED, "The access token was refused", "Gentle Dot refused this window",
+         "restart both to type here"),
+        (ConnectionStatus.DISCONNECTED, "not connected", "Gentle Dot is not running", "start it to type here"),
+    ],
+)
+def test_offline_reasons_are_complete_and_never_ready(
+    status: ConnectionStatus, detail: str, first: str, second: str
+) -> None:
+    model, _ = _model()
+    model.set_daemon_status(status, detail)
+    assert model.agent_status == "offline"
+    for w in (140, 120, 100, 80):
+        screen = "\n".join(_text(render_rows(model, w, 30)))
+        assert first in screen and second in screen and "…" not in screen
+        assert "talk or type" not in screen

@@ -64,14 +64,14 @@ def test_f3_toggles_dark_and_light_on_both_views(tmp_path: Path, caplog: Any) ->
 
     (t0, svg0, text0), (t1, svg1, text1), (t2, svg2, text2), (t3, svg3, text3) = asyncio.run(scenario())
 
-    # Starts dark; the footer offers the light mode.
+    # Starts dark; the footer offers f3.
     assert t0 == f"jarvis-{DEFAULT_DARK}"
     assert dark.background in svg0 and light.background not in svg0
-    assert "f3 light mode" in text0
+    assert "f3 mode" in text0
     # f3: light, in the user view.
     assert t1 == f"jarvis-{LIGHT}"
     assert light.background in svg1 and dark.background not in svg1
-    assert "f3 dark mode" in text1
+    assert "f3 mode" in text1
     # f2: the developer view is light too.
     assert t2 == f"jarvis-{LIGHT}" and "Voice turns" in text2
     assert light.background in svg2 and dark.background not in svg2

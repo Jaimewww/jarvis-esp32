@@ -39,7 +39,7 @@ from textual.widget import Widget
 from .backend import Device
 from .client import ConnectionStatus
 from .devview import S, Seg, blank, clip, clock, merge, width
-from .model import STAGES, HostModel, Message, StageState, Turn
+from .model import OFFLINE, STAGES, HostModel, Message, StageState, Turn
 from .theme import BACKGROUND, DEFAULT_DARK, THEMES, Theme, gradient_class, to_text
 
 #: Seconds within which a daemon user message that repeats a voice turn's words is
@@ -60,26 +60,26 @@ WORDS: Final = {
     "error": "ERROR",
 }
 STAGE_WORDS: Final = {"stt": "LISTENING", "route": "THINKING", "agent": "THINKING", "tts": "SPEAKING"}
+#: What a live voice turn is doing, in the thread, by its current stage.
+DOING: Final = {"stt": "Listening…", "route": "Thinking…", "agent": "Thinking…", "tts": "Speaking…"}
 ON_PC: Final = "on your PC  "
-#: Shorter copy for the header facts when the card is narrow.
-SHORTER: Final = {
-    "on the message you typed": "on your message",
-    "talk or type whenever you like": "talk or type",
-    "waiting for you in the Gentle Dot app": "needs you in Gentle Dot",
-    "can't reach the voice service or Gentle Dot": "can't reach anything",
-    "this window reconnects on its own": "reconnecting",
-    "start Gentle Dot to type here": "start Gentle Dot to type",
-    "typing needs Gentle Dot running": "typing needs Gentle Dot",
+
+#: One header fact: complete copies of the same message, longest first.
+Copy = tuple[str, ...]
+#: Why Gentle Dot is offline (``HostModel.agent_offline_reason``): the problem, then
+#: what to do, each a complete sentence that fits the card at 140 columns.
+OFFLINE_COPY: Final[dict[str, tuple[Copy, Copy]]] = {
+    "no_token": (("Gentle Dot isn't set up yet",), ("start it once to type here",)),
+    "refused": (("Gentle Dot refused this window",), ("restart both to type here",)),
+    "mismatch": (("Gentle Dot needs updating",), ("update both to type here",)),
+    "not_running": (("Gentle Dot is not running",), ("start it to type here",)),
 }
 
 
-def fit(text: str, room: int) -> str:
-    """``text``, its shorter copy, or ``text`` cut to ``room`` cells."""
+def pick(copy: Copy, room: int) -> str | None:
+    """The longest complete copy that fits ``room`` cells, if any."""
 
-    if len(text) <= room:
-        return text
-    short = SHORTER.get(text) or re.sub(r" messages? waiting (its|their) turn$", " waiting", text)
-    return short if len(short) <= room else clip(short, room)
+    return next((text for text in copy if len(text) <= room), None)
 
 # --- Exchanges ------------------------------------------------------------------
 
@@ -96,6 +96,8 @@ class Exchange:
     answer: str
     did: list[Did] = field(default_factory=list)
     live: bool = False
+    #: What a live exchange is doing before its answer starts ("Thinking…").
+    doing: str | None = None
     #: (what went wrong, what to do now, longer guidance) when it failed.
     failure: tuple[str, str, str] | None = None
     stopped: bool = False
@@ -170,6 +172,9 @@ def exchanges(model: HostModel) -> list[Exchange]:
         )
         if turn.is_failed:
             exchange.failure = _voice_failure(turn, model)
+        if turn.is_live:
+            stage = next((s for s in STAGES if turn.stage(s).state is StageState.LIVE), "agent")
+            exchange.doing = DOING[stage]
         voice.append((turn, exchange))
 
     claimed: set[str] = set()
@@ -356,52 +361,55 @@ def _first_device(model: HostModel) -> Device | None:
     return (online or devices or [None])[0]
 
 
-def jarvis_status(model: HostModel, live: Exchange | None) -> tuple[str, str, str, str]:
-    """(word, mood, what, waiting); mood: busy, ok, failed or quiet."""
+def jarvis_status(model: HostModel, live: Exchange | None) -> tuple[str, str, Copy, Copy]:
+    """(word, mood, what, waiting); mood: busy, ok, failed, quiet or offline.
+
+    The agent's availability is ``HostModel.agent_status``, the same state the
+    developer view shows: with the daemon link down Jarvis is OFFLINE, never READY.
+    """
 
     n = model.queue_total
-    waiting = (
-        "nothing waiting"
+    waiting: Copy = (
+        ("nothing waiting",)
         if n == 0
-        else ("1 more message waiting its turn" if n == 1 else f"{n} more messages waiting their turn")
+        else ("1 more message waiting its turn", "1 more waiting")
+        if n == 1
+        else (f"{n} more messages waiting their turn", f"{n} more waiting")
     )
     voice = model.live_turn()
     voice_word = None
     if voice is not None:
         stage = next((s for s in STAGES if voice.stage(s).state is StageState.LIVE), "stt")
         voice_word = STAGE_WORDS[stage]
-    if model.daemon_status is ConnectionStatus.CONNECTED:
-        state = model.agent_state
+    state = model.agent_status
+    if state != OFFLINE:
         if state in BUSY:
             if state == "needs_you":
-                what = "waiting for you in the Gentle Dot app"
+                what: Copy = ("waiting for you in the Gentle Dot app", "needs you in Gentle Dot")
             elif live is not None and live.source == "voice":
-                what = "on what you said"
+                what = ("on what you said",)
             elif live is not None:
-                what = "on the message you typed"
+                what = ("on the message you typed", "on your message")
             else:
-                what = "on a task"
+                what = ("on a task",)
             return WORDS[state], "busy", what, waiting
         if voice_word:
-            return voice_word, "busy", "on what you said", waiting
+            return voice_word, "busy", ("on what you said",), waiting
         if state == "idle":
-            return "READY", "ok", "talk or type whenever you like", waiting
+            return "READY", "ok", ("talk or type whenever you like", "talk or type"), waiting
         if state == "error":
-            return "ERROR", "failed", "something went wrong in Gentle Dot", "restart it if this stays"
-        return WORDS.get(state, "STARTING"), "quiet", "getting ready", waiting
+            return ("ERROR", "failed", ("something went wrong in Gentle Dot", "Gentle Dot hit an error"),
+                    ("restart it if this stays", "restart it"))
+        return WORDS.get(state, "STARTING"), "quiet", ("getting ready",), waiting
     if voice_word:
-        return voice_word, "busy", "on what you said", "typing needs Gentle Dot running"
-    if "access token" in model.daemon_detail:
-        reason = "Gentle Dot has no access token yet; start it once"
-    elif model.daemon_status is ConnectionStatus.UNAUTHORIZED:
-        reason = "Gentle Dot refused this window's access token"
-    elif model.daemon_status is ConnectionStatus.PROTOCOL_MISMATCH:
-        reason = "this window and Gentle Dot need updating together"
-    else:
-        reason = "Gentle Dot is not running, so typing waits"
-    if model.backend_status is ConnectionStatus.CONNECTED:
-        return "READY", "ok", reason.replace(", so typing waits", ""), "start Gentle Dot to type here"
-    return "OFFLINE", "quiet", "can't reach the voice service or Gentle Dot", "this window reconnects on its own"
+        return (voice_word, "busy", ("on what you said",),
+                ("typing needs Gentle Dot running", "typing needs Gentle Dot", "can't type for now"))
+    if model.backend_status is not ConnectionStatus.CONNECTED:
+        return ("OFFLINE", "offline", ("can't reach Jarvis or Gentle Dot", "can't reach anything"),
+                ("this window reconnects on its own", "reconnecting on its own"))
+    reason = model.agent_offline_reason or "not_running"
+    what, todo = OFFLINE_COPY[reason]
+    return "OFFLINE", "failed" if reason in ("refused", "mismatch") else "offline", what, todo
 
 
 def device_status(model: HostModel) -> tuple[Seg, str, str, bool]:
@@ -462,23 +470,29 @@ def jarvis_card(model: HostModel, live: Exchange | None, w: int, frame: int) -> 
     bw = len(letters[0])
     fact_x = 6 + bw + 4
     room = inner - fact_x - 5  # after "│   ", one cell before the card edge
-    paint = (lambda t: [S(t, "er b")]) if mood == "failed" else (lambda t: gradient(t, "b"))
+    if mood == "failed":
+        paint = lambda t: [S(t, "er b")]  # noqa: E731
+    elif mood == "offline":
+        paint = lambda t: [S(t, "mu b")]  # noqa: E731
+    else:
+        paint = lambda t: gradient(t, "b")  # noqa: E731
     rows = [top_border([S("Jarvis", "t2 b")], w), side([], w)]
-    if room >= 16:
+    first, second = pick(what, room), pick(waiting, room)
+    if room >= 16 and first is not None and second is not None:
         sep = [S("    "), S("│", "bd"), S("   ")]
         rows += [
             side([S("      ")] + paint(letters[0]) + [S("    "), S("│", "bd")], w),
-            side([S("   "), glyph, S("  ")] + paint(letters[1]) + sep + [S(fit(what, room), "t1")], w),
-            side([S("      ")] + paint(letters[2]) + sep + [S(fit(waiting, room), "mu")], w),
+            side([S("   "), glyph, S("  ")] + paint(letters[1]) + sep + [S(first, "t1")], w),
+            side([S("      ")] + paint(letters[2]) + sep + [S(second, "mu")], w),
         ]
         span = max(0, min(bw, inner - 6) - 22)
         n = min(22, max(0, inner - 6))
-    else:  # too narrow for block letters: the word in bold, the facts below it
-        rows += [
-            side([S("   "), glyph, S("  ")] + paint(word), w),
-            side([S("      "), S(fit(what, inner - 7), "t1")], w),
-            side([S("      "), S(fit(waiting, inner - 7), "mu")], w),
-        ]
+    else:  # too narrow for block letters: the word in bold, the facts below it, whole
+        rows.append(side([S("   "), glyph, S("  ")] + paint(word), w))
+        for copy, cls in ((what, "t1"), (waiting, "mu")):
+            text = pick(copy, inner - 7)
+            lines = [text] if text is not None else textwrap.wrap(copy[-1], max(1, inner - 7))
+            rows += [side([S("      "), S(line, cls)], w) for line in lines]
         span = max(0, inner - 6 - 12)
         n = min(12, max(0, inner - 6))
     rows.append(side([], w))
@@ -607,6 +621,9 @@ def exchange_rows(e: Exchange, w: int, rail: Rail) -> list[list[Seg]]:
     lines = [line for p in paragraphs for line in (textwrap.wrap(p, room) or [""])]
     while len(lines) > 1 and lines[-1] == "":
         lines.pop()
+    if e.live and not e.answer:  # no answer yet: what is happening, not an empty line
+        jl([S("◆", "ac b"), S(" "), S(e.doing or "Thinking…", "lv")])
+        lines = []
     for j, line in enumerate(lines):
         mark = S("◆" if j == 0 else " ", "ac b")
         segs = [mark, S(" "), S(line, "t1 b" if e.live else "t1")]
@@ -629,8 +646,22 @@ def exchange_rows(e: Exchange, w: int, rail: Rail) -> list[list[Seg]]:
     return rows
 
 
+def empty_hint(model: HostModel) -> str:
+    """What to do to start, given what is connected."""
+
+    talk = model.backend_status is ConnectionStatus.CONNECTED and any(d.online for d in model.devices.values())
+    type_ = model.agent_status != OFFLINE
+    if talk and type_:
+        return "Talk to the voice device or type a message below."
+    if talk:
+        return "Talk to the voice device to start."
+    if type_:
+        return "Type a message below to start."
+    return "Your conversation shows up here once Jarvis connects."
+
+
 def thread_rows(model: HostModel, w: int, h: int) -> list[list[Seg]]:
-    """``h`` rows: the divider, the newest exchanges that fit, a blank row."""
+    """``h`` rows: the divider, then the newest exchanges that fit, from the top down."""
 
     if h <= 0:
         return []
@@ -655,22 +686,25 @@ def thread_rows(model: HostModel, w: int, h: int) -> list[list[Seg]]:
         if i:
             chat.append(region(gutter(rail), w))
         chat += block
-    if not items:
-        chat = [
-            region(
-                gutter(rail)
-                + [S("◆", "ac b"), S(" "), S(clip("Nothing here yet. Talk to the voice device or type below.", w - rail.x - 4), "mu i")],
-                w,
-            )
-        ]
     title = [S("Today", "t2 b")] + ([S(f"  {hidden} earlier above", "mu")] if hidden else [])
     head = gutter(rail, "more") + title + [S(" ")]
     rule_n = w - 2 - width(head)
     divider = region(head + ([S("─" * rule_n, "bd")] if rule_n > 0 else []), w)
-    body = [divider, region(gutter(rail), w)] + chat + [blank(w, "bc")]
+    if not items:  # a short hint, centred in the thread's region
+        hint = [("Nothing here yet.", "t2 b")]
+        hint += [(line, "mu") for line in textwrap.wrap(empty_hint(model), max(1, w - 4))]
+        free = h - 1
+        above = max(0, (free - len(hint)) // 2)
+        rows = [blank(w, "bc")] * above
+        for line, cls in hint:
+            left = max(0, (w - len(line)) // 2)
+            rows.append(region([S(" " * left), S(line, cls)], w))
+        body = [divider] + rows
+        return (body + [blank(w, "bc")] * (h - len(body)))[:h]
+    body = [divider, region(gutter(rail), w)] + chat
     if len(body) > h:
         return body[-h:]
-    return [blank(w, "bc")] * (h - len(body)) + body
+    return body + [blank(w, "bc")] * (h - len(body))
 
 
 def render_rows(model: HostModel, w: int, h: int, frame: int = 0) -> list[list[Seg]]:
