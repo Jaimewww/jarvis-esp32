@@ -9,7 +9,9 @@ síntesis de voz y acciones sobre la propia PC. El anillo WS2812 muestra el esta
 Hay dos piezas de software iniciadas y ninguna de hardware:
 
 - `backend/`: contrato de transporte v0 (latido, conversación y WebSocket). La
-  transcripción, el agente y la síntesis todavía devuelven respuestas de prueba.
+  transcripción, el agente y la síntesis todavía devuelven respuestas de prueba. El
+  adaptador de Gentle Dot para tareas largas (`backend/app/agents/gentle_dot.py`)
+  existe y está probado contra un daemon falso; todavía no está conectado al turno.
 - `host/`: TUI cliente del daemon de Gentle Dot. Aún no se conecta al backend.
 
 No hay firmware ni modelos CAD. Las capacidades siguientes son objetivos, no funciones
@@ -70,6 +72,30 @@ La alimentación es por USB.
 - Validar WakeNet y el modelo de «Jarvis» en la placa, con voces del equipo y ruido de aula.
 - Cerrar las [decisiones abiertas](docs/decisiones.md#decisiones-abiertas): PC de la
   demostración, modelos, catálogo de acciones, autenticación y pruebas.
+
+## Integración continua
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) corre en cada push a `main`
+y en cada solicitud de fusión, con Python 3.14 (la versión de `backend/.venv` que fija
+`pyrightconfig.json`):
+
+- `backend · pytest`: las pruebas de `backend/tests`.
+- `pyright`: el chequeo de tipos de `pyrightconfig.json` sobre `backend/app`.
+
+`host/` y `tools/` aún no tienen pruebas automáticas, así que no hay paso para ellos.
+Para correr lo mismo en local:
+
+```bash
+cd backend
+python3.14 -m venv .venv
+.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/python -m pytest tests -q
+
+# pyright, desde la raíz; resuelve los imports con backend/.venv
+.venv/bin/pip install pyright==1.1.414
+cd ..
+backend/.venv/bin/pyright
+```
 
 ## Cómo trabajamos
 

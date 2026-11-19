@@ -22,6 +22,11 @@ ESP32 lo alcanza por la LAN.
 - `GET /api/v1/health` — prueba de vida y estado de los dispositivos.
 - `app/ports.py` — interfaces `Transcriber`, `Agent` y `Synthesizer` (contrato C3).
 - `app/fakes.py` — dobles de esas interfaces con salidas fijas, para pruebas.
+- `app/agents/gentle_dot.py` — `GentleDotAgent`, el `Agent` del carril de tareas
+  largas (D14) sobre el protocolo v1 del daemon de Gentle Dot (el mismo que usa
+  `host/jarvis/client.py`). Probado contra un daemon falso; **no está conectado a
+  `/converse`** ni probado aún con un daemon real. Ver
+  [adaptador de Gentle Dot](#adaptador-de-gentle-dot).
 
 ## Cómo correrlo
 
@@ -35,6 +40,48 @@ uvicorn app.main:app --port 8000
 
 Tokens por defecto (solo para desarrollo, redefinir con variables de entorno):
 `JARVIS_DEVICE_TOKEN=dev-jarvis-token`, `JARVIS_HOST_TOKEN=dev-host-token`.
+
+## Adaptador de Gentle Dot
+
+Una conexión por `reply`: `hello` con el token, espera `ready`, envía
+`{"type":"send","text":…}`, reconoce su eco `user_message` y entrega el mensaje del
+asistente (`message_delta` … `message_done`) **frase por frase**, para que la primera
+se sintetice mientras el daemon sigue (D17). `message_done.text` manda si se perdió un
+delta. Una sola tarea a la vez: un segundo `reply` en curso falla con `GentleDotBusy`.
+
+Configuración por variables de entorno (`GentleDotAgent.from_env()`); el token se lee
+en cada `reply`, nunca al importar:
+
+| Variable | Por defecto |
+|---|---|
+| `JARVIS_GENTLE_DOT_URL` | `ws://127.0.0.1:4317/ws` |
+| `JARVIS_GENTLE_DOT_TOKEN` | sin valor; si está, gana sobre el archivo |
+| `JARVIS_GENTLE_DOT_TOKEN_FILE` | `~/.gentle-dot/token` |
+| `JARVIS_GENTLE_DOT_OPEN_TIMEOUT_S` | `5` (conexión y `ready`) |
+| `JARVIS_GENTLE_DOT_IDLE_TIMEOUT_S` | `120` (máximo sin recibir ninguna trama) |
+
+C3 no define errores; el adaptador lanza subclases de `GentleDotError`:
+
+| Error | Cuándo |
+|---|---|
+| `GentleDotUnavailable` | No se puede conectar o el daemon cerró la conexión |
+| `GentleDotUnauthorized` | Cierre `4401` (o HTTP 401/403 en el saludo) |
+| `GentleDotProtocolMismatch` | Cierre `4400` |
+| `GentleDotTokenError` | Sin token, archivo ausente o vacío; no se conecta |
+| `GentleDotDaemonError` | Trama `error` (`code`, `message`) o `message_done.error` |
+| `GentleDotTimeout` | Sin `ready` en el plazo de apertura o sin tramas en el plazo de inactividad |
+| `GentleDotStopped` | Otro cliente detuvo la respuesta (`message_done.stopped`) |
+| `GentleDotBusy` | Ya hay una tarea en curso |
+| `GentleDotUnsupported` | `reset()`: el protocolo v1 no tiene un mensaje para olvidar la conversación |
+
+`abort()` envía `{"type":"abort"}` y la respuesta termina sin la frase cortada; sin
+respuesta en curso no hace nada. Si el que llama cancela, o hay error o vence el
+plazo antes de `message_done`, el adaptador también envía `abort` para no dejar al
+daemon trabajando.
+
+**Pendiente:** `reset()` (falta un mensaje en el protocolo), la confirmación de inicio
+y el aviso de fin de una tarea larga en segundo plano (D14; C3 solo define el flujo de
+texto) y la prueba contra el daemon real (T3).
 
 ## Pruebas
 
