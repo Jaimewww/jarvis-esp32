@@ -73,6 +73,30 @@ La alimentación es por USB.
 - Cerrar las [decisiones abiertas](docs/decisiones.md#decisiones-abiertas): PC de la
   demostración, modelos, catálogo de acciones, autenticación y pruebas.
 
+## Integración continua
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) corre en cada push a `main`
+y en cada solicitud de fusión, con Python 3.14 (la versión de `backend/.venv` que fija
+`pyrightconfig.json`):
+
+- `backend · pytest`: las pruebas de `backend/tests`.
+- `pyright`: el chequeo de tipos de `pyrightconfig.json` sobre `backend/app`.
+
+`host/` y `tools/` aún no tienen pruebas automáticas, así que no hay paso para ellos.
+Para correr lo mismo en local:
+
+```bash
+cd backend
+python3.14 -m venv .venv
+.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/python -m pytest tests -q
+
+# pyright, desde la raíz; resuelve los imports con backend/.venv
+.venv/bin/pip install pyright==1.1.414
+cd ..
+backend/.venv/bin/pyright
+```
+
 ## Cómo trabajamos
 
 - Cada fase del [plan](docs/planificacion.md) tiene criterios de aceptación previstos.
