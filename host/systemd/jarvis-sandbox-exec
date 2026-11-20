@@ -1,0 +1,76 @@
+#!/usr/bin/python3 -I
+"""Run a program inside a Landlock scope that systemd cannot express (Jarvis S13).
+
+    python3 -I jarvis-sandbox-exec PROGRAM [ARG...]
+
+gentle-dot.service starts the daemon through this file. It asks the kernel (Landlock
+ABI 6+, Linux 6.12+) for two scopes and then exec()s PROGRAM, so the daemon, its engine
+and every shell the agent opens inherit them and can never drop them:
+
+- LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET: no connect() to abstract Unix sockets created
+  outside this process tree. Xwayland (started by niri) also listens on the abstract
+  socket @/tmp/.X11-unix/X0 without authentication; abstract sockets live in the network
+  namespace, so InaccessiblePaths= cannot hide them and PrivateNetwork= would cut the
+  daemon off the internet. Filesystem sockets, socketpairs and TCP are not affected.
+- LANDLOCK_SCOPE_SIGNAL: no signals to processes outside this tree (the jarvis-input
+  helper, niri, the TUI). The daemon still signals its own children.
+
+Fails closed: without Landlock scopes it exits 1 and the daemon does not start.
+Python stdlib only; run with -I so nothing from the user's site-packages is imported.
+Installed by host/systemd/install.sh into ~/.local/share/jarvis/sandbox/ (read-only for
+the daemon).
+"""
+
+import ctypes
+import os
+import struct
+import sys
+
+# Same numbers on every architecture (syscalls added after the unified table).
+SYS_LANDLOCK_CREATE_RULESET = 444
+SYS_LANDLOCK_RESTRICT_SELF = 446
+LANDLOCK_CREATE_RULESET_VERSION = 1
+LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET = 1 << 0
+LANDLOCK_SCOPE_SIGNAL = 1 << 1
+MIN_ABI = 6  # first ABI with scopes
+PR_SET_NO_NEW_PRIVS = 38
+
+
+def fail(message: str) -> "None":
+    print(f"jarvis-sandbox-exec: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+def main(argv: list) -> None:
+    if len(argv) < 2 or not argv[1].startswith("/"):
+        fail("uso: jarvis-sandbox-exec PROGRAMA [ARGUMENTOS...]; PROGRAMA debe ser una ruta absoluta")
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.syscall.restype = ctypes.c_long
+
+    abi = libc.syscall(SYS_LANDLOCK_CREATE_RULESET, None, ctypes.c_size_t(0),
+                       ctypes.c_uint32(LANDLOCK_CREATE_RULESET_VERSION))
+    if abi < MIN_ABI:
+        fail(f"el kernel no ofrece Landlock ABI {MIN_ABI}+ (obtenido {abi}, "
+             f"{os.strerror(ctypes.get_errno()) if abi < 0 else 'versión antigua'}); "
+             "sin él el agente podría usar el socket X11 abstracto. No se arranca.")
+
+    # struct landlock_ruleset_attr { u64 handled_access_fs; u64 handled_access_net; u64 scoped; }
+    attr = struct.pack("=QQQ", 0, 0, LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET | LANDLOCK_SCOPE_SIGNAL)
+    buf = ctypes.create_string_buffer(attr, len(attr))
+    fd = libc.syscall(SYS_LANDLOCK_CREATE_RULESET, buf, ctypes.c_size_t(len(attr)), ctypes.c_uint32(0))
+    if fd < 0:
+        fail(f"landlock_create_ruleset: {os.strerror(ctypes.get_errno())}")
+    # Required for an unprivileged landlock_restrict_self (the unit also sets NoNewPrivileges=yes).
+    if libc.prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
+        fail(f"prctl(PR_SET_NO_NEW_PRIVS): {os.strerror(ctypes.get_errno())}")
+    if libc.syscall(SYS_LANDLOCK_RESTRICT_SELF, ctypes.c_int(fd), ctypes.c_uint32(0)) != 0:
+        fail(f"landlock_restrict_self: {os.strerror(ctypes.get_errno())}")
+    os.close(fd)
+    try:
+        os.execv(argv[1], argv[1:])
+    except OSError as exc:
+        fail(f"no se pudo ejecutar {argv[1]}: {exc.strerror}")
+
+
+if __name__ == "__main__":
+    main(sys.argv)
