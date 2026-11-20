@@ -495,11 +495,20 @@ class TypeTest(Base):
         res = await self.agent({"op": "type", "text": "añ\nañ€", "intent": "escribir nota"})
         self.assertEqual(res, {"ok": True})
         [c] = self.calls("wtype")
-        self.assertEqual(c["argv"], ["-p", "0x61", "-p", "0xf1", "-p", "0xff0d", "-p", "0x10020ac",
+        euro = "0x20ac" if server._xkb_utf32_to_keysym else "0x10020ac"  # wtype types EuroSign
+        self.assertEqual(c["argv"], ["-p", "0x61", "-p", "0xf1", "-p", "0xff0d", "-p", euro,
                                      "-k", "Shift_L", "-s", "250", "-d", "8", "--", "añ\nañ€"])
         niri = self.calls("niri")
         self.assertEqual(len(niri), 2)  # check + re-check right before wtype
         self.assertEqual(niri[0]["argv"], ["msg", "-j", "focused-window"])
+
+    def test_keysyms_match_libxkbcommon(self) -> None:
+        # wtype maps characters with xkb_utf32_to_keysym, which picks legacy keysyms for many
+        # characters agents write (’ — … €); registering 0x1000000+cp left them mid-text (L28).
+        if not server._xkb_utf32_to_keysym:
+            self.skipTest("libxkbcommon not available")
+        self.assertEqual(server.register_chars("’—…€"),
+                         ["-p", "0xad1", "-p", "0xaa9", "-p", "0xaae", "-p", "0x20ac"])
 
     async def test_intent_optional(self) -> None:
         self.assertTrue((await self.agent({"op": "type", "text": "hola"}))["ok"])

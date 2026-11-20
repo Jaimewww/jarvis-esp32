@@ -67,13 +67,36 @@ WTYPE_KEY_PRELUDE = ("-p", "Escape", *WTYPE_PRELUDE)
 ESCAPE_PAUSE_MS = "300"  # VS Code Vim needs a moment to leave insert mode (L25)
 
 
+def _load_xkb_utf32_to_keysym():  # type: ignore[no-untyped-def]
+    """libxkbcommon's xkb_utf32_to_keysym, the mapping wtype uses, or None when unavailable."""
+    import ctypes
+    import ctypes.util
+
+    name = ctypes.util.find_library("xkbcommon")
+    try:
+        lib = ctypes.CDLL(name or "libxkbcommon.so.0")
+        fn = lib.xkb_utf32_to_keysym
+    except (OSError, AttributeError):
+        return None
+    fn.argtypes, fn.restype = [ctypes.c_uint32], ctypes.c_uint32
+    return fn
+
+
+_xkb_utf32_to_keysym = _load_xkb_utf32_to_keysym()
+
+
 def _keysym(ch: str) -> int:
-    """The keysym wtype types for one character (xkb_utf32_to_keysym for what we can type)."""
+    """The keysym wtype types for one character: its own remaps, then xkb_utf32_to_keysym
+    (legacy keysyms for ’ — … € and many more, L28); without libxkbcommon, the Unicode keysym."""
     cp = ord(ch)
     if ch == "\n":
         return 0xFF0D  # Return
     if ch == "\t":
         return 0xFF09  # Tab
+    if _xkb_utf32_to_keysym is not None:
+        ks = _xkb_utf32_to_keysym(cp)
+        if ks:
+            return int(ks)
     if 0x20 <= cp <= 0x7E or 0xA0 <= cp <= 0xFF:
         return cp  # Latin-1 keysyms equal the code point
     return 0x1000000 + cp
