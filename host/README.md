@@ -23,6 +23,9 @@ does not vendor.
   `design/tui-user/08-story-chat-polished.html`), the default.
 * `jarvis/devview.py` — the developer view (approved mockup
   `design/tui-developer/06-pipeline-refined.html`).
+* `jarvis/voice.py` — push-to-talk (F4): records the microphone with `pw-record`
+  (or `parecord` / `arecord`) and transcribes it with the local `whisper-server`;
+  standard library only (see [Hablarle a Jarvis](#hablarle-a-jarvis)).
 * `jarvis/theme.py` — the six colour themes of `design/tui-theme` as tokens (copied
   by value; nothing under `design/` is read at run time). Both views draw only
   through them.
@@ -269,7 +272,9 @@ python tools/sim_device.py --url http://127.0.0.1:8000
 
 Keys (all listed in the footer): **Enter** sends the text in the input row, **Ctrl+A**
 stops the answer that is running, **Ctrl+Q** quits, **F2** switches between the user
-view and the developer view, **F3** switches between dark and light mode. While the
+view and the developer view, **F3** switches between dark and light mode, **F4**
+starts recording what you say and, pressed again, sends it (see
+[Hablarle a Jarvis](#hablarle-a-jarvis)); while it records, **Esc** drops it. While the
 `/login` panel is open the footer shows its own keys: **Enter** chooses or answers,
 **Esc** goes back, closes the panel or cancels the sign-in that is running, and
 **Ctrl+Y** copies the sign-in address (when one is shown) to the clipboard.
@@ -312,6 +317,53 @@ Without a daemon the client retries with backoff (500 ms, 1 s, 2 s, 5 s) with no
 traceback and no freeze. The user view says that Gentle Dot is not running (or has no
 access token yet) and keeps showing the voice side; the developer view shows
 `○ daemon disconnected` in its top border.
+
+## Hablarle a Jarvis
+
+**F4** graba el micrófono predeterminado y, al volver a pulsarla, transcribe lo dicho con
+el `whisper-server` local y lo manda a Gentle Dot igual que un mensaje escrito (se mide
+igual y se ve como `said ◎` en la vista de usuario y con `◎` junto a `you` en la vista
+de desarrollador). Mientras graba, una fila sobre el campo de texto muestra
+`● recording 3.2s  ·  f4 to send  ·  esc cancels`; luego `◐ transcribing…`. **Esc**
+cancela sin mandar nada. La grabación se corta sola a los 60 s y se envía.
+
+* Audio: WAV PCM 16 kHz mono 16 bits (D6), con
+  `pw-record --rate 16000 --channels 1 --format s16 <archivo>`; si falta, `parecord`
+  o `arecord`. Sin ninguno: `No recorder found: install pw-record (PipeWire), parecord
+  or arecord.`
+* El archivo va a una carpeta temporal privada (`0700`) y se borra al terminar, se
+  mande o no.
+* Transcripción: `POST` multipart (`file`, `response_format=json`, `language=es`) a
+  `JARVIS_STT_URL` (por defecto `http://127.0.0.1:8080/inference`), con 30 s de límite.
+* Si no se oyó nada: `Nothing was heard: nothing was sent.` Si el servidor no responde
+  o contesta otra cosa que 200, la notificación dice la causa exacta (por ejemplo
+  `Can't reach the speech server at http://127.0.0.1:8080/inference: [Errno 111]
+  Connection refused. Nothing was sent.`) y no se manda nada.
+* Con el panel `/login` abierto F4 no graba, y abrir `/login` mientras se graba descarta
+  la grabación: un secreto nunca se graba ni se manda.
+
+Requiere `whisper-server` (whisper.cpp) escuchando en local, con el modelo cargado una
+vez. Si está instalado como servicio de usuario (tarea T6):
+
+```bash
+systemctl --user start whisper-server
+```
+
+O a mano:
+
+```bash
+whisper-server -m ~/.local/share/whisper-models/ggml-large-v3-turbo-q5_0.bin \
+  --host 127.0.0.1 --port 8080
+JARVIS_STT_URL=http://127.0.0.1:8080/inference python -m jarvis.tui
+```
+
+Prueba real opcional (no corre por defecto), que transcribe un WAV con el mismo cliente
+de la ventana:
+
+```bash
+JARVIS_REAL_WHISPER=1 JARVIS_WHISPER_WAV=~/jarvis-prueba.wav \
+  python -m pytest tests/test_voice.py -k real -s
+```
 
 ## Dark and light mode
 
@@ -421,6 +473,11 @@ no AI account it expects the daemon's `no_account` message on screen; with one i
 skips that check and stops the prompt. `JARVIS_DAEMON_URL` and
 `JARVIS_DAEMON_TOKEN_FILE` override the defaults; the token is opened by the client and
 never printed.
+
+`tests/test_voice.py::test_real_whisper_server_transcribes_a_wav` posts an existing WAV
+(`JARVIS_WHISPER_WAV`) to the real `whisper-server` (`JARVIS_STT_URL`) and is skipped
+unless `JARVIS_REAL_WHISPER=1`. The other push-to-talk tests use a fake recorder and an
+in-process HTTP server: no microphone, no whisper-server.
 
 ## Security caveat: the catalog is bounded in the backend
 

@@ -202,7 +202,9 @@ def exchanges(model: HostModel) -> list[Exchange]:
             found = echo_of(message)
             echo = found is not None
             if found is None:
-                found = Exchange(source="typed", at=message.at, said=message.text, answer="")
+                # Said into this window's microphone (f4): "said", as a voice turn.
+                source = "voice" if message.spoken else "typed"
+                found = Exchange(source=source, at=message.at, said=message.text, answer="")
                 typed.append(found)
             current = found
             current.did += [_activity_did(a.status, a.title) for a in model.activities_of(message.message_id)]

@@ -567,6 +567,8 @@ def conversation_rows(model: HostModel, g: Grid) -> list[list[Seg]]:
                 if live:
                     items.append((X_G, [S(*LIVE)]))
                 items.append((X_T, [S(who, "lv b" if live else ("t2 b" if who == "you" else "t1 b"))]))
+                if message.spoken:  # said into this window's microphone (f4)
+                    items.append((X_T + len(who) + 1, [S("◎", "t2")]))
             body = [S(line, "t2" if who == "you" else "t1")]
             if live and j == len(lines) - 1:
                 body.append(S("▍", "lv"))
@@ -691,23 +693,31 @@ def _legend(entries: Sequence[tuple[Seg, str]], sep: str) -> list[Seg]:
     return segs
 
 
-def footer_row(w: int, keys: Sequence[tuple[str, str]], legend: bool) -> list[Seg]:
+def footer_row(
+    w: int, keys: Sequence[tuple[str, str]], legend: bool, optional: Sequence[str] = ()
+) -> list[Seg]:
     """Keys at column 2 (bold key, muted label); the glyph legend right-aligned if asked.
 
     The spacing is chosen for the developer view's legend, so both views show the same
     keys at the same width: wide spacing when the whole legend fits, tighter spacing
-    next, and only then whole legend entries go, the least telling first.
+    next. With the legend shown, the ``optional`` keys go next; only then whole legend
+    entries go, the least telling first.
     """
 
     def room(segs: list[Seg]) -> int:
         return w - PAD * 2 - width(segs) - 2
 
     found: list[Seg] = []
-    for key_sep, legend_sep in (("   ", "   "), ("   ", "  "), ("  ", "  ")):
-        segs = _keys(keys, key_sep)
-        found = _legend(LEGEND, legend_sep)
-        if width(found) <= room(segs):
-            break
+    spacings = (("   ", "   "), ("   ", "  "), ("  ", "  "))
+    for kept in (keys, [k for k in keys if k[0] not in optional]) if legend and optional else (keys,):
+        for key_sep, legend_sep in spacings:
+            segs = _keys(kept, key_sep)
+            found = _legend(LEGEND, legend_sep)
+            if width(found) <= room(segs):
+                break
+        else:
+            continue
+        break
     else:
         entries = list(LEGEND)
         for word in LEGEND_DROP_ORDER:

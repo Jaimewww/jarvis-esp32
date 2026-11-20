@@ -22,6 +22,10 @@ Typing ``/login`` opens the sign-in panel (``jarvis.loginview``) above the input
 both views: the person picks an account and a way to sign in, and answers the daemon's
 prompts in the same input, hidden for a ``secret``. Esc cancels. The answers go
 straight to the daemon and are never logged, stored or drawn.
+
+f4 is push-to-talk (``jarvis.voice``): press it to record the microphone, press it again
+to transcribe with the local whisper-server and send the text like a typed prompt,
+shown as said. Esc drops the recording. It never records while ``/login`` is open.
 """
 
 from __future__ import annotations
@@ -31,7 +35,10 @@ import asyncio
 import contextlib
 import logging
 import os
+import shutil
 import sys
+import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
 from rich.text import Text
@@ -70,11 +77,12 @@ from .client import (
     ToastEvent,
     parse_model_spec,
 )
-from .devview import DeveloperView, footer_row
+from .devview import DeveloperView, footer_row, place
 from .loginview import LoginPanel
-from .model import LOGIN_CANCELLED, HostModel, Login, LoginStage
+from .model import LOGIN_CANCELLED, HostModel, Login, LoginStage, VoiceInput
 from .theme import DEFAULT_DARK, LIGHT, THEMES, Theme, to_text
 from .userview import UserView
+from .voice import MAX_RECORDING_S, ProcessRecorder, Recorder, Transcriber, VoiceError, WhisperTranscriber
 
 logger = logging.getLogger(__name__)
 
@@ -99,12 +107,16 @@ def is_login(text: str) -> bool:
     return text.strip().lower() == "/login"
 
 
-def footer_keys(login: Login | None) -> tuple[tuple[str, str], ...]:
+def footer_keys(login: Login | None, voice: VoiceInput | None = None) -> tuple[tuple[str, str], ...]:
     """The keys of the footer; the panel's own keys while ``/login`` is open."""
 
     shared = (("ctrl+q", "quit"), ("f2", "view"), ("f3", "mode"))
+    if voice is not None and voice.recording:
+        return (("f4", "send"), ("esc", "cancel")) + shared
+    if voice is not None and voice.transcribing:
+        return (("esc", "cancel"),) + shared
     if login is None or not login.open:
-        return (("enter", "send"), ("ctrl+a", "stop")) + shared
+        return (("enter", "send"), ("ctrl+a", "stop"), ("f4", "talk")) + shared
     if login.running:
         keys: tuple[tuple[str, str], ...] = (("enter", "send"), ("esc", "cancel"))
         if login.link:
@@ -171,11 +183,47 @@ class KeysFooter(Widget):
         self.palette: Theme = THEMES[DEFAULT_DARK]
         self.developer = False
         self.login: Login | None = None
+        self.voice: VoiceInput | None = None
 
     def render(self) -> Text:
         # Short hints, the same in both views, so the legend keeps its room.
-        keys = footer_keys(self.login)
-        return to_text([footer_row(self.size.width, keys, self.developer)], self.palette)
+        keys = footer_keys(self.login, self.voice)
+        # f4 talk gives way to the developer legend; while recording it is the main key.
+        optional = ("f4",) if self.voice is None or not self.voice.active else ()
+        return to_text([footer_row(self.size.width, keys, self.developer, optional)], self.palette)
+
+
+def voice_row(voice: VoiceInput, w: int) -> list[tuple[str, str]]:
+    """The one row of push-to-talk: recording with its time, or transcribing."""
+
+    sep = ("  ·  ", "mu")
+    if voice.recording:
+        segs = [("●", "er b"), (f" recording {voice.elapsed_s():.1f}s", "t1 b"), sep,
+                ("f4", "t2 b"), (" to send", "mu"), sep, ("esc", "t2 b"), (" cancels", "mu")]
+    else:
+        segs = [("◐", "lv b"), (" transcribing…", "lv"), sep, ("esc", "t2 b"), (" cancels", "mu")]
+    return place([(2, segs)], w, "bc")
+
+
+class VoiceBar(Widget):
+    """Push-to-talk's state above the input, in both views; hidden while idle."""
+
+    DEFAULT_CSS = """
+    VoiceBar {
+        height: 1;
+        background: $jarvis-background;
+    }
+    """
+
+    def __init__(self, voice: VoiceInput, **kwargs: object) -> None:
+        super().__init__(**kwargs)  # type: ignore[arg-type]
+        self.voice = voice
+        self.palette: Theme = THEMES[DEFAULT_DARK]
+
+    def render(self) -> Text:
+        if not self.voice.active:
+            return Text("")
+        return to_text([voice_row(self.voice, self.size.width)], self.palette)
 
 
 
@@ -234,6 +282,7 @@ class JarvisApp(App[None]):
         Binding("f3", "toggle_mode", "Dark / light"),
         Binding("escape", "login_escape", "Close sign-in", show=False, priority=True),
         Binding("ctrl+y", "login_copy", "Copy sign-in link", show=False, priority=True),
+        Binding("f4", "voice", "Talk", priority=True),
     )
     USER_VIEW = "user"
     DEVELOPER_VIEW = "developer"
@@ -251,6 +300,9 @@ class JarvisApp(App[None]):
         animate: bool = True,
         typed_model: str | None = None,
         typed_thinking: str | None = None,
+        recorder_factory: Callable[[Path], Recorder] | None = None,
+        transcriber: Transcriber | None = None,
+        max_recording_s: float = MAX_RECORDING_S,
     ) -> None:
         super().__init__()
         #: The model and thinking level wanted for typed prompts, applied on connect
@@ -269,6 +321,19 @@ class JarvisApp(App[None]):
         self._login = LoginPanel(self._host, id="login")
         self._footer = KeysFooter(id="keys")
         self._footer.login = self._host.login
+        self._footer.voice = self._host.voice
+        # Push-to-talk (f4): what records, what transcribes, and the open recording.
+        self._voice_bar = VoiceBar(self._host.voice, id="voice")
+        self._voice_bar.display = False
+        self._recorder_factory: Callable[[Path], Recorder] = recorder_factory or ProcessRecorder
+        self._transcriber: Transcriber = transcriber or WhisperTranscriber()
+        self._max_recording_s = max_recording_s
+        self._recorder: Recorder | None = None
+        self._voice_dir: Path | None = None
+        #: Bumped by every start and cancel: a late result of an older recording is dropped.
+        self._voice_gen = 0
+        self._voice_timers: list[object] = []
+        self._voice_tasks: set[asyncio.Task[None]] = set()
         # f3 pairs the starting theme with one of the other mode.
         start = THEMES[theme_name]
         self._dark_name = theme_name if start.dark else DEFAULT_DARK
@@ -305,6 +370,7 @@ class JarvisApp(App[None]):
             yield self._user
             yield self._developer
         yield self._login
+        yield self._voice_bar
         with Horizontal(id="input-row"):
             yield Static("▸", id="prompt-mark")
             yield PromptInput(placeholder=PLACEHOLDER, id="prompt", compact=True)
@@ -322,6 +388,8 @@ class JarvisApp(App[None]):
     def _refresh_views(self) -> None:
         for view in (self._user, self._developer, self._footer):
             view.refresh()
+        self._voice_bar.display = self._host.voice.active
+        self._voice_bar.refresh()
         self._sync_login()
 
     def _sync_login(self) -> None:
@@ -365,7 +433,7 @@ class JarvisApp(App[None]):
     def _apply_theme(self, name: str) -> None:
         self._theme_name = name
         self.theme = f"jarvis-{name}"
-        for view in (self._user, self._developer, self._footer, self._login):
+        for view in (self._user, self._developer, self._footer, self._login, self._voice_bar):
             view.palette = THEMES[name]
             view.refresh()
 
@@ -382,6 +450,10 @@ class JarvisApp(App[None]):
         # The clients report "not connected" while closing; the widgets are gone by then.
         self._closing = True
         self._user.stop_animation()
+        self._cancel_voice()
+        for voice_task in list(self._voice_tasks):
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                await asyncio.wait_for(voice_task, 5.0)
         await self._client.close()
         await self._backend.close()
         for task in (self._client_task, self._backend_task):
@@ -536,6 +608,9 @@ class JarvisApp(App[None]):
         if not self._client.auth_list():
             self.notify("Gentle Dot is not connected: /login needs it.", severity="error")
             return
+        # Nothing is recorded or sent while signing in.
+        if self._cancel_voice():
+            self.notify("Recording dropped: nothing is recorded while signing in.", severity="warning")
         self._host.login.show()
         self._refresh_views()
 
@@ -605,7 +680,9 @@ class JarvisApp(App[None]):
         # Esc and ctrl+y belong to the panel only; otherwise the keys go where they went.
         if action == "login_copy" and self._prompt_hidden():
             return False  # nothing is copied while a secret is being typed
-        if action in ("login_escape", "login_copy"):
+        if action == "login_escape":
+            return self._host.login.open or self._host.voice.active
+        if action == "login_copy":
             return self._host.login.open
         return True
 
@@ -616,6 +693,11 @@ class JarvisApp(App[None]):
             return False
 
     def action_login_escape(self) -> None:
+        if self._host.voice.active:
+            what = "Recording" if self._host.voice.recording else "Transcription"
+            self._cancel_voice()
+            self.notify(f"{what} cancelled: nothing was sent.", severity="information")
+            return
         login = self._host.login
         if not login.open:
             return
@@ -648,13 +730,131 @@ class JarvisApp(App[None]):
         self.notify("Sign-in link copied.", severity="information")
 
 
+    # Push-to-talk (f4)
+
+    async def action_voice(self) -> None:
+        """f4: start recording, or stop it and send what was said."""
+
+        voice = self._host.voice
+        if self._host.login.open:
+            self.notify("Close the sign-in panel first: f4 does not record while signing in.", severity="warning")
+            return
+        if voice.recording:
+            self._stop_recording()
+        elif not voice.active:
+            await self._start_recording()
+
+    async def _start_recording(self) -> None:
+        directory = Path(tempfile.mkdtemp(prefix="jarvis-voice-"))  # mode 0700
+        recorder = self._recorder_factory(directory / "speech.wav")
+        try:
+            await recorder.start()
+        except VoiceError as error:
+            shutil.rmtree(directory, ignore_errors=True)
+            self.notify(str(error), severity="error")
+            return
+        if self._host.voice.active or self._host.login.open:  # something else began meanwhile
+            self._track(self._discard(recorder, directory))
+            return
+        self._voice_gen += 1
+        self._recorder, self._voice_dir = recorder, directory
+        self._host.voice.start()
+        self._voice_timers = [
+            self.set_interval(0.1, self._voice_bar.refresh, name="voice-clock"),
+            self.set_timer(self._max_recording_s, self._recording_capped, name="voice-cap"),
+        ]
+        self._refresh_views()
+
+    def _recording_capped(self) -> None:
+        if self._host.voice.recording:
+            self.notify(f"Recording stopped at the {self._max_recording_s:g} s limit.", severity="information")
+            self._stop_recording()
+
+    def _stop_timers(self) -> None:
+        for timer in self._voice_timers:
+            timer.stop()  # type: ignore[attr-defined]
+        self._voice_timers = []
+
+    def _track(self, coroutine: object) -> None:
+        task = asyncio.create_task(coroutine)  # type: ignore[arg-type]
+        self._voice_tasks.add(task)
+        task.add_done_callback(self._voice_tasks.discard)
+
+    def _stop_recording(self) -> None:
+        recorder, directory = self._recorder, self._voice_dir
+        self._recorder = self._voice_dir = None
+        self._stop_timers()
+        if recorder is None or directory is None:
+            self._host.voice.reset()
+            self._refresh_views()
+            return
+        self._host.voice.transcribe()
+        self._refresh_views()
+        self._track(self._transcribe_and_send(recorder, directory, self._voice_gen))
+
+    async def _transcribe_and_send(self, recorder: Recorder, directory: Path, gen: int) -> None:
+        text: str | None = None
+        error: str | None = None
+        try:
+            path = await recorder.stop()
+            if gen == self._voice_gen:
+                text = await asyncio.to_thread(self._transcriber.transcribe, path)
+        except VoiceError as failure:
+            error = str(failure)
+        except Exception as failure:  # noqa: BLE001 - said to the person, never a crash
+            logger.warning("push-to-talk failed", exc_info=failure)
+            error = f"Push-to-talk failed: {failure}"
+        finally:
+            shutil.rmtree(directory, ignore_errors=True)
+        if gen != self._voice_gen or self._closing:
+            return  # cancelled meanwhile (esc, /login, closing): nothing is sent
+        self._host.voice.reset()
+        self._refresh_views()
+        if error is not None:
+            self.notify(f"{error.rstrip('.')}. Nothing was sent.", severity="error")
+        elif not text or not text.strip():
+            self.notify("Nothing was heard: nothing was sent.", severity="warning")
+        elif self._host.login.open:
+            self.notify("Not sent: the sign-in panel is open.", severity="warning")
+        elif not self._client.send(text.strip()):
+            self.notify("Gentle Dot is not connected: what you said was not sent.", severity="error")
+        else:
+            self._host.note_sent(spoken=True)
+
+    def _cancel_voice(self) -> bool:
+        """Drop the recording or the transcription under way; ``True`` if there was one."""
+
+        if not self._host.voice.active:
+            return False
+        self._voice_gen += 1
+        self._stop_timers()
+        recorder, directory = self._recorder, self._voice_dir
+        self._recorder = self._voice_dir = None
+        self._host.voice.reset()
+        if recorder is not None and directory is not None:
+            self._track(self._discard(recorder, directory))
+        if not self._closing:
+            self._refresh_views()
+        return True
+
+    @staticmethod
+    async def _discard(recorder: Recorder, directory: Path) -> None:
+        try:
+            await recorder.cancel()
+        except Exception:  # noqa: BLE001 - the file goes either way
+            logger.warning("the recorder did not cancel cleanly", exc_info=True)
+        finally:
+            shutil.rmtree(directory, ignore_errors=True)
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="python -m jarvis.tui",
         description=(
             "Host TUI for the Gentle Dot daemon (protocol v1) and the Jarvis backend "
             "(ESP32 state and voice turns). Keys: f2 switches the user and developer "
-            "views, f3 switches dark and light mode. Type /login to sign in to an AI account "
+            "views, f3 switches dark and light mode, f4 records what you say and sends it "
+            "(needs a local whisper-server, see JARVIS_STT_URL). Type /login to sign in to an AI account "
             "without leaving the window."
         ),
     )

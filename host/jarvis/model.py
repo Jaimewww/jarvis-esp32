@@ -149,6 +149,8 @@ class Message:
     at: float | None = None
     error: str | None = None
     stopped: bool = False
+    #: A user message this window sent from the microphone (f4), not typed.
+    spoken: bool = False
 
     @property
     def answer(self) -> str:
@@ -187,6 +189,8 @@ class PromptTiming:
     settled: bool = False
     #: The newest assistant message of this prompt: the reply the time belongs to.
     reply_id: str | None = None
+    #: Sent from the microphone (f4) rather than typed.
+    spoken: bool = False
 
     def _since(self, at: float | None) -> float | None:
         return None if at is None else at - self.sent_at
@@ -328,6 +332,41 @@ class Login:
         self.result = (ok, text)
 
 
+class VoiceInput:
+    """Push-to-talk in this window (f4): idle, recording or transcribing."""
+
+    def __init__(self, monotonic: Callable[[], float] = time.monotonic) -> None:
+        self._monotonic = monotonic
+        self.phase = "idle"
+        self.started_at: float | None = None
+
+    @property
+    def recording(self) -> bool:
+        return self.phase == "recording"
+
+    @property
+    def transcribing(self) -> bool:
+        return self.phase == "transcribing"
+
+    @property
+    def active(self) -> bool:
+        return self.phase != "idle"
+
+    def elapsed_s(self) -> float:
+        return 0.0 if self.started_at is None else max(0.0, self._monotonic() - self.started_at)
+
+    def start(self) -> None:
+        self.phase = "recording"
+        self.started_at = self._monotonic()
+
+    def transcribe(self) -> None:
+        self.phase = "transcribing"
+
+    def reset(self) -> None:
+        self.phase = "idle"
+        self.started_at = None
+
+
 def _median(values: Iterable[float]) -> float | None:
     items = list(values)
     return statistics.median(items) if items else None
@@ -343,8 +382,9 @@ class HostModel:
     ) -> None:
         self._clock = clock
         self._monotonic = monotonic
-        #: Send stamps of typed prompts not echoed yet, oldest first (the daemon queues).
-        self._sent: deque[float] = deque()
+        #: Send stamps of typed prompts not echoed yet, oldest first (the daemon queues),
+        #: each with whether it was spoken (f4) rather than typed.
+        self._sent: deque[tuple[float, bool]] = deque()
         #: The typed prompt being answered now, and the last one that finished.
         self._timing: PromptTiming | None = None
         self.last_timing: PromptTiming | None = None
@@ -367,6 +407,8 @@ class HostModel:
         self.queue_total = 0
         #: The ``/login`` panel, shared by both views.
         self.login = Login()
+        #: Push-to-talk (f4), shared by both views.
+        self.voice = VoiceInput(monotonic)
         self.turns: list[Turn] = []
         self._turns_by_id: dict[str, Turn] = {}
         #: Actions that arrived while their device had no open turn.
@@ -573,10 +615,14 @@ class HostModel:
 
     # Daemon events
 
-    def note_sent(self) -> None:
-        """A typed prompt left this host now; its echo, first text and end are timed."""
+    def note_sent(self, *, spoken: bool = False) -> None:
+        """A prompt left this host now; its echo, first text and end are timed.
 
-        self._sent.append(self._monotonic())
+        ``spoken``: it was said into the microphone (f4) and transcribed, not typed; its
+        echo is marked so both views show it as said.
+        """
+
+        self._sent.append((self._monotonic(), spoken))
 
     def apply_daemon(self, event: Event) -> None:
         self._time(event)
@@ -600,7 +646,9 @@ class HostModel:
             self._apply_login(event)
         elif isinstance(event, UserMessageEvent):
             self.agent_notice = None  # the daemon started a prompt: it can answer again
-            self._message(event.message_id, "user", event.text, streaming=False, at=self._clock())
+            message = self._message(event.message_id, "user", event.text, streaming=False, at=self._clock())
+            if self._timing is not None and self._timing.spoken:  # set by _time for this echo
+                message.spoken = True
         elif isinstance(event, MessageDeltaEvent):
             self.agent_notice = None
             known = self._messages_by_id.get(event.message_id)
@@ -694,7 +742,11 @@ class HostModel:
         elif isinstance(event, UserMessageEvent):
             self._settle_timing()  # the agent went on to the next prompt without idle
             # Only prompts typed here are timed; one from another window is not.
-            self._timing = PromptTiming(self._sent.popleft()) if self._sent else None
+            if self._sent:
+                sent_at, spoken = self._sent.popleft()
+                self._timing = PromptTiming(sent_at, spoken=spoken)
+            else:
+                self._timing = None
             if self._timing is not None:
                 self._timing.echo_at = self._monotonic()
         elif self._timing is None:
