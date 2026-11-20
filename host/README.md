@@ -77,8 +77,10 @@ systemd:
   1 min, como mucho 10 arranques en 10 minutos) y escribe en el journal. Arranca con la
   sesión gráfica (`graphical-session.target`) y se detiene al cerrarla. Sin secretos.
 * `systemd/install.sh` — instala, verifica o quita la unidad. Solo escribe
-  `~/.config/systemd/user/gentle-dot.service` (o bajo `$XDG_CONFIG_HOME`) y solo llama a
-  `systemctl --user`. Se niega a correr como root.
+  `~/.config/systemd/user/gentle-dot.service` (o bajo `$XDG_CONFIG_HOME`) y las reglas del
+  agente (abajo), y solo llama a `systemctl --user`. Se niega a correr como root.
+* `gentle-dot/AGENTS.md` — reglas del agente para el escritorio; ver
+  [Reglas del agente](#reglas-del-agente-agentsmd).
 * `systemd/test_install.sh` — pruebas del script sin systemd ni Gentle Dot (ver abajo).
 
 ### Requisitos
@@ -148,6 +150,30 @@ dejen el daemon con `WAYLAND_DISPLAY`.
 - Límite de arranques: la unidad admite como mucho 10 arranques en 10 minutos (`StartLimitIntervalSec=10min`, `StartLimitBurst=10`); después queda en `failed` hasta `systemctl --user reset-failed gentle-dot.service`.
 - Si `systemctl --user daemon-reload` falla, el instalador sale con error y deja `gentle-dot.service.reload-pending`; vuelve a ejecutarlo (o `--uninstall`) y reintentará la recarga en vez de responder "Sin cambios".
 
+### Reglas del agente (`AGENTS.md`)
+
+El agente del daemon lee `AGENTS.md` de su carpeta (`~/.gentle-dot/agent/`) cuando
+arranca el motor. El de `host/gentle-dot/AGENTS.md` le dice que abra las aplicaciones
+gráficas **en segundo plano** (`setsid -f <programa> >/dev/null 2>&1` o
+`gtk-launch <id>`) y que confirme con `pgrep -f <programa>`: un `brave` en primer plano
+no termina nunca, la herramienta de shell corta a los 10 s y el agente responde que no
+pudo aunque la app se abrió (L13 de `odd/tasks/s2-round2.md`).
+
+- `install.sh` lo copia como `~/.gentle-dot/agent/AGENTS.md` (0644). Otra carpeta:
+  `--agent-home DIR` o `GENTLE_DOT_AGENT_HOME=DIR` (ruta absoluta; tiene que ser la que
+  usa el daemon). Si ya está igual, dice "Sin cambios"; si hay uno distinto, guarda el
+  anterior en `AGENTS.md.bak` e imprime la ruta. `--dry-run` solo lo anuncia y
+  `--check` dice si está al día, falta o está desactualizado.
+- Como se lee al arrancar el motor: con `--enable`, un cambio en las reglas hace
+  `systemctl --user try-restart gentle-dot.service`; sin `--enable` el script imprime ese
+  comando para que lo corras.
+- Para editarlo: cambiar `host/gentle-dot/AGENTS.md` en el repositorio y volver a correr
+  `install.sh --enable` (así queda versionado). Si se edita directamente
+  `~/.gentle-dot/agent/AGENTS.md`, reiniciar el servicio; la próxima instalación lo
+  reemplaza y deja tu versión en `AGENTS.md.bak`.
+- `--uninstall` no lo borra (puede tener cambios tuyos y sin el servicio no hace nada);
+  dice dónde quedó.
+
 ### Verificar
 
 ```bash
@@ -193,7 +219,8 @@ host/systemd/install.sh --uninstall
 ```
 
 Detiene y deshabilita el servicio, borra la unidad y recarga systemd. No toca
-`~/.gentle-dot` (datos, conversaciones y token) ni el checkout de Gentle Dot.
+`~/.gentle-dot` (datos, conversaciones, token y `agent/AGENTS.md`) ni el checkout de
+Gentle Dot.
 
 ### Problemas frecuentes
 
@@ -212,6 +239,7 @@ Detiene y deshabilita el servicio, borra la unidad y recarga systemd. No toca
 | El agente no puede usar `sudo` | Efecto buscado de `NoNewPrivileges=yes`; se puede quitar con un override |
 | El servicio se detiene al cerrar sesión | Normal: la unidad es `PartOf=graphical-session.target`; ver Requisitos (`--headless` si se quiere sin sesión) |
 | La app no abre / `Missing X server or $DISPLAY` en el journal | El servicio arrancó antes de la sesión gráfica y no tiene `WAYLAND_DISPLAY` ni `DISPLAY`; con esta unidad arranca con la sesión (volver a correr `install.sh --enable` si la instalada es anterior). Mientras tanto: `systemctl --user restart gentle-dot` dentro de la sesión |
+| La app se abre pero Jarvis dice que no pudo (`Command timed out after 10 seconds`) | Falta la regla de lanzar en segundo plano: el agente corrió la app en primer plano. `install.sh --enable` instala `~/.gentle-dot/agent/AGENTS.md` y reinicia el servicio (`install.sh --check` dice si está al día) |
 | El servicio no arranca al iniciar sesión | El compositor no activa `graphical-session.target` (`systemctl --user is-active graphical-session.target`): usar `--headless` o arrancarlo desde el compositor |
 
 Sin la aplicación de escritorio, el proyecto original carga la configuración tal cual y
@@ -228,8 +256,9 @@ Corre en un `HOME` y `XDG_CONFIG_HOME` temporales con `systemctl`, `node` e `id`
 salida de `--dry-run` al instalar y desinstalar, idempotencia, negativa como root, con
 Node viejo, con un checkout en otro commit o sin dependencias, que la unidad va con la
 sesión gráfica (y `--headless` con `default.target`), que `--enable` vuelve a habilitar
-una unidad que quedó en el otro target, y que no se escribe nada fuera del directorio de
-unidades. Si `systemd-analyze` está instalado, además valida la
+una unidad que quedó en el otro target, que las reglas del agente se instalan (con backup
+de una versión distinta, `--agent-home`, sin borrarlas al desinstalar) y que no se
+escribe nada fuera del directorio de unidades y de la carpeta del agente. Si `systemd-analyze` está instalado, además valida la
 unidad con `systemd-analyze --user verify`. Corre en CI en el paso
 `host · systemd unit`.
 
