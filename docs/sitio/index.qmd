@@ -1,0 +1,83 @@
+---
+title: "Jarvis ESP32"
+subtitle: "Cómo estamos haciendo un asistente de voz de escritorio, contado desde el repositorio"
+---
+
+Jarvis ESP32 es un asistente de voz de escritorio: un **ESP32-S3** es el terminal de voz
+y la **computadora** es el centro de procesamiento
+([arquitectura](https://github.com/Jaimewww/jarvis-esp32/blob/main/docs/arquitectura.md)).
+El ESP32 detecta «Jarvis», captura la orden y la envía por Wi-Fi; la PC transcribe,
+conversa con el agente, ejecuta acciones, sintetiza la respuesta y muestra todo en una TUI.
+
+::: {.callout-note}
+## Qué es este sitio
+Un recorrido por **cómo trabajamos**, armado solo con lo que dicen los archivos del
+repositorio y el historial de `main`. Las fuentes de verdad siguen siendo los documentos
+de [`docs/`](https://github.com/Jaimewww/jarvis-esp32/tree/main/docs) y de
+[`odd/tasks/`](https://github.com/Jaimewww/jarvis-esp32/tree/main/odd/tasks); acá se
+enlazan, no se copian.
+:::
+
+::: {.callout-warning}
+## Todavía sin hardware
+Ninguna decisión está validada en la placa: son las reglas con las que se construye, no
+resultados medidos
+([decisiones](https://github.com/Jaimewww/jarvis-esp32/blob/main/docs/decisiones.md)).
+:::
+
+## Mapa de piezas
+
+```{mermaid}
+flowchart LR
+  esp["ESP32-S3<br/>«Jarvis», captura I2S,<br/>anillo WS2812"]
+  back["Backend (FastAPI)<br/>backend/ · puerto 8000<br/>STT, motor de charla, TTS"]
+  agent["Adaptador de agente<br/>backend/app/agents/gentle_dot.py<br/>contrato C3"]
+  dot["Daemon de Gentle Dot<br/>servicio de usuario systemd<br/>ws://127.0.0.1:4317/ws"]
+  tui["TUI anfitriona<br/>host/jarvis/ (Textual)"]
+
+  esp -- "C1 · HTTP Wi-Fi<br/>/converse, /heartbeat" --> back
+  back -- "C3 · interfaz de agente" --> agent
+  agent -- "protocolo WebSocket v1" --> dot
+  back -- "C2 · WS /api/v1/ws<br/>esp32_state, turnos, action" --> tui
+  tui -- "protocolo WebSocket v1<br/>texto escrito" --> dot
+```
+
+| Pieza | Qué hace | Dónde vive | Fuente |
+|---|---|---|---|
+| ESP32-S3 | Detecta «Jarvis», captura por I2S, detecta fin del habla, envía audio, reproduce y pinta el estado en el anillo | `firmware/` | [arquitectura](https://github.com/Jaimewww/jarvis-esp32/blob/main/docs/arquitectura.md), D3, D7 |
+| Backend | Pasarela de voz: recibe el WAV, transcribe, conversa, sintetiza y avisa al anfitrión | `backend/` | D2, contrato C1 y C2 |
+| Adaptador de Gentle Dot | Cumple la interfaz de agente para tareas largas | `backend/app/agents/gentle_dot.py` | contrato C3, D1 |
+| Daemon de Gentle Dot | Agente externo, corre como servicio de usuario sin la aplicación de escritorio | `host/systemd/` (unidad e instalador) | D1, P3 |
+| TUI anfitriona | Muestra estado del ESP32, turnos de voz, conversación y acciones; vista usuario y vista desarrollador (`f2`), modo oscuro y claro (`f3`) | `host/jarvis/` | [TUI](https://github.com/Jaimewww/jarvis-esp32/blob/main/docs/tui.md), D9 |
+
+## Un turno de voz
+
+```{mermaid}
+sequenceDiagram
+  participant E as ESP32-S3
+  participant B as Backend
+  participant G as Gentle Dot
+  participant T as TUI
+  E->>B: POST /api/v1/converse (WAV 16 kHz)
+  B-->>T: turn_started
+  B->>B: STT local
+  B->>G: texto del usuario (si no es una orden del catálogo)
+  G-->>B: respuesta
+  B->>B: TTS local
+  B-->>T: action / turn_done
+  B-->>E: texto, URL del audio y acciones
+```
+
+Es el turno previsto. Hoy `/converse` sigue siendo un simulacro con etapas falsas
+(L3 de [`odd/tasks/s2-round2.md`](https://github.com/Jaimewww/jarvis-esp32/blob/main/odd/tasks/s2-round2.md));
+el STT real es la tarea V1. Las órdenes del catálogo van por el **camino rápido** y no
+pasan por el agente (D13).
+Los eventos `turn_stage` y `turn_error` están en el contrato C2 pero el backend todavía
+no los emite
+([contratos](https://github.com/Jaimewww/jarvis-esp32/blob/main/docs/contratos.md)).
+
+## Seguir leyendo
+
+- [Cómo trabajamos](como-trabajamos.qmd): pistas, contratos, ODD, worktrees, pruebas y CI.
+- [Estado](estado.qmd): qué está hecho en cada pista y la línea de tiempo de `main`.
+- [Decisiones](decisiones.qmd): resumen de D1–D21 y lo que sigue abierto.
