@@ -1,0 +1,152 @@
+---
+title: "Cómo trabajamos"
+subtitle: "Pistas, contratos, documentos ODD, worktrees, pruebas y entrega"
+---
+
+```{mermaid}
+flowchart LR
+  pedido["Pedido del usuario<br/>(cita textual)"] --> odd["Documento ODD<br/>Specs · Tasks · Log"]
+  odd --> contrato{"¿Cambia un<br/>contrato?"}
+  contrato -- sí --> pr_doc["Solicitud solo con<br/>docs/contratos.md"]
+  pr_doc --> wt
+  contrato -- no --> wt["Worktree y rama<br/>desde main"]
+  wt --> red["Prueba en rojo"] --> green["Código en verde"]
+  green --> pr["Una solicitud por tarea<br/>Conventional Commits"]
+  pr --> ci["CI: backend, host,<br/>systemd, pyright"]
+  ci -- verde --> merge["Fusión en main"]
+  merge --> log["Evidencia en el Log"]
+```
+
+## Dos pistas, un responsable por carpeta
+
+Programan dos personas, con los roles S1 y S2; cada carpeta tiene un responsable y las
+fronteras entre pistas son los contratos
+([D21](https://github.com/Jaimewww/jarvis-esp32/blob/main/docs/decisiones.md#d21--reparto-del-trabajo),
+[tareas](https://github.com/Jaimewww/jarvis-esp32/blob/main/docs/tareas.md)).
+
+| Pista | Rol | Carpetas propias | Responsable en `CODEOWNERS` |
+|---|---|---|---|
+| Voz | S1 | `backend/`, `tools/` | `@Jaimewww` |
+| Agente y pantalla | S2 | `host/` y `backend/app/agents/gentle_dot.py` | `@AlejandroTatum` |
+| Dispositivo | Por asignar cuando llegue la placa | `firmware/` | — |
+| Compartido | Ambos | `README.md`, `docs/decisiones.md`, `docs/contratos.md` y el resto | `@Jaimewww @AlejandroTatum` |
+
+[`.github/CODEOWNERS`](https://github.com/Jaimewww/jarvis-esp32/blob/main/.github/CODEOWNERS)
+hace que GitHub pida revisión al responsable cuando una solicitud toca una carpeta
+ajena. Los archivos compartidos se cambian en una solicitud propia, sin mezclar con
+código.
+
+::: {.callout-tip}
+## Antes de empezar una tarea ([tareas](https://github.com/Jaimewww/jarvis-esp32/blob/main/docs/tareas.md#antes-de-empezar-una-tarea))
+1. ¿Todos los archivos que voy a tocar están en mis carpetas? Si no, hablar primero.
+2. ¿Cambio un campo, un evento o un endpoint de los contratos? Si sí, primero una
+   solicitud que cambie solo `docs/contratos.md`.
+3. ¿Mi rama sale del `main` actual? Actualizarla antes de abrir la solicitud.
+:::
+
+## Contratos primero, código después
+
+Los cuatro contratos de
+[`docs/contratos.md`](https://github.com/Jaimewww/jarvis-esp32/blob/main/docs/contratos.md)
+son la frontera entre las partes. Cada punto dice si está **implementado** o
+**pendiente**.
+
+| # | Contrato | Entre | Dónde vive |
+|---|---|---|---|
+| C1 | Dispositivo ↔ backend | Firmware y backend | `backend/app/main.py` |
+| C2 | Backend → host | Backend y TUI | `WS /api/v1/ws` |
+| C3 | Interfaz de agente | Motor de charla y adaptador de Gentle Dot | `backend/app/ports.py` |
+| C4 | Acción del catálogo | Backend y quien ejecuta la acción | Evento `action` |
+
+Para cambiar un contrato: primero el documento, en su propia solicitud que revisa la
+otra parte; después el código, en otra solicitud que cita la anterior. Un campo nuevo
+que el otro lado puede ignorar no rompe a nadie; quitar o renombrar uno requiere
+acuerdo de ambos.
+
+**Nadie espera a nadie:** `tools/sim_device.py` reemplaza al ESP32 y
+`backend/app/fakes.py` reemplaza STT, agente y TTS, así se avanza sin placa y sin agente.
+
+## Documentos ODD: Specs, Tasks y Log
+
+Cada línea de trabajo tiene un documento en
+[`odd/tasks/`](https://github.com/Jaimewww/jarvis-esp32/tree/main/odd/tasks) con tres
+secciones:
+
+| Sección | Qué guarda | Ejemplo |
+|---|---|---|
+| **Specs** | Qué se pide, citando al usuario textualmente y la fuente (`L` del log o un documento) | S6 de `s2-track.md`: *"lo que creo que no hay es CI acttions, … agrega ese paso"* |
+| **Tasks** | Tareas `T` con casilla, la Spec que cubren, rama, commit y solicitud | T5 de `s2-track.md`: rama `ci/github-actions`, commit `b7a0f0e`, solicitud #3 |
+| **Log** | Entradas `L` numeradas: palabras del usuario y evidencia observada (pruebas, corridas, revisiones) | L21 de `s2-track.md`: la regla de fusión tras CI |
+
+Las citas se dejan como las escribió el usuario, con sus erratas, para no reinterpretar
+el pedido. Ejemplos:
+
+- [`odd/tasks/s2-track.md`](https://github.com/Jaimewww/jarvis-esp32/blob/main/odd/tasks/s2-track.md):
+  pista S2, P1–P4 y la CI; incluye la elección de bocetos y temas de la TUI (L5–L17).
+- [`odd/tasks/s2-round2.md`](https://github.com/Jaimewww/jarvis-esp32/blob/main/odd/tasks/s2-round2.md):
+  segunda vuelta, con ideas sueltas del usuario (L1) ordenadas en T1–T9. Este sitio es
+  su T8.
+- [`odd/tasks/jarvis-host-tui.md`](https://github.com/Jaimewww/jarvis-esp32/blob/main/odd/tasks/jarvis-host-tui.md):
+  el primer cliente de la TUI.
+
+::: {.callout-note}
+## Un ejemplo de punta a punta
+S6 de `s2-track.md` cita el pedido de CI (L18) → T5 abre la rama `ci/github-actions` en
+el worktree `jarvis-esp32-worktrees/pi-ci` → L19 registra la evidencia local y la revisión
+nativa → la solicitud #3 se fusiona con sus checks en verde (L21, `f2247e5`).
+:::
+
+## Un worktree por tarea
+
+Cada tarea se trabaja en su propio worktree de Git, hermano del checkout principal, en
+`../jarvis-esp32-worktrees/<nombre>` (por ejemplo `pi-ci` en T5 de `s2-track.md`, o
+`pi-next` en `s2-round2.md`), con su rama desde `main`. Cuando la rama se fusiona, el
+worktree y la rama local se borran sin perder lo no versionado (T2 de `s2-round2.md`).
+
+## Pruebas primero, con dobles y con el daemon real
+
+- **Rojo → verde:** primero la prueba que falla, después el código. Por ejemplo, en T3 de
+  `s2-round2.md` el instalador de systemd tuvo 8 fallos antes del cambio y quedó en 68
+  comprobaciones que pasan (L5).
+- **Dobles por defecto:** las pruebas del host usan un servidor WebSocket falso y las del
+  adaptador un daemon falso, sin daemon real (S5 de `s2-track.md`, T4a).
+- **Daemon real a pedido:** las pruebas contra el Gentle Dot real
+  (`backend/tests/test_gentle_dot_real.py`, `host/tests/test_real_daemon.py`) se omiten
+  salvo con `JARVIS_REAL_DAEMON=1` (L28–L29 de `s2-track.md`).
+
+```bash
+# Pruebas contra el daemon real (CI no tiene daemon), de backend/README.md y host/README.md
+cd backend && JARVIS_REAL_DAEMON=1 .venv/bin/python -m pytest tests/test_gentle_dot_real.py -v -rs
+cd host && JARVIS_REAL_DAEMON=1 python -m pytest tests/test_real_daemon.py -v -rs
+```
+
+## Entrega: una solicitud por tarea y CI
+
+- **Ramas y solicitudes de fusión**, no envíos directos a `main` (D21).
+- **Commits con Conventional Commits**
+  ([README](https://github.com/Jaimewww/jarvis-esp32/blob/main/README.md)), por ejemplo
+  `feat(host): add developer view toggled with f2` o
+  `fix(host): make the gentle dot installer retry reloads and back up units`.
+- **CI** en
+  [`.github/workflows/ci.yml`](https://github.com/Jaimewww/jarvis-esp32/blob/main/.github/workflows/ci.yml),
+  en cada solicitud y en cada push a `main`:
+
+| Check | Qué corre |
+|---|---|
+| `backend · pytest` | `python -m pytest tests -q` en `backend/` |
+| `host · pytest` | `python -m pytest tests -q` en `host/` (si existe `host/requirements-dev.txt`) |
+| `host · systemd unit` | `bash host/systemd/test_install.sh`, con `HOME` temporal y `systemctl`/`node` simulados |
+| `pyright` | Chequeo de tipos con `pyright==1.1.414`, imports resueltos desde `backend/.venv` |
+
+::: {.callout-important}
+## Fusión sin esperar revisión cruzada (L21 de `s2-track.md`)
+*"no me gusta eso de revision cruzada has que si apsa test ya se mergee"* — cada solicitud
+se fusiona en cuanto pasan sus checks de CI. El repo no tiene protección de rama ni
+fusión automática, así que la fusión la hace el agente tras ver los checks.
+:::
+
+## Revisión nativa para cambios de riesgo
+
+Los cambios de mayor riesgo pasan antes por una revisión nativa, y sus hallazgos quedan
+en el Log: la solicitud #1 de contratos (L2, 7 hallazgos no bloqueantes), la CI (L19,
+5 hallazgos) y la unidad de systemd (L25, 9 hallazgos), todos en `s2-track.md`.

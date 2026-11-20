@@ -1,0 +1,41 @@
+project:
+  type: website
+  output-dir: _site
+
+lang: es
+
+website:
+  title: "Jarvis ESP32"
+  description: "Cómo estamos haciendo Jarvis ESP32: piezas, forma de trabajo, estado y decisiones."
+  repo-url: https://github.com/Jaimewww/jarvis-esp32
+  repo-subdir: docs/sitio
+  repo-actions: [source]
+  page-navigation: true
+  navbar:
+    left:
+      - href: index.qmd
+        text: Inicio
+      - href: como-trabajamos.qmd
+        text: Cómo trabajamos
+      - href: estado.qmd
+        text: Estado
+      - href: decisiones.qmd
+        text: Decisiones
+    right:
+      - icon: github
+        href: https://github.com/Jaimewww/jarvis-esp32
+        aria-label: Repositorio en GitHub
+  page-footer:
+    center: "Fuentes: archivos del repositorio y `git log` de `main`. Nada de este sitio reemplaza a `docs/`."
+
+format:
+  html:
+    theme:
+      light: [cosmo, theme-light.scss]
+      dark: [cosmo, theme-dark.scss]
+    respect-user-color-scheme: true
+    toc: true
+    toc-title: "En esta página"
+    number-sections: false
+    code-copy: true
+    link-external-newwindow: true

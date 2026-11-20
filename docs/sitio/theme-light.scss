@@ -1,0 +1,29 @@
+/*-- scss:defaults --*/
+// Tema claro "paper", tokens de host/jarvis/theme.py (modo claro de la TUI,
+// L16-L17 de odd/tasks/s2-track.md).
+$body-bg: #f5f1e8;
+$body-color: #221f1a;
+$primary: #3446c2;
+$secondary: #665e50;
+$info: #94309f;
+$success: #246a2d;
+$warning: #8c5300;
+$danger: #b02c22;
+$link-color: #3446c2;
+$navbar-bg: #ebe5d8;
+$navbar-fg: #221f1a;
+$footer-bg: #ebe5d8;
+$border-color: #cbc1ad;
+$table-border-color: #cbc1ad;
+$code-bg: #e8e1d1;
+$code-color: #474136;
+
+/*-- scss:rules --*/
+.navbar { border-bottom: 1px solid #cbc1ad; }
+h2 { border-bottom: 1px solid #cbc1ad; padding-bottom: .25rem; }
+table { --bs-table-bg: transparent; }
+thead th { color: #3446c2; }
+.pieza {
+  border: 1px solid #cbc1ad; border-radius: .5rem; padding: .75rem 1rem;
+  background: #ebe5d8;
+}

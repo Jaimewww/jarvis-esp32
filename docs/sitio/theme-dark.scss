@@ -1,0 +1,31 @@
+/*-- scss:defaults --*/
+// Tema oscuro "gentleman-cute", tokens de host/jarvis/theme.py (modo oscuro por
+// defecto de la TUI, L17 de odd/tasks/s2-track.md).
+$body-bg: #060407;
+$body-color: #f6eff3;
+$primary: #f095c8;
+$secondary: #a78e9b;
+$info: #a9c7ee;
+$success: #b4e7c7;
+$warning: #f2b86d;
+$danger: #ff7272;
+$link-color: #f095c8;
+$navbar-bg: #100a0f;
+$navbar-fg: #f6eff3;
+$footer-bg: #100a0f;
+$border-color: #563040;
+$table-border-color: #563040;
+$code-bg: #2a1523;
+$code-color: #ffb1dd;
+
+/*-- scss:rules --*/
+.navbar { border-bottom: 1px solid #563040; }
+h1, h2, h3 { color: #f6eff3; }
+h2 { border-bottom: 1px solid #563040; padding-bottom: .25rem; }
+.text-muted, .quarto-title-meta-heading { color: #a78e9b !important; }
+table { --bs-table-bg: transparent; }
+thead th { color: #ffb1dd; }
+.pieza {
+  border: 1px solid #563040; border-radius: .5rem; padding: .75rem 1rem;
+  background: #100a0f;
+}

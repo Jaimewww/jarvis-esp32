@@ -1,0 +1,97 @@
+---
+title: "Estado"
+subtitle: "Qué está hecho en cada pista y cómo llegó a main"
+---
+
+::: {.callout-note}
+## Fuentes
+[`docs/tareas.md`](https://github.com/Jaimewww/jarvis-esp32/blob/main/docs/tareas.md),
+[`odd/tasks/s2-track.md`](https://github.com/Jaimewww/jarvis-esp32/blob/main/odd/tasks/s2-track.md),
+[`odd/tasks/s2-round2.md`](https://github.com/Jaimewww/jarvis-esp32/blob/main/odd/tasks/s2-round2.md)
+y `git log --merges origin/main`. Estado de `main` en `a44f9e8` (2026-11-20).
+:::
+
+## Línea de tiempo de `main`
+
+Solicitudes fusionadas, en orden de fusión. La #2 no aparece entre las fusiones de `main`.
+
+```{mermaid}
+flowchart TB
+  subgraph d19["2026-11-19"]
+    direction LR
+    pr1["#1 · 10:55<br/>contratos y dobles"] --> pr3["#3 · 14:14<br/>CI"]
+    pr3 --> pr4["#4 · 14:18<br/>adaptador, daemon falso"]
+    pr4 --> pr6["#6 · 14:27<br/>TUI: backend y vistas"]
+    pr6 --> pr5["#5 · 14:29<br/>servicio systemd"]
+  end
+  subgraph d20["2026-11-20"]
+    direction LR
+    pr7["#7 · 11:04<br/>adaptador, daemon real"] --> pr8["#8 · 11:25<br/>cierre de T3/T4"]
+    pr8 --> pr9["#9 · 11:49<br/>instalador corregido"]
+  end
+  d19 --> d20
+```
+
+| PR | Fusión | Rama | Qué trajo | Commits |
+|---|---|---|---|---|
+| #1 | `3b6e1c4` · 2026-11-19 | `feat/contracts-and-doubles` | Contratos, `CODEOWNERS` y tareas por pista; puertos por etapa, dobles y eventos de turno en el backend; simulador del dispositivo | `90a5bbb`, `7fc9945`, `b557d97`, `62da0f2`, `aefc524`, `0effc50` |
+| #3 | `f2247e5` · 2026-11-19 | `ci/github-actions` | CI de backend, host y pyright | `b7a0f0e` |
+| #4 | `07044a7` · 2026-11-19 | `feat/gentle-dot-agent` | Adaptador de Gentle Dot probado con un daemon falso | `c5b1c00` |
+| #6 | `56a9575` · 2026-11-19 | `feat/host-tui-views` | Cliente del backend en la TUI, modelo compartido, vista desarrollador (`f2`), temas y vista usuario (`f3`) | `59d18bc` … `62914f6` (8 commits) |
+| #5 | `d452955` · 2026-11-19 | `feat/gentle-dot-service` | Unidad de usuario de systemd e instalador del daemon | `2a2ec81`, `1908b27` |
+| #7 | `8b79d3b` · 2026-11-20 | `feat/gentle-dot-agent-real` | Errores de inicio de sesión de Gentle Dot contra el daemon real | `5f3aa81` |
+| #8 | `afa7124` · 2026-11-20 | `docs/close-t4b` | Cierre de T3 y T4 de la pista S2 con evidencia del daemon real | `2a76785` |
+| #9 | `a44f9e8` · 2026-11-20 | `fix/systemd-installer` | El instalador reintenta el `daemon-reload` y hace backup de la unidad | `aef19a3` |
+
+## Pista S2 — agente y pantalla
+
+| # | Tarea (`docs/tareas.md`) | Estado | Evidencia |
+|---|---|---|---|
+| P1 | Conectar la TUI al WebSocket del backend | ✅ Hecha | T1 de `s2-track.md`; corrida real con backend y simulador (L4) |
+| P2 | Mejorar la presentación de la TUI | ✅ Hecha | T2a y T2b; bocetos aprobados por el usuario (L9, L14, L17), 87 pruebas del host (L24) |
+| P3 | Daemon de Gentle Dot como servicio | ✅ Hecha | T3a (#5) y T3b: servicio activo y habilitado en `127.0.0.1:4317` (L26) |
+| P4 | Adaptador de Gentle Dot para tareas largas | ✅ Hecha | T4a (#4) y T4b (#7); pruebas con cuenta conectada (L29) |
+| — | Integración continua | ✅ Hecha | T5 de `s2-track.md`, solicitud #3 |
+
+::: {.callout-tip collapse="true"}
+## Decisiones de diseño de la TUI
+La app tiene vista usuario y vista desarrollador en la misma ventana, alternadas con `f2`
+(L10–L11). Modo oscuro `gentleman-cute` por defecto y modo claro `paper`, alternados con
+`f3`; los otros cuatro temas quedan con `--theme` (L16–L17). Este sitio usa esas mismas dos
+paletas, tomadas de `host/jarvis/theme.py`.
+:::
+
+### Segunda vuelta (`s2-round2.md`)
+
+| Tarea | Spec | Estado |
+|---|---|---|
+| T1 · `main` local al día | S3 | ✅ Hecha |
+| T2 · rescatar lo no versionado y borrar worktrees fusionados | S4 | ✅ Hecha |
+| T3 · instalador de systemd | S2 | ✅ Hecha, solicitud #9 (L5) |
+| T4 · `/login` en la TUI | S1 | ⏳ Pendiente |
+| T5 · medir el camino escrito y ganar agilidad | S5 | ⏳ Pendiente |
+| T6 · whisper.cpp con CUDA | S6 | ⏳ Pendiente; instalar necesita la contraseña de sudo (L4) |
+| T7 · V1, transcriptor real en `/converse` | S6 | ⏳ Pendiente, solicitud aparte para la pista de voz |
+| T8 · este sitio Quarto | S7 | 🚧 En curso |
+| T9 · `README.md` visual | S8 | ⏳ Pendiente |
+
+## Pista S1 — voz
+
+| # | Tarea (`docs/tareas.md`) | Listo cuando |
+|---|---|---|
+| V1 | STT real en `/converse` | Un WAV grabado en español devuelve su texto, con el tiempo de la etapa |
+| V2 | TTS real | La respuesta es audio WAV de 16 kHz, mono, 16 bits |
+| V3 | Camino rápido y catálogo de acciones | Una orden del catálogo se ejecuta sin pasar por el agente |
+| V4 | Motor de la charla de voz | Una pregunta corta se responde dentro de la meta de 4 s |
+| V5 | `turn_error`, `turn_stage` y respuesta `409` | Un turno que falla siempre termina con un evento de cierre |
+
+Lo que ya está en `main` para esta pista viene de la solicitud #1: puertos por etapa,
+dobles (`backend/app/fakes.py`) y eventos de turno, más `tools/sim_device.py`. Ninguna V
+figura como cerrada en los documentos: `/converse` sigue siendo un simulacro y
+`turn_stage` está pendiente (L3 de `s2-round2.md`). V1 está planificada como T7 de
+`s2-round2.md`.
+
+## Pista de dispositivo
+
+Por asignar cuando llegue la placa (`docs/tareas.md`). La placa elegida es la
+ESP32-S3 N16R8, por duplicado (D18).
