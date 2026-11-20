@@ -35,6 +35,9 @@ propia solicitud desde `main`; worktree `jarvis-esp32-worktrees/pi-next`.
 - S10 (L11): "quiero que jarvis controle entera la pc, creo que es una fnciuonadlidad extra
   que nos toca, verdaD?"; "dale entonces diagnostica, actualiza decesiones para que es parte
   sea mia y vamos probando por secciones".
+- S11 (L12): "y no podemos agrgar en jarvios un shorucut para grabar directo desde alla?";
+  elegido: "Whisper → Gentle Dot (como escribir)": la TUI graba con el micrófono, transcribe
+  con el whisper-server local y manda el texto al agente.
 
 ## Tasks
 
@@ -65,6 +68,8 @@ propia solicitud desde `main`; worktree `jarvis-esp32-worktrees/pi-next`.
 - [ ] T14 (S10, etapa b): resguardos (permiso con vencimiento, parada, lista de bloqueo,
   confirmaciones) y luego teclado y capturas con `wtype` y `grim`.
 - [ ] T15 (S10, etapa c): cursor.
+- [ ] T16 (S11): grabar desde la TUI (tecla para hablar). `host/`. Rama
+  `feat/tui-push-to-talk`. Commit: pendiente.
 
 ## Log
 
@@ -132,3 +137,9 @@ propia solicitud desde `main`; worktree `jarvis-esp32-worktrees/pi-next`.
   ambas variables y "Abrí el navegador Brave" abrió una ventana nueva (Brave ya corría).
   El registro también explica gpt-5.x: "The 'gpt-5.4-mini' model is not supported when using
   Codex with a ChatGPT account." `wtype` no está instalado; `grim` y `gtk-launch` sí.
+- L12 (usuario y evidencia, 2026-11-20): T6 cerrada: `ggml-cuda` instalado, whisper.cpp usa
+  CUDA0; servicio de usuario `whisper-server` (solo en la máquina) en `127.0.0.1:8080`; un audio
+  de 3 s tarda ~0,18 s (antes ~15 s en CPU); la voz del usuario (`~/jarvis-prueba.wav`, 6,4 s)
+  dio "Hola, hola, hola, hola. ¿Qué tal? ¿Qué onda?" en 236-334 ms. Luego: "y no podemos
+  agrgar en jarvios un shorucut para grabar directo desde alla?"; respuesta: "Whisper → Gentle
+  Dot (como escribir)".
