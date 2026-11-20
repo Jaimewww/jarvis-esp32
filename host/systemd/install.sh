@@ -5,7 +5,9 @@
 #   host/systemd/install.sh --gentle-dot-dir DIR [--node PATH] --check
 #   host/systemd/install.sh --uninstall [--dry-run]
 #
-# It only writes ${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/gentle-dot.service and
+# It only writes ${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/gentle-dot.service, its
+# backup gentle-dot.service.bak (the previous, different unit) and the marker
+# gentle-dot.service.reload-pending (present while a daemon-reload is still owed), and
 # only calls `systemctl --user`. It never runs as root, never enables linger, never
 # installs, builds or downloads Gentle Dot, and never touches ~/.gentle-dot.
 # See host/README.md, section "Daemon de Gentle Dot como servicio".
@@ -29,14 +31,19 @@ Uso: install.sh [opciones]
   --dry-run             imprime lo que haría, sin escribir ni llamar a systemctl
   --uninstall           detiene, deshabilita y borra la unidad
   --allow-unpinned      acepta un checkout en otro commit (desaconsejado)
+  --allow-dirty         acepta un checkout con cambios sin commitear (desaconsejado)
   -h, --help            esta ayuda
+
+Antes de reemplazar una unidad distinta, guarda la anterior en gentle-dot.service.bak.
+Si `systemctl --user daemon-reload` falla, deja gentle-dot.service.reload-pending y la
+siguiente ejecución vuelve a recargar.
 EOF
 }
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 say() { printf '%s\n' "$*"; }
 
-DRY_RUN=0 ENABLE=0 CHECK=0 UNINSTALL=0 ALLOW_UNPINNED=0
+DRY_RUN=0 ENABLE=0 CHECK=0 UNINSTALL=0 ALLOW_UNPINNED=0 ALLOW_DIRTY=0
 GD_DIR="${GENTLE_DOT_DIR:-}" NODE_BIN=""
 
 while (($#)); do
@@ -48,6 +55,7 @@ while (($#)); do
 	--dry-run) DRY_RUN=1; shift ;;
 	--uninstall) UNINSTALL=1; shift ;;
 	--allow-unpinned) ALLOW_UNPINNED=1; shift ;;
+	--allow-dirty) ALLOW_DIRTY=1; shift ;;
 	-h | --help) usage; exit 0 ;;
 	*) usage >&2; die "opción desconocida: $1" ;;
 	esac
@@ -63,6 +71,9 @@ CONFIG_HOME="${XDG_CONFIG_HOME:-${HOME}/.config}"
 [[ "${CONFIG_HOME}" == /* ]] || die "XDG_CONFIG_HOME debe ser una ruta absoluta"
 readonly UNIT_DIR="${CONFIG_HOME}/systemd/user"
 readonly UNIT_PATH="${UNIT_DIR}/${UNIT_NAME}"
+readonly BACKUP_PATH="${UNIT_PATH}.bak"
+# Exists while systemd has not loaded the last change: a later run reloads again.
+readonly PENDING_PATH="${UNIT_PATH}.reload-pending"
 
 # run CMD...: execute, or only print it under --dry-run.
 run() {
@@ -81,17 +92,27 @@ need_systemctl() {
 
 # --- Uninstall -----------------------------------------------------------------
 
+PENDING_MSG="Recarga pendiente: un daemon-reload anterior falló; se reintenta."
+
 if ((UNINSTALL)); then
-	if [[ ! -e "${UNIT_PATH}" ]]; then
+	if [[ ! -e "${UNIT_PATH}" && ! -e "${PENDING_PATH}" ]]; then
 		say "No hay unidad en ${UNIT_PATH}; nada que desinstalar."
 		exit 0
 	fi
 	need_systemctl
-	# disable --now fails when the manager no longer knows the unit; removal goes on.
-	run systemctl --user disable --now "${UNIT_NAME}" || say "aviso: disable --now falló; se sigue"
-	run rm -f -- "${UNIT_PATH}"
-	run systemctl --user daemon-reload
+	if [[ -e "${UNIT_PATH}" ]]; then
+		# disable --now fails when the manager no longer knows the unit; removal goes on.
+		run systemctl --user disable --now "${UNIT_NAME}" || say "aviso: disable --now falló; se sigue"
+		((DRY_RUN)) || : >"${PENDING_PATH}"
+		run rm -f -- "${UNIT_PATH}"
+	else
+		say "${PENDING_MSG}"
+	fi
+	run systemctl --user daemon-reload ||
+		die "systemctl --user daemon-reload falló; ${UNIT_PATH} ya se borró pero systemd no recargó. Vuelve a ejecutar --uninstall para reintentar la recarga."
+	((DRY_RUN)) || rm -f -- "${PENDING_PATH}"
 	run systemctl --user reset-failed "${UNIT_NAME}" 2>/dev/null || true
+	[[ ! -e "${BACKUP_PATH}" ]] || say "Se conserva la copia ${BACKUP_PATH}."
 	say "Desinstalado. Los datos del daemon (~/.gentle-dot, con su token) no se tocaron."
 	exit 0
 fi
@@ -113,6 +134,12 @@ if [[ -e "${GD_DIR}/.git" ]]; then
 	if [[ "${head_commit}" != "${PINNED_COMMIT}" ]]; then
 		((ALLOW_UNPINNED)) || die "el checkout está en ${head_commit}, no en el commit fijado ${PINNED_COMMIT} (git -C ${GD_DIR} switch --detach ${PINNED_COMMIT:0:7}; o --allow-unpinned)"
 		say "aviso: checkout en ${head_commit}, no en el commit fijado ${PINNED_COMMIT}"
+	fi
+	# Uncommitted or untracked files mean the service would not run the reviewed commit.
+	dirty="$(git -C "${GD_DIR}" status --porcelain 2>/dev/null)" || die "no se pudo leer git status de ${GD_DIR}"
+	if [[ -n "${dirty}" ]]; then
+		((ALLOW_DIRTY)) || die "el checkout ${GD_DIR} tiene cambios sin commitear (git -C ${GD_DIR} status); el servicio no correría el commit revisado. Haz commit o descártalos, o usa --allow-dirty."
+		say "aviso: el checkout ${GD_DIR} tiene cambios sin commitear; se sigue por --allow-dirty"
 	fi
 else
 	((ALLOW_UNPINNED)) || die "${GD_DIR} no es un repositorio git; no se puede comprobar el commit fijado (o --allow-unpinned)"
@@ -151,26 +178,43 @@ fi
 # --- Install -------------------------------------------------------------------
 
 need_systemctl
-changed=1
+changed=1 pending=0
+[[ -e "${PENDING_PATH}" ]] && pending=1
 if [[ -f "${UNIT_PATH}" ]] && [[ "$(<"${UNIT_PATH}")" == "${unit_text}" ]]; then
 	changed=0
-	say "Sin cambios: ${UNIT_PATH} ya está al día."
+	((pending)) || say "Sin cambios: ${UNIT_PATH} ya está al día."
 fi
 
 if ((changed)); then
 	if ((DRY_RUN)); then
 		say "[dry-run] mkdir -p ${UNIT_DIR}"
+		[[ ! -f "${UNIT_PATH}" ]] || say "[dry-run] copia de la unidad anterior en ${BACKUP_PATH}"
 		say "[dry-run] escribir ${UNIT_PATH}:"
 		printf '%s\n' "${unit_text}" | sed 's/^/    | /'
 	else
 		mkdir -p -- "${UNIT_DIR}"
+		if [[ -f "${UNIT_PATH}" ]]; then
+			cp -f -- "${UNIT_PATH}" "${BACKUP_PATH}"
+			chmod 0644 -- "${BACKUP_PATH}"
+			say "Copia de la unidad anterior: ${BACKUP_PATH}"
+		fi
+		# Marker first: if anything below fails, the next run still reloads.
+		: >"${PENDING_PATH}"
 		tmp="${UNIT_PATH}.tmp.$$"
 		printf '%s\n' "${unit_text}" >"${tmp}"
 		chmod 0644 -- "${tmp}"
 		mv -f -- "${tmp}" "${UNIT_PATH}"
 		say "Escrito ${UNIT_PATH}"
 	fi
-	run systemctl --user daemon-reload
+fi
+
+# A pending reload counts as a change: systemd may still hold the previous unit.
+if ((changed || pending)); then
+	((pending)) && say "${PENDING_MSG}"
+	run systemctl --user daemon-reload ||
+		die "systemctl --user daemon-reload falló; ${UNIT_PATH} quedó escrita pero systemd no la cargó. Vuelve a ejecutar este script para reintentar la recarga."
+	((DRY_RUN)) || rm -f -- "${PENDING_PATH}"
+	changed=1
 fi
 
 if ((ENABLE)); then
