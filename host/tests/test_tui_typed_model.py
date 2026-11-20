@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +21,14 @@ async def _idle_backend(socket: Any) -> None:
     await socket.wait_closed()
 
 
-def _window(tmp_path: Path, daemon: FakeDaemon, *, prompt: str | None = None, **kwargs: Any) -> dict[str, str]:
+def _window(
+    tmp_path: Path,
+    daemon: FakeDaemon,
+    *,
+    prompt: str | None = None,
+    until: Callable[[Any], bool] = lambda host: host.last_timing is not None,
+    **kwargs: Any,
+) -> dict[str, str]:
     token = tmp_path / "token"
     token.write_text("t\n", encoding="utf-8")
 
@@ -40,7 +49,7 @@ def _window(tmp_path: Path, daemon: FakeDaemon, *, prompt: str | None = None, **
                 if prompt is not None:
                     await pilot.click("#prompt")
                     await pilot.press(*prompt, "enter")
-                    await wait_for(lambda: host.last_timing is not None, timeout=5.0)
+                    await wait_for(lambda: until(host), timeout=5.0)
                 await pilot.pause()
                 user = app.query_one(UserView).render().plain
                 await pilot.press("f2")
@@ -108,3 +117,21 @@ def test_flags_and_environment_choose_the_wanted_model(monkeypatch: pytest.Monke
     monkeypatch.setenv("JARVIS_TYPED_THINKING", "turbo")
     with pytest.raises(SystemExit):
         parse_args([])
+
+
+def test_a_tool_using_reply_is_timed_to_the_end_in_the_window(tmp_path: Path) -> None:
+    daemon = FakeDaemon(delays=(0.0, 0.1, 0.1), tool_call=True)
+    views = _window(tmp_path, daemon, prompt="abre spotify", until=lambda host: host.last_timing is not None
+                    and host.last_timing.settled)
+    line = next(line for line in views["developer"].splitlines() if " reply " in line)
+    assert "first text 0." in line and "· total 0." in line  # not "first text —"
+    reply = next(line for line in views["developer"].splitlines() if "jarvis" in line and " ok" in line)
+    assert re.search(r"ok\s+0\.\ds", reply)
+
+
+def test_without_idle_the_window_still_shows_a_time(tmp_path: Path) -> None:
+    daemon = FakeDaemon(delays=(0.0, 0.1, 0.1), tool_call=True, idle=False)
+    views = _window(tmp_path, daemon, prompt="abre spotify", until=lambda host: host.last_timing is not None
+                    and host.last_timing.first_text_s is not None)
+    line = next(line for line in views["developer"].splitlines() if " reply " in line)
+    assert "first text 0." in line and "· total 0." in line

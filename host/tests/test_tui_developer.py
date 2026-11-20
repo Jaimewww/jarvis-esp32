@@ -184,3 +184,39 @@ def test_developer_view_marks_jarvis_and_draws_cards_without_textual() -> None:
     assert jarvis[1].lstrip().startswith("◐ jarvis") and "▍" in jarvis[1]
     # The agent card closes on the row above the input.
     assert text[-1].rstrip().endswith("╯") and "╰" in text[-1]
+
+
+def test_each_timed_reply_shows_its_time_next_to_its_jarvis_line() -> None:
+    from jarvis.client import AgentStateEvent, ConnectionStatus, MessageDoneEvent, UserMessageEvent
+    from jarvis.devview import render_rows
+    from jarvis.model import HostModel
+
+    now = [100.0]
+    model = HostModel(monotonic=lambda: now[0])
+    model.set_daemon_status(ConnectionStatus.CONNECTED)
+    model.apply_daemon(UserMessageEvent("u0", "desde otra ventana"))
+    model.apply_daemon(MessageDoneEvent("a0", "Sin medir."))
+    model.apply_daemon(AgentStateEvent("idle"))
+    for n, seconds, text in ((1, 2.9, "Abrí Spotify."), (2, 12.25, "No pude: " + "palabra " * 30)):
+        model.note_sent()
+        start = now[0]
+        model.apply_daemon(UserMessageEvent(f"u{n}", "hola"))
+        model.apply_daemon(MessageDoneEvent(f"t{n}", ""))  # a tool call first
+        now[0] = start + seconds
+        model.apply_daemon(MessageDoneEvent(f"a{n}", text))
+        model.apply_daemon(AgentStateEvent("idle"))
+    for w, h in ((140, 40), (100, 30), (80, 24), (60, 20)):
+        rows = render_rows(model, w, h)
+        assert len(rows) == h and all(sum(len(t) for t, _ in row) == w for row in rows), (w, h)
+    rows = render_rows(model, 140, 40)
+    text = ["".join(t for t, _ in row) for row in rows]
+    jarvis = [line for line in text if "jarvis" in line and "│" not in line.split("jarvis")[0][-3:]]
+    untimed = next(line for line in jarvis if "Sin medir." in line)
+    first = next(line for line in jarvis if "Abrí Spotify." in line)
+    second = next(line for line in jarvis if "No pude:" in line)
+    assert untimed.split("│")[0].rstrip().endswith("Sin medir.")  # from elsewhere: no time
+    assert first.split("│")[0].rstrip().endswith("2.9s")
+    assert second.split("│")[0].rstrip().endswith("12.2s") or second.split("│")[0].rstrip().endswith("12.3s")
+    # Dim, from the theme: the time carries the muted class.
+    timed_row = rows[text.index(first)]
+    assert any(t.strip() == "2.9s" and "mu" in c.split() for t, c in timed_row)

@@ -335,11 +335,17 @@ both connections in its top border, and the live turn as a four-stage pipeline (
 route, agent, tts) with the median of each stage and a pulse under the live stage;
 the finished voice turns newest first with a gradient bar against the lane target
 (fast 1.5 s, chat 4.0 s, task none) and the amount over it, and the action (`→`) and
-reply under each; a summary per lane; the typed conversation (`◆ jarvis`); and a card
+reply under each; a summary per lane; the typed conversation (`◆ jarvis`), where each
+reply to a prompt typed in this window ends its first line with its total, dim
+(`2.9s`; replies from other windows or from before connecting show none); and a card
 with the agent and its PC actions: `model` is the running model and thinking level
 (`GPT-6.1 Sol · medium`), `reply` the timing of the last prompt typed in this window
 (`first text 2.6s · total 2.9s`, measured on the host from sending to the first
-non-empty `message_delta` and to `message_done`; the daemon's frames carry no time),
+non-empty text of any of its messages and to the agent going back to `idle`, so a
+tool-using reply, an empty tool-call message and then the text, is timed whole; until
+`idle` the total is the last `message_done`, which stays if no `idle` comes, a stop
+or error ends it, or the next prompt or a dropped link cuts it; the daemon's frames
+carry no time),
 and, while Gentle Dot has no AI account, a `needs` row with the daemon's message.
 The user view shows no timing. Both views are fed by every event, so switching
 always shows current data. Two gaps of contract C2 show on screen: an `action` has no

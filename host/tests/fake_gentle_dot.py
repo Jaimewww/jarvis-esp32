@@ -36,6 +36,10 @@ class FakeDaemon:
     send_error: str | None = None
     #: Never answer a ``send`` (to test the timeout).
     silent: bool = False
+    #: Answer like a tool-using turn: an empty message (the tool call), then the text.
+    tool_call: bool = False
+    #: Send ``agent_state`` idle after the reply (off: the daemon never says it is idle).
+    idle: bool = True
     received: list[dict[str, Any]] = field(default_factory=list)
     _seq: int = 0
 
@@ -92,9 +96,14 @@ class FakeDaemon:
                 await emit({"type": "agent_state", "state": "working"})
                 await asyncio.sleep(echo)
                 await emit({"type": "user_message", "messageId": f"u{n}", "text": message["text"]})
+                if self.tool_call:
+                    await emit({"type": "message_delta", "messageId": f"t{n}", "delta": ""})
+                    await asyncio.sleep(first)
+                    await emit({"type": "message_done", "messageId": f"t{n}", "text": ""})
                 await emit({"type": "message_delta", "messageId": f"a{n}", "delta": ""})
                 await asyncio.sleep(first)
                 await emit({"type": "message_delta", "messageId": f"a{n}", "delta": "ok"})
                 await asyncio.sleep(done)
                 await emit({"type": "message_done", "messageId": f"a{n}", "text": "ok"})
-                await emit({"type": "agent_state", "state": "idle"})
+                if self.idle:
+                    await emit({"type": "agent_state", "state": "idle"})

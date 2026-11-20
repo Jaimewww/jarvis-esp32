@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from jarvis.client import (
+    AgentStateEvent,
+    ConnectionStatus,
     MessageDeltaEvent,
     MessageDoneEvent,
     ModelRef,
@@ -99,3 +101,106 @@ def test_models_reply_sets_the_current_model_and_thinking() -> None:
     assert model.agent_model == "GPT-5.4"
     assert model.agent_thinking == "low"
     assert model.agent_model_ref == ModelRef("openai", "gpt-5.4", "GPT-5.4", "low")
+
+
+def _tool_turn(model: HostModel, tick: Tick, *, idle: bool = True) -> None:
+    """A tool-using reply: an empty message (the tool call), then a second one with the text."""
+
+    model.note_sent()
+    model.apply_daemon(AgentStateEvent("working"))
+    tick.now = 100.1
+    model.apply_daemon(UserMessageEvent("u1", "abre spotify"))
+    model.apply_daemon(MessageDeltaEvent("t1", ""))
+    tick.now = 101.0
+    model.apply_daemon(MessageDoneEvent("t1", ""))  # the tool call: no text
+    tick.now = 102.5
+    model.apply_daemon(MessageDeltaEvent("a1", "No pude"))
+    tick.now = 103.5
+    model.apply_daemon(MessageDoneEvent("a1", "No pude abrir Spotify."))
+    if idle:
+        tick.now = 103.6
+        model.apply_daemon(AgentStateEvent("idle"))
+
+
+def test_a_tool_using_reply_is_timed_until_the_agent_is_idle() -> None:
+    tick = Tick()
+    model = HostModel(monotonic=tick)
+    _tool_turn(model, tick)
+    timing = model.last_timing
+    assert timing is not None and timing.settled
+    assert round(timing.first_text_s or 0, 3) == 2.5  # the second message's text
+    assert round(timing.total_s or 0, 3) == 3.6  # until idle, past the second message
+    assert timing.summary() == "first text 2.5s · total 3.6s"
+    # The time belongs to the reply with the text, not to the empty tool message.
+    assert model.reply_timing("a1") is timing
+    assert model.reply_timing("t1") is None and model.reply_timing("u1") is None
+
+
+def test_the_figure_is_provisional_until_idle() -> None:
+    tick = Tick()
+    model = HostModel(monotonic=tick)
+    model.note_sent()
+    model.apply_daemon(UserMessageEvent("u1", "x"))
+    tick.now = 101.0
+    model.apply_daemon(MessageDoneEvent("t1", ""))
+    timing = model.last_timing
+    assert timing is not None and not timing.settled and timing.first_text_s is None
+    tick.now = 102.0
+    model.apply_daemon(MessageDoneEvent("a1", "hola"))
+    assert model.last_timing is timing and round(timing.first_text_s or 0, 3) == 2.0
+    tick.now = 102.4
+    model.apply_daemon(AgentStateEvent("idle"))
+    assert timing.settled and round(timing.total_s or 0, 3) == 2.4
+
+
+def test_without_idle_the_last_message_done_ends_the_figure() -> None:
+    tick = Tick()
+    model = HostModel(monotonic=tick)
+    _tool_turn(model, tick, idle=False)
+    timing = model.last_timing
+    assert timing is not None and round(timing.total_s or 0, 3) == 3.5
+    assert round(timing.first_text_s or 0, 3) == 2.5
+    # The next prompt (or a reconnect, or a dropped link) settles it where it was.
+    tick.now = 110.0
+    model.note_sent()
+    model.apply_daemon(UserMessageEvent("u2", "otra"))
+    assert timing.settled and round(timing.total_s or 0, 3) == 3.5
+    assert model.reply_timing("a1") is timing
+
+
+def test_a_dropped_link_or_a_stop_settles_the_figure() -> None:
+    tick = Tick()
+    model = HostModel(monotonic=tick)
+    _tool_turn(model, tick, idle=False)
+    timing = model.last_timing
+    tick.now = 120.0
+    model.set_daemon_status(ConnectionStatus.DISCONNECTED, "gone")
+    assert timing is not None and timing.settled and round(timing.total_s or 0, 3) == 3.5
+    model.note_sent()
+    model.apply_daemon(UserMessageEvent("u2", "y"))
+    tick.now = 121.0
+    model.apply_daemon(MessageDoneEvent("a2", "", stopped=True))
+    stopped = model.last_timing
+    assert stopped is not None and stopped.settled and stopped.stopped
+    assert round(stopped.total_s or 0, 3) == 1.0
+    tick.now = 125.0
+    model.apply_daemon(AgentStateEvent("idle"))  # already settled: unchanged
+    assert round(stopped.total_s or 0, 3) == 1.0
+
+
+def test_each_typed_exchange_keeps_its_own_time() -> None:
+    tick = Tick()
+    model = HostModel(monotonic=tick)
+    model.apply_daemon(UserMessageEvent("u0", "from elsewhere"))
+    model.apply_daemon(MessageDoneEvent("a0", "untimed"))
+    model.apply_daemon(AgentStateEvent("idle"))
+    for n, seconds in ((1, 2.9), (2, 1.2)):
+        model.note_sent()
+        start = tick.now
+        model.apply_daemon(UserMessageEvent(f"u{n}", "hola"))
+        tick.now = start + seconds
+        model.apply_daemon(MessageDoneEvent(f"a{n}", "ok"))
+        model.apply_daemon(AgentStateEvent("idle"))
+    assert model.reply_timing("a0") is None
+    assert round(model.reply_timing("a1").total_s or 0, 3) == 2.9  # type: ignore[union-attr]
+    assert round(model.reply_timing("a2").total_s or 0, 3) == 1.2  # type: ignore[union-attr]
