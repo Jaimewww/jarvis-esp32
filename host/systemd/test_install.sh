@@ -22,6 +22,11 @@ readonly FAKE_HOME="${SANDBOX}/home"
 readonly FAKE_CONFIG="${SANDBOX}/config"
 readonly UNIT="${FAKE_CONFIG}/systemd/user/gentle-dot.service"
 readonly GD="${SANDBOX}/gentle-dot"
+# Agent rules: shipped in host/gentle-dot/, installed under the default agent home.
+readonly RULES_SRC="$(cd -- "${HERE}/.." && pwd)/gentle-dot/AGENTS.md"
+readonly RULES="${FAKE_HOME}/.gentle-dot/agent/AGENTS.md"
+readonly RULES_BAK="${RULES}.bak"
+readonly RESTART_HINT="Las reglas del agente se leen al arrancar el motor: si el servicio ya corre, reinícialo para aplicarlas: systemctl --user try-restart gentle-dot.service (o este script con --enable)."
 mkdir -p "${STUBS}" "${FAKE_HOME}" "${GD}/packages/daemon/src" "${GD}/node_modules"
 : >"${GD}/packages/daemon/src/cli.ts"
 : >"${CALLS}"
@@ -71,10 +76,13 @@ check "dry-run install shows ExecStart" \
 check "dry-run install shows daemon-reload" 'grep -qF "[dry-run] systemctl --user daemon-reload" <<<"${OUT}"'
 check "dry-run install writes nothing" '[[ ! -e "${FAKE_CONFIG}" ]]'
 check "dry-run install calls no systemctl" '[[ ! -s "${CALLS}" ]]'
+check "dry-run install announces the agent rules" 'grep -qxF "[dry-run] escribir ${RULES} (desde ${RULES_SRC})" <<<"${OUT}"'
+check "dry-run install writes nothing under HOME" '[[ -z "$(ls -A "${FAKE_HOME}")" ]]'
 
 # 2. --check: verifies only.
 sandboxed "${BASE[@]}" --check
-check "--check exits 0 and writes nothing" '[[ ${RC} -eq 0 && ! -e "${FAKE_CONFIG}" && ! -s "${CALLS}" ]]'
+check "--check exits 0 and writes nothing" '[[ ${RC} -eq 0 && ! -e "${FAKE_CONFIG}" && ! -s "${CALLS}" && -z "$(ls -A "${FAKE_HOME}")" ]]'
+check "--check reports missing agent rules" 'grep -qxF "Reglas del agente: faltan en ${RULES} (install.sh las instala)" <<<"${OUT}"'
 
 # 3. Install: writes the rendered unit and reloads; does not enable.
 sandboxed "${BASE[@]}"
@@ -85,8 +93,12 @@ check "unit points at the checkout and node" \
 	'grep -qxF "ExecStart=\"${STUBS}/node\" \"${GD}/packages/daemon/src/cli.ts\"" "${UNIT}"'
 check "install only reloads" '[[ "$(calls)" == "--user daemon-reload" ]]'
 check "unit is 0644" '[[ "$(stat -c %a "${UNIT}")" == 644 ]]'
-check "nothing outside the user unit dir" \
-	'[[ "$(cd "${FAKE_CONFIG}" && find . -mindepth 1 | sort | tr "\n" " ")" == "./systemd ./systemd/user ./systemd/user/gentle-dot.service " && -z "$(ls -A "${FAKE_HOME}")" ]]'
+check "nothing outside the user unit dir and the agent rules" \
+	'[[ "$(cd "${FAKE_CONFIG}" && find . -mindepth 1 | sort | tr "\n" " ")" == "./systemd ./systemd/user ./systemd/user/gentle-dot.service " &&
+	   "$(cd "${FAKE_HOME}" && find . -mindepth 1 | sort | tr "\n" " ")" == "./.gentle-dot ./.gentle-dot/agent ./.gentle-dot/agent/AGENTS.md " ]]'
+check "install writes the agent rules verbatim" '[[ -f "${RULES}" ]] && cmp -s "${RULES_SRC}" "${RULES}" && grep -qxF "Escrito ${RULES}" <<<"${OUT}"'
+check "agent rules are 0644" '[[ "$(stat -c %a "${RULES}")" == 644 ]]'
+check "new agent rules without --enable print the restart hint" 'grep -qxF "${RESTART_HINT}" <<<"${OUT}"'
 
 # 4. Idempotency: a second install changes nothing and calls nothing.
 before="$(sha256sum "${UNIT}")"
@@ -97,6 +109,10 @@ check "second install reports no changes" 'grep -q "Sin cambios" <<<"${OUT}"'
 check "second install leaves the unit" '[[ "$(sha256sum "${UNIT}")" == "${before}" ]]'
 check "second install calls no systemctl" '[[ ! -s "${CALLS}" ]]'
 check "an unchanged install keeps no backup" '[[ ! -e "${UNIT}.bak" ]]'
+check "second install reports the agent rules unchanged, no hint, no backup" \
+	'grep -qxF "Sin cambios: ${RULES} ya está al día." <<<"${OUT}" && ! grep -qxF "${RESTART_HINT}" <<<"${OUT}" && [[ ! -e "${RULES_BAK}" ]]'
+sandboxed "${BASE[@]}" --check
+check "--check reports current agent rules" '[[ ${RC} -eq 0 ]] && grep -qxF "Reglas del agente al día: ${RULES}" <<<"${OUT}"'
 
 # 5. --enable on an unchanged unit: only enable --now.
 reset_calls
@@ -198,7 +214,7 @@ check "failed daemon-reload leaves the new unit and a pending marker" \
 reset_calls
 sandboxed "${BASE[@]}" --enable
 check "rerun after a failed reload exits 0 and says it retries" \
-	'[[ ${RC} -eq 0 ]] && grep -qxF "Recarga pendiente: un daemon-reload anterior falló; se reintenta." <<<"${OUT}" && ! grep -q "Sin cambios" <<<"${OUT}"'
+	'[[ ${RC} -eq 0 ]] && grep -qxF "Recarga pendiente: un daemon-reload anterior falló; se reintenta." <<<"${OUT}" && ! grep -qF "Sin cambios: ${UNIT}" <<<"${OUT}"'
 check "rerun after a failed reload reloads, try-restarts, enables" \
 	'[[ "$(calls)" == $'"'"'--user daemon-reload\n--user try-restart gentle-dot.service\n--user enable --now gentle-dot.service'"'"' ]]'
 check "successful retry clears the marker" '[[ ! -e "${PENDING}" ]]'
@@ -206,6 +222,46 @@ reset_calls
 sandboxed "${BASE[@]}"
 check "after the retry the next run has no changes" \
 	'[[ ${RC} -eq 0 && ! -s "${CALLS}" ]] && grep -qF "Sin cambios" <<<"${OUT}"'
+
+# 5h. Agent rules: a different AGENTS.md (user edits) is backed up, then replaced.
+printf '# my edit\n' >>"${RULES}"
+rules_edited="$(sha256sum <"${RULES}")"
+reset_calls
+sandboxed "${BASE[@]}" --check
+check "--check reports outdated agent rules and changes nothing" \
+	'[[ ${RC} -eq 0 && "$(sha256sum <"${RULES}")" == "${rules_edited}" && ! -e "${RULES_BAK}" ]] &&
+	 grep -qxF "Reglas del agente desactualizadas: ${RULES} (install.sh las reemplaza y guarda la anterior en ${RULES_BAK})" <<<"${OUT}"'
+sandboxed "${BASE[@]}" --dry-run
+check "dry-run on different agent rules announces backup and write only" \
+	'[[ ${RC} -eq 0 ]] && grep -qxF "[dry-run] copia de las reglas anteriores en ${RULES_BAK}" <<<"${OUT}" &&
+	 grep -qxF "[dry-run] escribir ${RULES} (desde ${RULES_SRC})" <<<"${OUT}" &&
+	 [[ "$(sha256sum <"${RULES}")" == "${rules_edited}" && ! -e "${RULES_BAK}" && ! -s "${CALLS}" ]]'
+sandboxed "${BASE[@]}"
+check "install over different agent rules says where the backup is" \
+	'[[ ${RC} -eq 0 ]] && grep -qxF "Copia de las reglas anteriores: ${RULES_BAK}" <<<"${OUT}"'
+check "agent rules backup holds the edited file, 0644" '[[ "$(sha256sum <"${RULES_BAK}")" == "${rules_edited}" && "$(stat -c %a "${RULES_BAK}")" == 644 ]]'
+check "agent rules are replaced by the shipped ones" 'cmp -s "${RULES_SRC}" "${RULES}"'
+check "changed agent rules without --enable: hint, no systemctl" '[[ ! -s "${CALLS}" ]] && grep -qxF "${RESTART_HINT}" <<<"${OUT}"'
+printf '# again\n' >>"${RULES}"
+reset_calls
+sandboxed "${BASE[@]}" --enable
+check "--enable after an agent rules change try-restarts, then enables" \
+	'[[ ${RC} -eq 0 && "$(calls)" == $'"'"'--user try-restart gentle-dot.service\n--user enable --now gentle-dot.service'"'"' ]] &&
+	 cmp -s "${RULES_SRC}" "${RULES}" && ! grep -qxF "${RESTART_HINT}" <<<"${OUT}"'
+mkdir -p "${SANDBOX}/agent-dir/AGENTS.md"
+sandboxed "${BASE[@]}" --agent-home "${SANDBOX}/agent-dir"
+check "refuses an AGENTS.md that is a directory" '[[ ${RC} -ne 0 ]] && grep -q "no es un archivo" <<<"${OUT}"'
+reset_calls
+sandboxed "${BASE[@]}" --agent-home "${SANDBOX}/agent-opt"
+check "--agent-home installs the rules there" '[[ ${RC} -eq 0 ]] && cmp -s "${RULES_SRC}" "${SANDBOX}/agent-opt/AGENTS.md"'
+set +e
+OUT="$(env -i PATH="${STUBS}:/usr/bin:/bin" HOME="${FAKE_HOME}" XDG_CONFIG_HOME="${FAKE_CONFIG}" \
+	GENTLE_DOT_AGENT_HOME="${SANDBOX}/agent-env" bash "${INSTALL}" "${BASE[@]}" 2>&1)"
+RC=$?
+set -e
+check "GENTLE_DOT_AGENT_HOME installs the rules there" '[[ ${RC} -eq 0 ]] && cmp -s "${RULES_SRC}" "${SANDBOX}/agent-env/AGENTS.md"'
+sandboxed "${BASE[@]}" --agent-home relative/agent --dry-run
+check "refuses a relative agent home" '[[ ${RC} -ne 0 ]] && grep -q "ruta absoluta" <<<"${OUT}"'
 
 # 5f. Dirty checkout: refused unless --allow-dirty; a refusal changes nothing.
 if command -v git >/dev/null 2>&1; then
@@ -248,6 +304,7 @@ fi
 sandboxed --help
 check "help documents --allow-dirty" '[[ ${RC} -eq 0 ]] && grep -qE "^  --allow-dirty +" <<<"${OUT}"'
 check "help documents --headless" 'grep -qE "^  --headless +" <<<"${OUT}"'
+check "help documents --agent-home" 'grep -qE "^  --agent-home DIR +" <<<"${OUT}"'
 
 # 6. Dry-run uninstall: prints, removes nothing, calls nothing.
 reset_calls
@@ -258,11 +315,14 @@ check "dry-run uninstall shows disable, rm, reload" \
 	 grep -qF "[dry-run] rm -f -- ${UNIT}" <<<"${OUT}" &&
 	 grep -qF "[dry-run] systemctl --user daemon-reload" <<<"${OUT}"'
 check "dry-run uninstall keeps the unit" '[[ -f "${UNIT}" && ! -s "${CALLS}" ]]'
+keep_msg="Se conservan las reglas del agente en ${RULES} (pueden tener cambios tuyos)."
+check "dry-run uninstall keeps the agent rules" 'cmp -s "${RULES_SRC}" "${RULES}" && grep -qxF "${keep_msg}" <<<"${OUT}"'
 
 # 7. Uninstall, then again (idempotent).
 sandboxed --uninstall
 check "uninstall exits 0" '[[ ${RC} -eq 0 ]]'
 check "uninstall removes the unit" '[[ ! -e "${UNIT}" ]]'
+check "uninstall keeps the agent rules and says so" 'cmp -s "${RULES_SRC}" "${RULES}" && grep -qxF "${keep_msg}" <<<"${OUT}"'
 check "uninstall disables, reloads, resets" \
 	'[[ "$(calls)" == $'"'"'--user disable --now gentle-dot.service\n--user daemon-reload\n--user reset-failed gentle-dot.service'"'"' ]]'
 reset_calls

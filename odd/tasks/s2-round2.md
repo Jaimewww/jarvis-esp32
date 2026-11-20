@@ -70,6 +70,9 @@ propia solicitud desde `main`; worktree `jarvis-esp32-worktrees/pi-next`.
 - [ ] T15 (S10, etapa c): cursor.
 - [ ] T16 (S11): grabar desde la TUI (tecla para hablar). `host/`. Rama
   `feat/tui-push-to-talk`. Commit: pendiente.
+- [ ] T17 (S10, etapa a): reglas del agente para abrir apps sin bloquear
+  (`~/.gentle-dot/agent/AGENTS.md`), versionadas en `host/` e instaladas por `install.sh`.
+  Rama `fix/agent-gui-launch`.
 
 ## Log
 
@@ -143,3 +146,9 @@ propia solicitud desde `main`; worktree `jarvis-esp32-worktrees/pi-next`.
   dio "Hola, hola, hola, hola. ¿Qué tal? ¿Qué onda?" en 236-334 ms. Luego: "y no podemos
   agrgar en jarvios un shorucut para grabar directo desde alla?"; respuesta: "Whisper → Gentle
   Dot (como escribir)".
+- L13 (usuario y evidencia, 2026-11-20): "paso algo raro, lo abrio pero en el chat dice que no
+  pudo". Whisper oyó "Jarvis abre break"; el agente corrió `brave` en primer plano, la
+  herramienta cortó a los 10 s ("Command timed out after 10 seconds") y respondió que no pudo
+  confirmarlo, aunque Brave abrió. Con `~/.gentle-dot/agent/AGENTS.md` (lanzar con `setsid -f`
+  o `gtk-launch` y confirmar con `pgrep`) y el servicio reiniciado, "Abrí Brave." corrió
+  `setsid -f brave >/dev/null 2>&1; pgrep -f brave` y respondió "Listo, abrí Brave." (4,2 s).

@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # Install, check or remove the Gentle Dot daemon as a systemd *user* service.
 #
-#   host/systemd/install.sh --gentle-dot-dir DIR [--node PATH] [--headless] [--dry-run] [--enable]
-#   host/systemd/install.sh --gentle-dot-dir DIR [--node PATH] --check
+#   host/systemd/install.sh --gentle-dot-dir DIR [--node PATH] [--agent-home DIR] [--headless] [--dry-run] [--enable]
+#   host/systemd/install.sh --gentle-dot-dir DIR [--node PATH] [--agent-home DIR] --check
 #   host/systemd/install.sh --uninstall [--dry-run]
 #
 # It only writes ${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/gentle-dot.service, its
 # backup gentle-dot.service.bak (the previous, different unit) and the marker
-# gentle-dot.service.reload-pending (present while a daemon-reload is still owed), and
-# only calls `systemctl --user`. It never runs as root, never enables linger, never
-# installs, builds or downloads Gentle Dot, and never touches ~/.gentle-dot.
+# gentle-dot.service.reload-pending (present while a daemon-reload is still owed), plus
+# the agent rules host/gentle-dot/AGENTS.md as <agent home>/AGENTS.md (default
+# ~/.gentle-dot/agent) and its backup AGENTS.md.bak, and only calls `systemctl --user`.
+# It never runs as root, never enables linger, never installs, builds or downloads
+# Gentle Dot, and touches nothing else under ~/.gentle-dot (data, token).
 # See host/README.md, section "Daemon de Gentle Dot como servicio".
 set -euo pipefail
 
@@ -19,6 +21,8 @@ readonly PINNED_COMMIT="f97d56d884b1d3c178f415b95d486464e7b220bf"
 readonly NODE_MIN_MAJOR=24
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly TEMPLATE="${SCRIPT_DIR}/${UNIT_NAME}.in"
+# Rules the daemon's agent reads when the engine starts (e.g. launch GUI apps detached).
+readonly RULES_SRC="$(cd -- "${SCRIPT_DIR}/.." && pwd)/gentle-dot/AGENTS.md"
 
 usage() {
 	cat <<'EOF'
@@ -26,6 +30,8 @@ Uso: install.sh [opciones]
 
   --gentle-dot-dir DIR  checkout de Gentle Dot (también por GENTLE_DOT_DIR)
   --node PATH           binario de Node 24+ (por defecto: `command -v node`)
+  --agent-home DIR      carpeta del agente del daemon, donde va AGENTS.md
+                        (también por GENTLE_DOT_AGENT_HOME; por defecto ~/.gentle-dot/agent)
   --enable              además habilita y arranca el servicio (enable --now)
   --headless            sin sesión gráfica: arranca con default.target en vez de
                         graphical-session.target (el agente no podrá abrir ventanas)
@@ -39,6 +45,8 @@ Uso: install.sh [opciones]
 Antes de reemplazar una unidad distinta, guarda la anterior en gentle-dot.service.bak.
 Si `systemctl --user daemon-reload` falla, deja gentle-dot.service.reload-pending y la
 siguiente ejecución vuelve a recargar.
+Instala host/gentle-dot/AGENTS.md (reglas del agente) en la carpeta del agente; si había
+uno distinto, lo guarda en AGENTS.md.bak. --uninstall no lo borra (puede tener cambios tuyos).
 EOF
 }
 
@@ -46,12 +54,13 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 say() { printf '%s\n' "$*"; }
 
 DRY_RUN=0 ENABLE=0 CHECK=0 UNINSTALL=0 ALLOW_UNPINNED=0 ALLOW_DIRTY=0 HEADLESS=0
-GD_DIR="${GENTLE_DOT_DIR:-}" NODE_BIN=""
+GD_DIR="${GENTLE_DOT_DIR:-}" NODE_BIN="" AGENT_HOME="${GENTLE_DOT_AGENT_HOME:-}"
 
 while (($#)); do
 	case "$1" in
 	--gentle-dot-dir) [[ $# -ge 2 ]] || die "--gentle-dot-dir necesita un valor"; GD_DIR="$2"; shift 2 ;;
 	--node) [[ $# -ge 2 ]] || die "--node necesita un valor"; NODE_BIN="$2"; shift 2 ;;
+	--agent-home) [[ $# -ge 2 ]] || die "--agent-home necesita un valor"; AGENT_HOME="$2"; shift 2 ;;
 	--enable) ENABLE=1; shift ;;
 	--check) CHECK=1; shift ;;
 	--dry-run) DRY_RUN=1; shift ;;
@@ -77,6 +86,15 @@ readonly UNIT_PATH="${UNIT_DIR}/${UNIT_NAME}"
 readonly BACKUP_PATH="${UNIT_PATH}.bak"
 # Exists while systemd has not loaded the last change: a later run reloads again.
 readonly PENDING_PATH="${UNIT_PATH}.reload-pending"
+AGENT_HOME="${AGENT_HOME:-${HOME}/.gentle-dot/agent}"
+[[ "${AGENT_HOME}" == /* ]] || die "--agent-home (o GENTLE_DOT_AGENT_HOME) debe ser una ruta absoluta: ${AGENT_HOME}"
+readonly AGENT_HOME
+readonly RULES_PATH="${AGENT_HOME}/AGENTS.md"
+readonly RULES_BAK="${RULES_PATH}.bak"
+# Uninstall keeps the rules: the user may have edited them, and they are harmless alone.
+keep_rules() {
+	[[ ! -e "${RULES_PATH}" ]] || say "Se conservan las reglas del agente en ${RULES_PATH} (pueden tener cambios tuyos)."
+}
 
 # run CMD...: execute, or only print it under --dry-run.
 run() {
@@ -100,6 +118,7 @@ PENDING_MSG="Recarga pendiente: un daemon-reload anterior falló; se reintenta."
 if ((UNINSTALL)); then
 	if [[ ! -e "${UNIT_PATH}" && ! -e "${PENDING_PATH}" ]]; then
 		say "No hay unidad en ${UNIT_PATH}; nada que desinstalar."
+		keep_rules
 		exit 0
 	fi
 	need_systemctl
@@ -116,6 +135,7 @@ if ((UNINSTALL)); then
 	((DRY_RUN)) || rm -f -- "${PENDING_PATH}"
 	run systemctl --user reset-failed "${UNIT_NAME}" 2>/dev/null || true
 	[[ ! -e "${BACKUP_PATH}" ]] || say "Se conserva la copia ${BACKUP_PATH}."
+	keep_rules
 	say "Desinstalado. Los datos del daemon (~/.gentle-dot, con su token) no se tocaron."
 	exit 0
 fi
@@ -186,7 +206,23 @@ STALE_LINK="${UNIT_DIR}/${OTHER_TARGET}.wants/${UNIT_NAME}"
 stale=0
 [[ -L "${STALE_LINK}" ]] && stale=1
 
+# Agent rules: missing, current (byte-identical) or different (backed up, then replaced).
+[[ -f "${RULES_SRC}" ]] || die "faltan las reglas del agente ${RULES_SRC}"
+if [[ -e "${RULES_PATH}" && ! -f "${RULES_PATH}" ]]; then
+	die "${RULES_PATH} existe pero no es un archivo; muévelo o indica otra carpeta con --agent-home"
+fi
+rules_state=missing
+if [[ -f "${RULES_PATH}" ]]; then
+	rules_state=different
+	cmp -s -- "${RULES_SRC}" "${RULES_PATH}" && rules_state=current
+fi
+
 if ((CHECK)); then
+	case "${rules_state}" in
+	current) say "Reglas del agente al día: ${RULES_PATH}" ;;
+	missing) say "Reglas del agente: faltan en ${RULES_PATH} (install.sh las instala)" ;;
+	different) say "Reglas del agente desactualizadas: ${RULES_PATH} (install.sh las reemplaza y guarda la anterior en ${RULES_BAK})" ;;
+	esac
 	say "OK: Gentle Dot en ${GD_DIR}, node ${node_version} (${NODE_BIN}); la unidad iría a ${UNIT_PATH}"
 	exit 0
 fi
@@ -224,6 +260,31 @@ if ((changed)); then
 	fi
 fi
 
+rules_changed=0
+if [[ "${rules_state}" == current ]]; then
+	say "Sin cambios: ${RULES_PATH} ya está al día."
+else
+	rules_changed=1
+	if ((DRY_RUN)); then
+		say "[dry-run] mkdir -p ${AGENT_HOME}"
+		[[ "${rules_state}" != different ]] || say "[dry-run] copia de las reglas anteriores en ${RULES_BAK}"
+		say "[dry-run] escribir ${RULES_PATH} (desde ${RULES_SRC})"
+	else
+		# ~/.gentle-dot also holds the token: directories this creates are private.
+		(umask 077 && mkdir -p -- "${AGENT_HOME}")
+		if [[ "${rules_state}" == different ]]; then
+			cp -f -- "${RULES_PATH}" "${RULES_BAK}"
+			chmod 0644 -- "${RULES_BAK}"
+			say "Copia de las reglas anteriores: ${RULES_BAK}"
+		fi
+		tmp="${RULES_PATH}.tmp.$$"
+		cp -f -- "${RULES_SRC}" "${tmp}"
+		chmod 0644 -- "${tmp}"
+		mv -f -- "${tmp}" "${RULES_PATH}"
+		say "Escrito ${RULES_PATH}"
+	fi
+fi
+
 # A pending reload counts as a change: systemd may still hold the previous unit.
 if ((changed || pending)); then
 	((pending)) && say "${PENDING_MSG}"
@@ -234,8 +295,9 @@ if ((changed || pending)); then
 fi
 
 if ((ENABLE)); then
-	# A running service picks up a changed unit; then enable at login and start it.
-	((changed)) && run systemctl --user try-restart "${UNIT_NAME}"
+	# A running service picks up a changed unit or agent rules (read when the engine
+	# starts); then enable at login and start it.
+	((changed || rules_changed)) && run systemctl --user try-restart "${UNIT_NAME}"
 	if ((stale)); then
 		# reenable = disable (removes every link to the unit) + enable (the current [Install]).
 		say "La unidad seguía habilitada en ${OTHER_TARGET}; se vuelve a habilitar en ${WANTED_TARGET}."
@@ -246,6 +308,7 @@ if ((ENABLE)); then
 	fi
 else
 	((stale)) && say "aviso: la unidad sigue habilitada en ${OTHER_TARGET}; para pasarla a ${WANTED_TARGET}: systemctl --user reenable ${UNIT_NAME} (o este script con --enable)."
+	((rules_changed)) && say "Las reglas del agente se leen al arrancar el motor: si el servicio ya corre, reinícialo para aplicarlas: systemctl --user try-restart ${UNIT_NAME} (o este script con --enable)."
 	say "No se habilitó ni arrancó. Para hacerlo: systemctl --user enable --now ${UNIT_NAME} (o este script con --enable)."
 fi
 if ((HEADLESS)); then
