@@ -61,7 +61,7 @@ async def run(paths: list[str], runs: int) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description=(__doc__ or "").strip().split("\n")[0])
     parser.add_argument("wav", nargs="+", help="WAV PCM 16 kHz mono 16-bit")
     parser.add_argument("--runs", type=int, default=1, help="times to send each file")
     args = parser.parse_args()
