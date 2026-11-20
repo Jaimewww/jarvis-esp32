@@ -42,6 +42,18 @@ class FakeDaemon:
     idle: bool = True
     received: list[dict[str, Any]] = field(default_factory=list)
     _seq: int = 0
+    _socket: Any = None
+
+    async def push(self, payload: dict[str, Any]) -> None:
+        """Send one frame now, unasked (an ``ask`` from an extension, an ``ask_resolved``)."""
+
+        self._seq += 1
+        await self._socket.send(json.dumps({**payload, "seq": self._seq}))
+
+    async def drop(self) -> None:
+        """Close the connection, as a daemon restart would."""
+
+        await self._socket.close()
 
     def _choice(self, provider: str, model_id: str) -> dict[str, Any] | None:
         for group in GROUPS:
@@ -58,6 +70,8 @@ class FakeDaemon:
         return {"type": "models", "current": current, "groups": GROUPS, "profiles": []}
 
     async def handler(self, socket: Any) -> None:
+        self._socket = socket
+
         async def emit(payload: dict[str, Any]) -> None:
             self._seq += 1
             await socket.send(json.dumps({**payload, "seq": self._seq}))

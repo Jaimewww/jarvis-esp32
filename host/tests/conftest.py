@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+import pytest
 from websockets.asyncio.server import serve
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -40,3 +41,14 @@ async def wait_for(condition: Callable[[], bool], timeout: float = 3.0) -> None:
         if loop.time() > deadline:
             raise AssertionError("condition was not met in time")
         await asyncio.sleep(0.01)
+
+
+@pytest.fixture(autouse=True)
+def _private_runtime_dir(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Every test gets its own ``XDG_RUNTIME_DIR``: the window talks to
+    ``jarvis-control/control.sock`` (and revokes on exit), and no test may touch the real one."""
+
+    runtime = tmp_path_factory.mktemp("runtime")
+    runtime.chmod(0o700)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    return runtime

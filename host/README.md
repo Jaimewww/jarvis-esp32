@@ -303,7 +303,9 @@ Keys (all listed in the footer): **Enter** sends the text in the input row, **Ct
 stops the answer that is running, **Ctrl+Q** quits, **F2** switches between the user
 view and the developer view, **F3** switches between dark and light mode, **F4**
 starts recording what you say and, pressed again, sends it (see
-[Hablarle a Jarvis](#hablarle-a-jarvis)); while it records, **Esc** drops it. While the
+[Hablarle a Jarvis](#hablarle-a-jarvis)); while it records, **Esc** drops it. **F5**
+turns PC control on or off (see [Control de la PC](#control-de-la-pc)); while a
+confirmation card is up, **y** allows, **n** or **Esc** denies. While the
 `/login` panel is open the footer shows its own keys: **Enter** chooses or answers,
 **Esc** goes back, closes the panel or cancels the sign-in that is running, and
 **Ctrl+Y** copies the sign-in address (when one is shown) to the clipboard.
@@ -394,6 +396,69 @@ JARVIS_REAL_WHISPER=1 JARVIS_WHISPER_WAV=~/jarvis-prueba.wav \
   python -m pytest tests/test_voice.py -k real -s
 ```
 
+## Control de la PC
+
+Jarvis puede escribir, pulsar teclas y sacar capturas en tu sesión, pero **solo con permiso
+y por tiempo limitado**. El control está apagado por defecto.
+
+**Arquitectura: el ayudante `jarvis-input`.** Un servicio de usuario aparte
+(`jarvis-input.service`, en `graphical-session.target`) es el **único** proceso con acceso a
+la pantalla: solo él corre `wtype`, `grim`, `niri msg`, `gtk-launch` y `xdg-open`, y guarda
+el permiso **en memoria** (reiniciarlo = permiso revocado). El daemon de Gentle Dot corre
+aislado, sin Wayland ni acceso a `jarvis-control/`: el agente le pide al ayudante que abra
+apps o teclee por `$XDG_RUNTIME_DIR/jarvis/agent.sock`, y el ayudante aplica la lista de
+bloqueo, las palabras de riesgo y las confirmaciones. Lo instala
+`host/systemd/install.sh`; **`jarvis-input` tiene que estar corriendo** para usar el control
+(`systemctl --user status jarvis-input`).
+
+La TUI habla con el ayudante por `$XDG_RUNTIME_DIR/jarvis-control/control.sock` (JSON por
+líneas; solo la TUI y `jarvis-stop`). Ya no escribe ningún archivo de permiso.
+
+* `/control on` (o **F5**) manda `{"op":"grant","minutes":30}` (máximo 30) y el ayudante
+  contesta `{"ok":true,"expires_at":"…Z"}`. `/control off` (o **F5** otra vez) manda
+  `{"op":"revoke"}`. `/control status` (o `/control` solo) pregunta `{"op":"status"}` y dice
+  cuánto falta. Nada de `/control` se manda al agente.
+* La TUI mantiene una conexión `{"op":"subscribe"}` abierta y recibe
+  `{"event":"state","enabled":…,"expires_at":…}` y los pedidos de confirmación. Si el
+  ayudante se reinicia, se reconecta sola con espera creciente (0,5 s a 5 s).
+* Mientras está encendido, las dos vistas muestran sobre el campo de texto
+  `◉ control on · 29:12 left · /control off`, con la cuenta regresiva hasta el `expires_at`
+  del ayudante, que es quien manda. Al llegar a cero la barra se va y avisa
+  `control expired` (lo vence el ayudante; la TUI no revoca por su cuenta). Si se revoca por
+  otro lado (la parada de emergencia), avisa `Control off: jarvis-input revoked it …`.
+* **Si el ayudante no está**, `/control` avisa `jarvis-input is not running: …` con cómo
+  arrancarlo, y la barra muestra `◌ control unavailable · jarvis-input is not running` hasta
+  que vuelve. Si se cae con el control encendido, el control queda apagado.
+* **Al cerrar la TUI se manda `revoke`**: el control nunca dura más que la ventana que lo
+  dio. Para volver a usarlo, abrirla y escribir `/control on` de nuevo.
+* Sin `XDG_RUNTIME_DIR` (fuera de la sesión gráfica) la TUI se niega:
+  `XDG_RUNTIME_DIR is not set: PC control needs your session's private runtime directory. …`.
+
+**Parada de emergencia: `Alt+Shift+Esc`.** Ejecuta `jarvis-stop` (`host/bin/`), que manda
+`revoke` por `control.sock` y `{"type":"abort"}` al daemon para cortar la tarea. El atajo lo
+agrega cada uno en niri, en `~/.config/niri/binds.kdl`, por ejemplo
+`Alt+Shift+Escape { spawn "jarvis-stop"; }`.
+
+**Confirmaciones.** Antes de una acción de riesgo (enviar, pagar, comprar, eliminar, o
+`Return` en navegadores, correo y mensajería), el ayudante manda por la suscripción
+`{"event":"confirm","id":…,"title":…,"message":…,"timeout_s":30}`. La TUI lo muestra como
+una tarjeta destacada sobre el campo de texto, en las dos vistas, y contesta
+`{"op":"answer","id":…,"allow":true|false}` por la misma conexión. Las confirmaciones que
+otras extensiones piden por el daemon (`{"type":"ask","ask":{"method":"confirm",…}}`) usan
+la misma tarjeta y se contestan con `{"type":"ui_response","requestId":…,"confirmed":…}`.
+
+* **y** permite; **n** o **Esc** niegan. **Enter no contesta** y nada más contesta: solo una
+  `y` explícita permite. Las teclas de los primeros 0,4 s no cuentan, para que una `y` que se
+  estaba escribiendo no se tome como respuesta.
+* Una tarjeta a la vez (`+1 waiting` si hay más). Si se acaba el tiempo (`denied in 27s` en
+  la tarjeta), se corta la conexión de quien pregunta (el ayudante o el daemon) u otra
+  ventana contesta (`ask_resolved`), la tarjeta se va y cuenta como **negado**. Sin
+  suscriptor o sin respuesta, el ayudante niega. Nunca confirma sola.
+* Mientras la tarjeta está, el campo de texto queda desactivado, el panel `/login` se
+  oculta y F4 no graba; si estaba grabando, la grabación se descarta.
+* Otros pedidos del daemon (`select`, `input`, `editor`, `app`, `pin`) no se contestan aquí:
+  la TUI avisa `Gentle Dot is asking: …. Answer this in Gentle Dot.` y sigue.
+
 ## Dark and light mode
 
 Both views share one theme, copied from the approved proposals in `design/tui-theme`
@@ -458,9 +523,10 @@ it today (the user view shows `you spoke` in the bubble).
 
 What it deliberately does not do:
 
-* **It never answers an `ask` approval.** Approvals are shown by the desktop app over
-  its private channel, and this window only writes that one is waiting. A `pin` ask on
-  a server is answered in the browser.
+* **It answers only `confirm` asks** (see [Control de la PC](#control-de-la-pc)), and only
+  with an explicit **y** or a denial. Every other `ask` (approvals of the desktop app,
+  `pin` on a server, `select`, `input`, `editor`) is answered in Gentle Dot; this window
+  only writes that one is waiting.
 * No file attachments, no attachments upload, no conversation switching, no sign-out
   (`/login` signs in only), and no paging back past the first history page.
 
@@ -540,7 +606,8 @@ with the agent state, model, conversation, and features, and closes with `4401` 
 the token is wrong and `4400` when the protocol version is not supported. Every frame
 from the daemon carries a per-connection monotonic `seq`. The client asks for
 `get_history`, `list_conversations`, and `auth_list` once `ready` arrives, and sends
-`send`, `steer`, and `abort`. For `/login` it sends `auth_login{providerId, method}`
+`send`, `steer`, and `abort`, and answers a `confirm` ask with
+`ui_response{requestId, confirmed}`. For `/login` it sends `auth_login{providerId, method}`
 and `auth_reply{flowId, value | cancelled}`, and reads `auth_providers`,
 `auth_prompt`, `auth_event` and `auth_done` (`auth_logout` exists in the client but
 the window offers no sign-out). The message shapes are the ones in the fork's
