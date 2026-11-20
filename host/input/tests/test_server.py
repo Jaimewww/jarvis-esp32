@@ -566,7 +566,18 @@ class KeyTest(Base):
         res = await self.agent({"op": "key", "keys": "ctrl+l", "intent": "barra"})
         self.assertEqual(res, {"ok": True})
         [c] = self.calls("wtype")
-        self.assertEqual(c["argv"], ["-k", "Shift_L", "-s", "250", "-M", "ctrl", "-k", "l", "-m", "ctrl"])
+        # Keys: Escape is registered first (release only) so it keeps the real Escape keycode
+        # VS Code matches shortcuts on (L24-L25); the Shift tap still carries the keymap.
+        self.assertEqual(c["argv"], ["-p", "Escape", "-k", "Shift_L", "-s", "250",
+                                     "-M", "ctrl", "-k", "l", "-m", "ctrl"])
+
+    async def test_key_pauses_after_escape(self) -> None:
+        # VS Code Vim needs a moment to leave insert mode before the next keys (L25).
+        res = await self.agent({"op": "key", "keys": "Escape g g d shift+g", "intent": "modo vim"})
+        self.assertTrue(res["ok"])
+        [c] = self.calls("wtype")
+        self.assertEqual(c["argv"], ["-p", "Escape", "-k", "Shift_L", "-s", "250", "-k", "Escape", "-s", "300",
+                                     "-k", "g", "-k", "g", "-k", "d", "G"])
 
     async def test_bad_keys(self) -> None:
         for req in [{"op": "key"}, {"op": "key", "keys": ""}, {"op": "key", "keys": "-P x"},

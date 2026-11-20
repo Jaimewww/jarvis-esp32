@@ -315,3 +315,9 @@ propia solicitud desde `main`; worktree `jarvis-esp32-worktrees/pi-next`.
   `wtype -- ggdG` vacía el documento ("eliminó todo"). Causas: wtype resuelve `-k` sin distinguir
   mayúsculas; y numera las teclas en orden de uso, así que tras el Shift del preludio Escape no
   queda en el keycode real que VS Code usa para atajos. Arreglo 1: shift+letra se envía como texto.
+- L25 (usuario, 2026-11-20): pruebas manuales en VS Code. C `wtype -M shift -m shift -s 250 -k
+  Escape -s 300 -- ggdG` → "si se eliminó el texto"; D `wtype -M shift -m shift -s 250 -d 8 --
+  hola mundo` → "solo llega la mundo"; E `wtype -p Escape -k Shift_L -s 250 -k Escape -s 300 --
+  ggdG` → "si se vació"; F `wtype -p Escape -k Shift_L -s 250 -d 8 -- hola mundo` → "sigue el la
+  mundo". Arreglo 2: las teclas usan el preludio de E y una pausa de 300 ms tras un Escape suelto;
+  el texto conserva `-k Shift_L -s 250`.

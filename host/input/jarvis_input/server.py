@@ -59,6 +59,12 @@ class StartupError(Exception):
 # first key. So the first key is a harmless Shift tap that carries the keymap, then a sleep
 # while the app applies it, then the real keys with a small delay between them.
 WTYPE_PRELUDE = ("-k", "Shift_L", "-s", "250")
+# wtype numbers keysyms in order of first use and VS Code matches shortcuts on the keycode, so
+# for keys Escape is registered first (a release only, which apps ignore) to keep the real
+# Escape keycode; after the Shift tap it would land on "1" and Vim never saw it (L24-L25).
+# Text keeps the plain prelude: with the Escape release first VS Code dropped "ho" again (L25).
+WTYPE_KEY_PRELUDE = ("-p", "Escape", *WTYPE_PRELUDE)
+ESCAPE_PAUSE_MS = "300"  # VS Code Vim needs a moment to leave insert mode (L25)
 WTYPE_KEY_DELAY_MS = "8"
 
 
@@ -723,7 +729,13 @@ class Helper:
         look = checks.lookalike_stems(intent)
         if look:
             raise Deny("Intención con letras que imitan palabras de riesgo (" + ", ".join(look) + ").")
-        return await self._input(req=req, argv=["wtype", *WTYPE_PRELUDE, *args], intent=intent, risky=checks.risky_stems(intent),
+        paced: list[str] = []
+        for i, a in enumerate(args):
+            paced.append(a)
+            # a bare Escape followed by more keys (not one held with modifiers)
+            if a == "Escape" and i > 0 and args[i - 1] == "-k" and i < len(args) - 1 and args[i + 1] != "-m":
+                paced += ["-s", ESCAPE_PAUSE_MS]
+        return await self._input(req=req, argv=["wtype", *WTYPE_KEY_PRELUDE, *paced], intent=intent, risky=checks.risky_stems(intent),
                                  presses_return=checks.presses_return(args), what=f"pulse {keys[:60]}",
                                  shown="")
 
