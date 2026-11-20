@@ -48,16 +48,18 @@ agente (pc_*) ── agent.sock ────┘   la pantalla)  └── (argv,
 | `pc_list_apps{query?}` | `{"op":"apps"}` → `apps:[{id,name}]`; la extensión filtra por `query` (nombre o id, sin mayúsculas ni tildes) y devuelve "nombre — id", máx. 60 líneas; sin coincidencias, la lista entera | no |
 | `pc_open_app{app}` | `{"op":"open","app":"brave-browser"}` (desktop id) | no (etapa a) |
 | `pc_list_windows{}` | `{"op":"windows"}` → `windows:[{id,app_id,title,focused}]`; devuelve "id · app_id · título · (focused)" | `/control on` |
-| `pc_focus_window{window_id}` | `{"op":"focus","window_id":42}` (entero; se niega en terminales y en la lista de bloqueo) | `/control on` |
+| `pc_focus_window{window_id}` | `{"op":"focus","window_id":42}` (entero; se niega en terminales y en la lista de bloqueo); solo para traer la ventana al frente | `/control on` |
 | `pc_open_url{url}` | `{"op":"open","url":"https://…"}` | no (etapa a) |
-| `pc_type{text,intent}` | `{"op":"type","text":…,"intent":…}` | `/control on` |
-| `pc_key{keys,intent}` | `{"op":"key","keys":"ctrl+l","intent":…}` | `/control on` |
+| `pc_type{text,intent,window_id?}` | `{"op":"type","text":…,"intent":…,"window_id":42}` (S16: con `window_id` el ayudante enfoca esa ventana, teclea y devuelve el foco; sin él, la enfocada) | `/control on` |
+| `pc_key{keys,intent,window_id?}` | `{"op":"key","keys":"ctrl+l","intent":…,"window_id":42}` (igual que `pc_type`) | `/control on` |
 | `pc_screenshot{scale?}` | `{"op":"screenshot","scale":0.5}` (0,1–1) → `png_base64` | `/control on` |
 
 Los errores del ayudante (`{"ok":false,"error":"…"}`) vuelven tal cual como error de la
-herramienta. Para teclear, `AGENTS.md` fija el flujo (S14): ventana con `pc_list_windows` (o
-`pc_list_apps` → `pc_open_app` → `pc_list_windows`), `pc_focus_window`, y recién ahí
-`pc_type`/`pc_key`; nunca en una terminal (la TUI corre en una).
+herramienta. Para teclear, `AGENTS.md` fija el flujo (S14, S16): ventana con `pc_list_windows`
+(o `pc_list_apps` → `pc_open_app` → `pc_list_windows`), y `pc_type`/`pc_key` con su
+`window_id` (el foco vuelve a la ventana del usuario al terminar, así que cambiar de ventana
+mientras tanto no rompe nada); `pc_focus_window` solo para traer una ventana al frente; nunca en
+una terminal (la TUI corre en una).
 
 ## Parada de emergencia
 
@@ -104,10 +106,10 @@ bash host/systemd/test_install.sh            # instalador en un sandbox
 10. `systemctl --user stop jarvis-input` (desde tu terminal) y pedir "abre Brave" → el agente
     dice `jarvis-input is not running`.
 11. (S14) "Abre notas y escribe hola mundo" con control encendido → `pc_list_apps{query}`
-    encuentra `dev.duxlabs.shell.notepad`, `pc_open_app`, `pc_list_windows`,
-    `pc_focus_window` sobre la ventana del bloc y `pc_type` → "hola mundo" aparece ahí, no en
-    la terminal de la TUI.
-12. (S14) Con el bloc ya abierto: "escribe hola" → el agente enfoca el bloc antes de escribir
+    encuentra `dev.duxlabs.shell.notepad`, `pc_open_app`, `pc_list_windows` y `pc_type` con el
+    `window_id` del bloc → "hola mundo" aparece ahí, no en la terminal de la TUI, y el foco
+    vuelve a la TUI (S16: pasa igual si el usuario cambia de ventana mientras tanto).
+12. (S14) Con el bloc ya abierto: "escribe hola" → el agente pasa el `window_id` del bloc a `pc_type`
     (no responde "la ventana activa es una terminal").
 13. (S14) "Enfoca la terminal y escribe ls" → `pc_focus_window` se niega; el agente lo dice y
     no intenta otra vía.

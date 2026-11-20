@@ -54,7 +54,9 @@ All agent requests share a rate limit of **10 per second** (sliding window).
 | `{"op":"open","app":"<desktop-id>"}` | no (stage a) | `{"ok":true}` |
 | `{"op":"open","url":"https://…"}` | no (stage a) | `{"ok":true}` |
 | `{"op":"type","text":"…","intent":"…"}` | yes | `{"ok":true}` |
+| `{"op":"type","text":"…","window_id":11}` (S16) | yes | `{"ok":true,"window_id":11}` |
 | `{"op":"key","keys":"ctrl+l","intent":"…"}` | yes | `{"ok":true}` |
+| `{"op":"key","keys":"ctrl+l","window_id":11}` (S16) | yes | `{"ok":true,"window_id":11}` |
 | `{"op":"screenshot","scale":0.5}` | yes | `{"ok":true,"png_base64":"…"}` |
 | `{"op":"apps","query":"notas"}` (S14) | no | `{"ok":true,"apps":[{"id":"<desktop-id>","name":"…"}]}` |
 | `{"op":"windows"}` (S14) | yes | `{"ok":true,"windows":[{"id":11,"app_id":"…","title":"…","focused":false}]}` |
@@ -93,8 +95,17 @@ All agent requests share a rate limit of **10 per second** (sliding window).
 * `focus`: `window_id` an integer ≥ 0 that must appear in `niri msg -j windows`; refused when
   the window is on the blocklist or is a terminal (the same rules as `type`, below); then runs
   `niri msg action focus-window --id <id>` and polls `focused-window` for up to 500 ms: ok only
-  once that window is focused, otherwise an error. Agent flow for typing: `apps` + `open` (or
-  `windows`), `focus`, then `type`/`key` (which re-check focus themselves).
+  once that window is focused, otherwise an error.
+* `type`/`key` with `window_id` (S16), all under the action lock: the target gets the `focus`
+  checks (listed, not blocklisted, not a terminal); risky-word and Return-in-browser
+  confirmations name the **target** window and are asked before anything is focused (so the user
+  can answer in the TUI); then the currently focused window id is remembered, the target is
+  focused and confirmed (≤ 500 ms), focus is re-checked against the target right before `wtype`,
+  `wtype` runs, and finally (also when a later step failed) focus goes back to the remembered
+  window if it still exists and is not the target — best effort, after a 100 ms pause; failures
+  are only logged. The response echoes `window_id`. Without `window_id` nothing changes. Agent
+  flow for typing: `apps` + `open` (or `windows`), then `type`/`key` with `window_id`; `focus`
+  only to bring a window forward for the user.
 * `windows`, `focus`, `type`, `key` and `screenshot` run one at a time (an action lock).
 
 ### `$XDG_RUNTIME_DIR/jarvis-control/control.sock` (TUI and `jarvis-stop` only)
@@ -171,6 +182,10 @@ For `type` and `key`, in order:
    Evolution, Telegram, Signal, Discord, Slack, WhatsApp, Element, Teams, …). No subscriber =
    denied immediately; no answer within 30 s = denied; subscribers all gone = denied.
 6. Focus re-checked right before `wtype`: a different window id or a now-blocked window = denied.
+
+With `window_id` (S16), steps 3–4 apply to the target window from `niri msg -j windows` instead
+of the focused one, and the helper focuses it (after step 5) before step 6, which then compares
+against the target id; focus is restored afterwards (see `type`/`key` with `window_id` above).
 
 For `screenshot`: permission, then focus (unreadable = denied); a focused window on the
 password/settings/security blocklist is refused (terminals are allowed, the TUI usually has the

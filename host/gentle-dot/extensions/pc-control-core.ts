@@ -31,8 +31,8 @@ export function controlDirPath(env: Record<string, string | undefined>, uid: num
 export type HelperRequest =
 	| { op: "open"; app: string }
 	| { op: "open"; url: string }
-	| { op: "type"; text: string; intent: string }
-	| { op: "key"; keys: string; intent: string }
+	| { op: "type"; text: string; intent: string; window_id?: number }
+	| { op: "key"; keys: string; intent: string; window_id?: number }
 	| { op: "screenshot"; scale: number }
 	| { op: "apps" }
 	| { op: "windows" }
@@ -49,6 +49,11 @@ function windowId(params: Record<string, unknown>): number {
 	return n;
 }
 
+/** S16: pc_type/pc_key target a window only when window_id is given; absent = the focused window. */
+function optionalWindowId(params: Record<string, unknown>): { window_id?: number } {
+	return params.window_id === undefined ? {} : { window_id: windowId(params) };
+}
+
 function str(params: Record<string, unknown>, key: string): string {
 	const v = params[key];
 	if (typeof v !== "string" || v.length === 0) throw new Error(`${key} must be a non-empty string`);
@@ -63,9 +68,9 @@ export function buildRequest(tool: string, params: Record<string, unknown>): Hel
 		case "pc_open_url":
 			return { op: "open", url: str(params, "url") };
 		case "pc_type":
-			return { op: "type", text: str(params, "text"), intent: str(params, "intent") };
+			return { op: "type", text: str(params, "text"), intent: str(params, "intent"), ...optionalWindowId(params) };
 		case "pc_key":
-			return { op: "key", keys: str(params, "keys"), intent: str(params, "intent") };
+			return { op: "key", keys: str(params, "keys"), intent: str(params, "intent"), ...optionalWindowId(params) };
 		case "pc_screenshot": {
 			const s = params.scale;
 			const scale = typeof s === "number" && Number.isFinite(s) ? Math.min(1, Math.max(0.1, s)) : 0.5;

@@ -43,7 +43,7 @@ if name == "niri" and "windows" in sys.argv:
     sys.stdout.write(item.get("stdout", ""))
     sys.exit(item.get("exit", 0))
 if name == "niri" and "action" in sys.argv:
-    sys.exit(int(read("niri_action_exit", "0")))
+    sys.exit(int(read("niri_action_exit_" + sys.argv[-1], read("niri_action_exit", "0"))))
 if name == "niri":
     path = os.path.join(d, "focus.json")
     with open(path) as f:
@@ -895,6 +895,139 @@ class FocusTest(Base):
     async def test_control_socket_does_not_know_them(self) -> None:
         for op in ["apps", "windows", "focus"]:
             self.assertFalse((await self.control({"op": op, "window_id": 11}))["ok"], op)
+        self.assertEqual(self.calls(), [])
+
+
+class TypeIntoWindowTest(Base):
+    """S16: type/key with window_id focus the target, type, and give focus back."""
+    confirm_timeout = 0.6
+
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        await self.grant()
+        self.windows({**GHOSTTY, "focused": True}, NOTEPAD, KEEPASS, BRAVE)
+
+    def actions(self) -> list[list[str]]:
+        return [c["argv"] for c in self.calls("niri") if "action" in c["argv"]]
+
+    def order(self) -> list[str]:
+        return ["wtype" if c["name"] == "wtype" else "focus " + c["argv"][-1]
+                for c in self.calls() if c["name"] == "wtype" or "action" in c["argv"]]
+
+    async def test_type_focuses_types_and_restores(self) -> None:
+        self.focus(GHOSTTY, NOTEPAD)  # user on the TUI; the target is focused after the action
+        res = await self.agent({"op": "type", "text": "hola", "window_id": 11})
+        self.assertEqual(res, {"ok": True, "window_id": 11})
+        self.assertEqual(self.order(), ["focus 11", "wtype", "focus 3"])
+        [c] = self.calls("wtype")
+        self.assertEqual(c["argv"], ["-k", "Shift_L", "-s", "250", "-d", "8", "--", "hola"])
+
+    async def test_key_focuses_types_and_restores(self) -> None:
+        self.focus(GHOSTTY, NOTEPAD)
+        res = await self.agent({"op": "key", "keys": "ctrl+n", "window_id": 11})
+        self.assertEqual(res, {"ok": True, "window_id": 11})
+        self.assertEqual(self.order(), ["focus 11", "wtype", "focus 3"])
+
+    async def test_focus_confirm_polls(self) -> None:
+        self.focus(GHOSTTY, GHOSTTY, GHOSTTY, NOTEPAD)  # focus lands on the 2nd poll
+        self.assertTrue((await self.agent({"op": "type", "text": "hola", "window_id": 11}))["ok"])
+
+    async def test_refuses_bad_targets(self) -> None:
+        self.focus(GHOSTTY, NOTEPAD)
+        self.helper._limiter = server.checks.RateLimiter(100, server.RATE_WINDOW_S)
+        r, w = await self.connect(self.agent_path)
+        for wid in [3, 5, 99, "11", True, None, 1.5, -1]:
+            res = await self.ask_on(r, w, {"op": "type", "text": "hola", "window_id": wid})
+            self.assertFalse(res["ok"], wid)
+            self.assertFalse((await self.ask_on(r, w, {"op": "key", "keys": "a", "window_id": wid}))["ok"], wid)
+        res = await self.agent({"op": "type", "text": "hola", "window_id": 3})
+        self.assertIn("terminal", res["error"])
+        res = await self.agent({"op": "type", "text": "hola", "window_id": 5})
+        self.assertIn("bloqueo", res["error"])
+        self.assertEqual(self.order(), [])
+
+    async def test_focus_not_confirmed(self) -> None:
+        self.focus(GHOSTTY)
+        res = await self.agent({"op": "type", "text": "hola", "window_id": 11})
+        self.assertFalse(res["ok"])
+        self.assertIn("enfocada", res["error"])
+        self.assertEqual(self.order(), ["focus 11", "focus 3"])  # focus goes back even so
+
+    async def test_without_window_id_unchanged(self) -> None:
+        self.focus(NOTEPAD)
+        self.assertEqual(await self.agent({"op": "type", "text": "hola"}), {"ok": True})
+        self.assertEqual(await self.agent({"op": "key", "keys": "ctrl+n"}), {"ok": True})
+        self.assertEqual(self.order(), ["wtype", "wtype"])  # no focus changes
+        self.focus(GHOSTTY)
+        res = await self.agent({"op": "type", "text": "hola"})
+        self.assertIn("terminal", res["error"])
+        self.assertEqual(self.order(), ["wtype", "wtype"])
+
+    async def test_recheck_compares_target(self) -> None:
+        self.focus(GHOSTTY, NOTEPAD, GHOSTTY)  # confirmed, then the user switched before wtype
+        res = await self.agent({"op": "type", "text": "hola", "window_id": 11})
+        self.assertFalse(res["ok"])
+        self.assertIn("foco", res["error"])
+        self.assertEqual(self.calls("wtype"), [])
+
+    async def test_no_restore_when_previous_is_target_or_gone(self) -> None:
+        self.focus(NOTEPAD)
+        self.assertTrue((await self.agent({"op": "type", "text": "hola", "window_id": 11}))["ok"])
+        self.assertEqual(self.order(), ["focus 11", "wtype"])
+        (self.fake / "calls.jsonl").unlink()
+        self.focus({"id": 42, "app_id": "x", "title": "cerrada"}, NOTEPAD)
+        self.assertTrue((await self.agent({"op": "type", "text": "hola", "window_id": 11}))["ok"])
+        self.assertEqual(self.order(), ["focus 11", "wtype"])
+
+    async def test_no_previous_window(self) -> None:
+        self.focus({"stdout": "null"}, NOTEPAD)
+        self.assertTrue((await self.agent({"op": "type", "text": "hola", "window_id": 11}))["ok"])
+        self.assertEqual(self.order(), ["focus 11", "wtype"])
+
+    async def test_restore_failure_is_not_an_error(self) -> None:
+        (self.fake / "niri_action_exit_3").write_text("1")
+        self.focus(GHOSTTY, NOTEPAD)
+        with self.assertLogs("jarvis_input", level="WARNING"):
+            res = await self.agent({"op": "type", "text": "hola", "window_id": 11})
+        self.assertEqual(res, {"ok": True, "window_id": 11})
+        self.assertEqual(self.order(), ["focus 11", "wtype", "focus 3"])
+
+    async def test_restores_after_wtype_failure(self) -> None:
+        (self.fake / "wtype_exit").write_text("1")
+        self.focus(GHOSTTY, NOTEPAD)
+        self.assertFalse((await self.agent({"op": "type", "text": "hola", "window_id": 11}))["ok"])
+        self.assertEqual(self.order(), ["focus 11", "wtype", "focus 3"])
+
+    async def test_confirmation_names_target_before_focusing(self) -> None:
+        self.focus(NOTEPAD)  # the user is elsewhere; the target is Brave
+        r, w = await self.subscribe()
+        task = asyncio.create_task(self.agent({"op": "key", "keys": "Return", "window_id": 8}))
+        ev = await self.next_event(r)
+        self.assertEqual(ev["event"], "confirm")
+        self.assertIn("brave-browser", ev["message"])
+        self.assertIn("Inbox", ev["message"])
+        self.assertEqual(self.actions(), [])  # nothing focused while asking
+        await self.ask_on(r, w, {"op": "answer", "id": ev["id"], "allow": False})
+        self.assertFalse((await task)["ok"])
+        self.assertEqual(self.order(), [])
+
+    async def test_confirm_allowed_then_typed(self) -> None:
+        self.focus(GHOSTTY, BRAVE)
+        r, w = await self.subscribe()
+        task = asyncio.create_task(self.agent({"op": "type", "text": "hola\n", "window_id": 8}))
+        ev = await self.next_event(r)
+        await self.ask_on(r, w, {"op": "answer", "id": ev["id"], "allow": True})
+        self.assertEqual(await task, {"ok": True, "window_id": 8})
+        self.assertEqual(self.order(), ["focus 8", "wtype", "focus 3"])
+
+    async def test_return_rule_uses_target_not_focused(self) -> None:
+        self.focus(BRAVE, NOTEPAD)  # focused Brave would need a confirmation; the target does not
+        self.assertTrue((await self.agent({"op": "key", "keys": "Return", "window_id": 11}))["ok"])
+
+    async def test_requires_permission(self) -> None:
+        await self.control({"op": "revoke"})
+        res = await self.agent({"op": "type", "text": "hola", "window_id": 11})
+        self.assertIn("/control on", res["error"])
         self.assertEqual(self.calls(), [])
 
 

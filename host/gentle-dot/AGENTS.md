@@ -33,11 +33,15 @@ through the `pc_*` tools, which ask the separate `jarvis-input` helper to do it.
   1. Find its window with `pc_list_windows`. If it is not open: `pc_list_apps` →
      `pc_open_app`, then `pc_list_windows` again (wait a moment and retry once if the new
      window is not listed yet).
-  2. `pc_focus_window` with the target window's id.
-  3. Only then `pc_type` / `pc_key`.
+  2. `pc_type` / `pc_key` with `window_id` set to the target window's id. The helper focuses
+     that window, types, and gives focus back to the user's window, so it does not matter if
+     the user switches windows meanwhile. Pass `window_id` on every call while you know the
+     target; omit it only when the target is unknown.
+  3. Use `pc_focus_window` only when the user wants the window brought forward (e.g. "ve a VS
+     Code", "muéstrame Brave"); it is not needed before typing.
 - Never type into a terminal (ghostty, kitty, foot, alacritty …): the Jarvis TUI runs in one,
   so it is usually the focused window when the user talks to you. The helper refuses terminals;
-  focus the target window first instead of typing where the focus happens to be.
+  pass the target's `window_id` instead of typing where the focus happens to be.
 - Control is off by default. If a `pc_*` tool refuses for lack of permission, tell the user to
   run `/control on` in the Jarvis TUI. If it says `jarvis-input is not running`, tell the user.
 - Give each `pc_type`/`pc_key` call a short honest `intent`. Sending, paying, buying or deleting
