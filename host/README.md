@@ -123,6 +123,11 @@ Sin `--enable` solo escribe la unidad y hace `systemctl --user daemon-reload`; c
 `try-restart` si la unidad cambió). Repetirlo es seguro: si la unidad ya está al día no
 hace nada.
 
+- `--allow-dirty`: acepta un checkout de Gentle Dot con cambios sin commitear o archivos sin seguimiento (desaconsejado). Sin ella, el instalador se niega y no escribe nada si `git -C <checkout> status --porcelain` no está vacío; `--check` también lo comprueba.
+- Backup: antes de reemplazar una unidad distinta, el instalador guarda la anterior en `~/.config/systemd/user/gentle-dot.service.bak` e imprime la ruta. `--uninstall` la conserva.
+- Límite de arranques: la unidad admite como mucho 10 arranques en 10 minutos (`StartLimitIntervalSec=10min`, `StartLimitBurst=10`); después queda en `failed` hasta `systemctl --user reset-failed gentle-dot.service`.
+- Si `systemctl --user daemon-reload` falla, el instalador sale con error y deja `gentle-dot.service.reload-pending`; vuelve a ejecutarlo (o `--uninstall`) y reintentará la recarga en vez de responder "Sin cambios".
+
 ### Verificar
 
 ```bash

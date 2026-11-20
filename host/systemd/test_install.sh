@@ -26,10 +26,17 @@ mkdir -p "${STUBS}" "${FAKE_HOME}" "${GD}/packages/daemon/src" "${GD}/node_modul
 : >"${GD}/packages/daemon/src/cli.ts"
 : >"${CALLS}"
 
-# systemctl stub: records its arguments, never touches a manager.
+# systemctl stub: records its arguments, never touches a manager. While the file
+# ${FAIL_RELOAD} exists, the next `daemon-reload` fails once and removes it.
+readonly FAIL_RELOAD="${SANDBOX}/fail-reload"
 cat >"${STUBS}/systemctl" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >>"${CALLS}"
+if [[ "\$*" == "--user daemon-reload" && -e "${FAIL_RELOAD}" ]]; then
+	rm -f -- "${FAIL_RELOAD}"
+	echo "Failed to reload daemon: stub" >&2
+	exit 1
+fi
 EOF
 # node stubs: a current one and one that is too old.
 printf '#!/usr/bin/env bash\necho v24.11.0\n' >"${STUBS}/node"
@@ -89,6 +96,7 @@ check "second install exits 0" '[[ ${RC} -eq 0 ]]'
 check "second install reports no changes" 'grep -q "Sin cambios" <<<"${OUT}"'
 check "second install leaves the unit" '[[ "$(sha256sum "${UNIT}")" == "${before}" ]]'
 check "second install calls no systemctl" '[[ ! -s "${CALLS}" ]]'
+check "an unchanged install keeps no backup" '[[ ! -e "${UNIT}.bak" ]]'
 
 # 5. --enable on an unchanged unit: only enable --now.
 reset_calls
@@ -103,6 +111,95 @@ sandboxed "${BASE[@]}" --enable
 check "--enable on a stale unit rewrites it" '[[ ${RC} -eq 0 && "$(sha256sum "${UNIT}")" == "${before}" ]]'
 check "--enable on a stale unit reloads, try-restarts, enables" \
 	'[[ "$(calls)" == $'"'"'--user daemon-reload\n--user try-restart gentle-dot.service\n--user enable --now gentle-dot.service'"'"' ]]'
+
+# 5c. Start limit: the rendered unit caps restarts in its [Unit] section.
+unit_section="$(awk '/^\[/{s=$0; next} s=="[Unit]"' "${UNIT}")"
+check "unit pins StartLimitIntervalSec=10min in [Unit]" 'grep -qxF "StartLimitIntervalSec=10min" <<<"${unit_section}"'
+check "unit pins StartLimitBurst=10 in [Unit]" 'grep -qxF "StartLimitBurst=10" <<<"${unit_section}"'
+
+readonly BAK="${UNIT}.bak"
+readonly PENDING="${UNIT}.reload-pending"
+
+# 5d. Backup: an existing, different unit is copied to .bak before it is overwritten.
+check "5b kept the stale unit as backup" '[[ -f "${BAK}" ]] && grep -qxF "# stale" "${BAK}"'
+bak_prev="$(sha256sum <"${BAK}")"
+printf '# local edit\n' >>"${UNIT}"
+edited="$(sha256sum <"${UNIT}")"
+reset_calls
+sandboxed "${BASE[@]}" --dry-run
+check "dry-run on a different unit announces the backup" \
+	'[[ ${RC} -eq 0 ]] && grep -qxF "[dry-run] copia de la unidad anterior en ${BAK}" <<<"${OUT}"'
+check "dry-run on a different unit writes no backup and keeps the unit" \
+	'[[ "$(sha256sum <"${BAK}")" == "${bak_prev}" && "$(sha256sum <"${UNIT}")" == "${edited}" && ! -s "${CALLS}" ]]'
+sandboxed "${BASE[@]}"
+check "install over a different unit exits 0 and says where the backup is" \
+	'[[ ${RC} -eq 0 ]] && grep -qxF "Copia de la unidad anterior: ${BAK}" <<<"${OUT}"'
+check "backup holds the previous unit" '[[ "$(sha256sum <"${BAK}")" == "${edited}" ]]'
+check "unit is rewritten after the backup" '[[ "$(sha256sum "${UNIT}")" == "${before}" ]]'
+check "backup is 0644" '[[ "$(stat -c %a "${BAK}")" == 644 ]]'
+
+# 5e. A failed daemon-reload is retried by the next run instead of "Sin cambios".
+printf '# stale\n' >>"${UNIT}"
+touch "${FAIL_RELOAD}"
+reset_calls
+sandboxed "${BASE[@]}" --enable
+check "failed daemon-reload exits non-zero with a retry hint" \
+	'[[ ${RC} -ne 0 ]] && grep -qxF "error: systemctl --user daemon-reload falló; ${UNIT} quedó escrita pero systemd no la cargó. Vuelve a ejecutar este script para reintentar la recarga." <<<"${OUT}"'
+check "failed daemon-reload stops before enabling" '[[ "$(calls)" == "--user daemon-reload" ]]'
+check "failed daemon-reload leaves the new unit and a pending marker" \
+	'[[ "$(sha256sum "${UNIT}")" == "${before}" && -e "${PENDING}" ]]'
+reset_calls
+sandboxed "${BASE[@]}" --enable
+check "rerun after a failed reload exits 0 and says it retries" \
+	'[[ ${RC} -eq 0 ]] && grep -qxF "Recarga pendiente: un daemon-reload anterior falló; se reintenta." <<<"${OUT}" && ! grep -q "Sin cambios" <<<"${OUT}"'
+check "rerun after a failed reload reloads, try-restarts, enables" \
+	'[[ "$(calls)" == $'"'"'--user daemon-reload\n--user try-restart gentle-dot.service\n--user enable --now gentle-dot.service'"'"' ]]'
+check "successful retry clears the marker" '[[ ! -e "${PENDING}" ]]'
+reset_calls
+sandboxed "${BASE[@]}"
+check "after the retry the next run has no changes" \
+	'[[ ${RC} -eq 0 && ! -s "${CALLS}" ]] && grep -qF "Sin cambios" <<<"${OUT}"'
+
+# 5f. Dirty checkout: refused unless --allow-dirty; a refusal changes nothing.
+if command -v git >/dev/null 2>&1; then
+	readonly GD_DIRTY="${SANDBOX}/gentle-dot-dirty"
+	mkdir -p "${GD_DIRTY}/packages/daemon/src" "${GD_DIRTY}/node_modules"
+	: >"${GD_DIRTY}/packages/daemon/src/cli.ts"
+	printf 'node_modules/\n' >"${GD_DIRTY}/.gitignore"
+	git -C "${GD_DIRTY}" init -q
+	git -C "${GD_DIRTY}" add -A
+	git -C "${GD_DIRTY}" -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -q -m t
+	DIRTY_ARGS=(--gentle-dot-dir "${GD_DIRTY}" --node "${STUBS}/node" --allow-unpinned)
+	dirty_msg="error: el checkout ${GD_DIRTY} tiene cambios sin commitear (git -C ${GD_DIRTY} status); el servicio no correría el commit revisado. Haz commit o descártalos, o usa --allow-dirty."
+	unit_before="$(sha256sum "${UNIT}")"
+	bak_before="$(sha256sum "${BAK}")"
+
+	sandboxed "${DIRTY_ARGS[@]}" --check
+	check "a clean checkout passes --check" '[[ ${RC} -eq 0 ]]'
+
+	printf '// edit\n' >>"${GD_DIRTY}/packages/daemon/src/cli.ts"
+	reset_calls
+	sandboxed "${DIRTY_ARGS[@]}" --enable
+	check "refuses a checkout with uncommitted changes" '[[ ${RC} -ne 0 ]] && grep -qxF "${dirty_msg}" <<<"${OUT}"'
+	check "dirty refusal leaves unit and backup, calls nothing" \
+		'[[ "$(sha256sum "${UNIT}")" == "${unit_before}" && "$(sha256sum "${BAK}")" == "${bak_before}" && ! -e "${PENDING}" && ! -s "${CALLS}" ]]'
+	sandboxed "${DIRTY_ARGS[@]}" --check
+	check "--check also refuses a dirty checkout" '[[ ${RC} -ne 0 ]] && grep -qxF "${dirty_msg}" <<<"${OUT}"'
+
+	git -C "${GD_DIRTY}" -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -q -am t2
+	: >"${GD_DIRTY}/untracked.txt"
+	sandboxed "${DIRTY_ARGS[@]}"
+	check "refuses a checkout with untracked files" '[[ ${RC} -ne 0 ]] && grep -qxF "${dirty_msg}" <<<"${OUT}"'
+	check "untracked refusal leaves the unit, calls nothing" '[[ "$(sha256sum "${UNIT}")" == "${unit_before}" && ! -s "${CALLS}" ]]'
+
+	sandboxed "${DIRTY_ARGS[@]}" --allow-dirty --dry-run
+	check "--allow-dirty accepts it with a warning" \
+		'[[ ${RC} -eq 0 ]] && grep -qxF "aviso: el checkout ${GD_DIRTY} tiene cambios sin commitear; se sigue por --allow-dirty" <<<"${OUT}"'
+	check "--allow-dirty --dry-run changes nothing" '[[ "$(sha256sum "${UNIT}")" == "${unit_before}" && ! -s "${CALLS}" ]]'
+fi
+
+sandboxed --help
+check "help documents --allow-dirty" '[[ ${RC} -eq 0 ]] && grep -qE "^  --allow-dirty +" <<<"${OUT}"'
 
 # 6. Dry-run uninstall: prints, removes nothing, calls nothing.
 reset_calls
@@ -123,6 +220,23 @@ check "uninstall disables, reloads, resets" \
 reset_calls
 sandboxed --uninstall
 check "second uninstall is a no-op" '[[ ${RC} -eq 0 && ! -s "${CALLS}" ]] && grep -q "nada que desinstalar" <<<"${OUT}"'
+
+# 7b. A failed daemon-reload during uninstall is retried by the next --uninstall.
+sandboxed "${BASE[@]}"
+touch "${FAIL_RELOAD}"
+reset_calls
+sandboxed --uninstall
+check "uninstall with a failed reload exits non-zero with a retry hint" \
+	'[[ ${RC} -ne 0 ]] && grep -qxF "error: systemctl --user daemon-reload falló; ${UNIT} ya se borró pero systemd no recargó. Vuelve a ejecutar --uninstall para reintentar la recarga." <<<"${OUT}"'
+check "uninstall with a failed reload removes the unit, keeps a marker" '[[ ! -e "${UNIT}" && -e "${PENDING}" ]]'
+reset_calls
+sandboxed --uninstall
+check "uninstall rerun retries the reload" \
+	'[[ ${RC} -eq 0 ]] && grep -qxF "Recarga pendiente: un daemon-reload anterior falló; se reintenta." <<<"${OUT}" &&
+	 [[ "$(calls)" == $'"'"'--user daemon-reload\n--user reset-failed gentle-dot.service'"'"' && ! -e "${PENDING}" ]]'
+reset_calls
+sandboxed --uninstall
+check "uninstall after the retry is a no-op" '[[ ${RC} -eq 0 && ! -s "${CALLS}" ]] && grep -q "nada que desinstalar" <<<"${OUT}"'
 
 # 8. Refusals.
 set +e
