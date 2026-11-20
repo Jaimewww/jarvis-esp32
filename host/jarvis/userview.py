@@ -395,6 +395,10 @@ def jarvis_status(model: HostModel, live: Exchange | None) -> tuple[str, str, Co
             return WORDS[state], "busy", what, waiting
         if voice_word:
             return voice_word, "busy", ("on what you said",), waiting
+        if model.agent_notice:
+            # The daemon's own words go whole on the row under the header (notice_rows).
+            return ("SIGN IN", "failed", ("no AI account in Gentle Dot", "no AI account"),
+                    ("connect one there, then type again", "then type again"))
         if state == "idle":
             return "READY", "ok", ("talk or type whenever you like", "talk or type"), waiting
         if state == "error":
@@ -707,6 +711,18 @@ def thread_rows(model: HostModel, w: int, h: int) -> list[list[Seg]]:
     return body + [blank(w, "bc")] * (h - len(body))
 
 
+def notice_rows(model: HostModel, w: int) -> list[list[Seg]]:
+    """The daemon's own message while it cannot answer (``HostModel.agent_notice``), whole."""
+
+    if not model.agent_notice or w < 8:
+        return []
+    lines = textwrap.wrap(model.agent_notice, w - 6) or [""]
+    return [
+        [S("  "), S("✗ ", "er b") if i == 0 else S("  "), S(line, "er")]
+        for i, line in enumerate(lines)
+    ]
+
+
 def render_rows(model: HostModel, w: int, h: int, frame: int = 0) -> list[list[Seg]]:
     """All rows of the user view for a ``w`` x ``h`` area (input and footer excluded)."""
 
@@ -719,6 +735,9 @@ def render_rows(model: HostModel, w: int, h: int, frame: int = 0) -> list[list[S
         rows = head[:h]
         return rows + [blank(w, "bc")] * (h - len(rows))
     rows = head + [blank(w, "bc")]
+    notice = notice_rows(model, w)
+    if notice and len(rows) + len(notice) + 4 <= h:
+        rows += notice + [blank(w, "bc")]
     rows += thread_rows(model, w, h - len(rows))
     return [region(row, w) for row in rows[:h]]
 

@@ -42,11 +42,12 @@ solicitud sobre `docs/contratos.md`.
 - [ ] T3 (S3): daemon upstream fijado como servicio de usuario de systemd.
   - [x] T3a: unidad, instalador, pruebas y docs, sin tocar el sistema. Rama
     `feat/gentle-dot-service`, commit `2a2ec81`, solicitud #5.
-  - [ ] T3b: instalación real en la máquina del usuario (requiere su visto bueno).
+  - [x] T3b: instalación real en la máquina del usuario (L26).
 - [ ] T4 (S4): `backend/app/agents/gentle_dot.py` con daemon falso y luego real.
   - [x] T4a: con daemon falso. Rama `feat/gentle-dot-agent`. Commit `c5b1c00`,
     solicitud #4 fusionada en `main`.
-  - [ ] T4b: con daemon real; espera a T3. Commit: pendiente.
+  - [ ] T4b: con daemon real; espera a T3. Rama `feat/gentle-dot-agent-real`. Parcial (L28):
+    falta conectar una cuenta de IA en Gentle Dot para cerrar las pruebas que dependen de una respuesta.
 - [x] T5 (S6): integración continua con GitHub Actions. Rama `ci/github-actions` desde
   `main`, worktree `jarvis-esp32-worktrees/pi-ci`. Worker. Commit: `b7a0f0e`, solicitud #3.
 
@@ -185,3 +186,19 @@ solicitud sobre `docs/contratos.md`.
   `f97d56d` (`docs/decisiones.md:137-138`); el checkout local
   `_scratch-gentle-dot` está en ese commit pero sin `node_modules`. Revisión nativa
   `review-a11fb01a482ab7a2` aprobada con 9 hallazgos no bloqueantes. Nada instalado.
+- L26 (evidencia T3b, 2026-11-19): `pnpm install` en `_scratch-gentle-dot`, unidad en
+  `~/.config/systemd/user/gentle-dot.service`, servicio activo y habilitado en
+  `127.0.0.1:4317`; linger sin activar.
+- L27 (usuario, 2026-11-19): "frenamos aca, y continuamos en la siguiente sesion";
+  retomado el 2026-11-20 con "dale continua".
+- L28 (evidencia T4b, parcial): contra el daemon real, `ready` llega con
+  `agentState: idle` y `model: "unknown"`; token incorrecto cierra con 4401; `abort` sin
+  tarea no responde en 2 s. Sin cuenta de IA, un envío recibe
+  `{"type":"error","code":"no_account","message":"Connect an AI account first: open Accounts or type /login."}`
+  sin eco previo. El adaptador lo expone como `GentleDotNotSignedIn` con ese texto exacto y
+  ya no envía `abort` ante un error previo al eco; la TUI lo muestra en ambas vistas.
+  Backend 33 pasan y 5 omitidas (36 y 2 con `JARVIS_REAL_DAEMON=1`); host 89 y 4 (92 y 1).
+  Sin verificar hasta conectar una cuenta: coincidencia del eco, ids de mensaje separados
+  y `stopped` tras `abort`. `reset()` sigue imposible con `features.conversations: false`.
+  pyright no se corrió localmente. Textos sin revisar por el usuario: `SIGN IN`,
+  "no AI account in Gentle Dot", "connect one there, then type again", etiqueta `needs`.

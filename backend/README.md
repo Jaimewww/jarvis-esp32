@@ -24,8 +24,8 @@ ESP32 lo alcanza por la LAN.
 - `app/fakes.py` — dobles de esas interfaces con salidas fijas, para pruebas.
 - `app/agents/gentle_dot.py` — `GentleDotAgent`, el `Agent` del carril de tareas
   largas (D14) sobre el protocolo v1 del daemon de Gentle Dot (el mismo que usa
-  `host/jarvis/client.py`). Probado contra un daemon falso; **no está conectado a
-  `/converse`** ni probado aún con un daemon real. Ver
+  `host/jarvis/client.py`). Probado contra un daemon falso y, de forma opcional,
+  contra el daemon real (upstream `f97d56d`); **no está conectado a `/converse`**. Ver
   [adaptador de Gentle Dot](#adaptador-de-gentle-dot).
 
 ## Cómo correrlo
@@ -69,6 +69,7 @@ C3 no define errores; el adaptador lanza subclases de `GentleDotError`:
 | `GentleDotProtocolMismatch` | Cierre `4400` |
 | `GentleDotTokenError` | Sin token, archivo ausente o vacío; no se conecta |
 | `GentleDotDaemonError` | Trama `error` (`code`, `message`) o `message_done.error` |
+| `GentleDotNotSignedIn` | Subclase de la anterior: trama `error` con `code` `no_account` (Gentle Dot no tiene cuenta de IA). `str()` es el mensaje del daemon sin cambios, para mostrarlo tal cual: `Connect an AI account first: open Accounts or type /login.` El adaptador nunca inicia sesión |
 | `GentleDotTimeout` | Sin `ready` en el plazo de apertura o sin tramas en el plazo de inactividad |
 | `GentleDotStopped` | Otro cliente detuvo la respuesta (`message_done.stopped`) |
 | `GentleDotBusy` | Ya hay una tarea en curso |
@@ -77,11 +78,36 @@ C3 no define errores; el adaptador lanza subclases de `GentleDotError`:
 `abort()` envía `{"type":"abort"}` y la respuesta termina sin la frase cortada; sin
 respuesta en curso no hace nada. Si el que llama cancela, o hay error o vence el
 plazo antes de `message_done`, el adaptador también envía `abort` para no dejar al
-daemon trabajando.
+daemon trabajando. Una trama `error` **antes** del eco `user_message` significa que el
+daemon rechazó el envío sin empezar nada (por ejemplo `no_account`): entonces no se
+envía `abort`, que podría detener la tarea de otro cliente.
 
-**Pendiente:** `reset()` (falta un mensaje en el protocolo), la confirmación de inicio
-y el aviso de fin de una tarea larga en segundo plano (D14; C3 solo define el flujo de
-texto) y la prueba contra el daemon real (T3).
+### Daemon real (opcional)
+
+`tests/test_gentle_dot_real.py` se salta salvo con `JARVIS_REAL_DAEMON=1` (CI no tiene
+daemon) y usa `GentleDotAgent.from_env()`:
+
+```bash
+cd backend
+JARVIS_REAL_DAEMON=1 .venv/bin/python -m pytest tests/test_gentle_dot_real.py -v -rs
+```
+
+Comprobado contra el servicio `gentle-dot.service` (upstream `f97d56d`): un token
+incorrecto se cierra con `4401`; `abort` sin respuesta en curso no recibe nada; sin
+cuenta de IA, `send` recibe solo
+`{"type":"error","code":"no_account","message":"Connect an AI account first: open Accounts or type /login."}`
+(sin eco) y el adaptador lanza `GentleDotNotSignedIn` con ese texto. Con cuenta, las
+mismas pruebas comprueban el eco exacto del texto, que la respuesta tiene un
+`messageId` distinto del del eco y que tras `abort` el daemon emite
+`message_done` con `stopped: true`; sin cuenta se saltan citando el mensaje del daemon.
+`ready` trae `features.conversations: false`; con eso el código de upstream responde a
+`new_conversation` con `error` `conversations_off` ("This assistant keeps one continuous
+chat."; leído en el código, no probado en vivo), así que `reset()` sigue sin soporte.
+
+**Pendiente:** `reset()` (el daemon de servicio no admite `new_conversation`), la
+confirmación de inicio y el aviso de fin de una tarea larga en segundo plano (D14; C3
+solo define el flujo de texto) y correr las pruebas con respuesta (eco, ids, `stopped`)
+con una cuenta de IA conectada.
 
 ## Pruebas
 

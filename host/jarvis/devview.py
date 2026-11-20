@@ -593,8 +593,13 @@ def rail_rows(model: HostModel, g: Grid, n: int) -> list[list[Seg]]:
         kv("model", [S(model.agent_model, "t1")] if model.agent_model else [S("—", "mu")]),
         kv("chat", [S(model.chat_title, "t1")] if model.chat_title else [S("—", "mu")]),
         kv("queue", queue),
-        inside([]),
     ]
+    if model.agent_notice:
+        # The daemon's own message (e.g. no AI account), whole, wrapped to the card.
+        room = max(1, g.right + 1 - xv)
+        for i, line in enumerate(textwrap.wrap(model.agent_notice, room) or [""]):
+            body.append(kv("needs" if i == 0 else "", [S(line, "er")]))
+    body.append(inside([]))
     activities = model.activities
     body.append(inside([(xr, header("PC actions", str(len(activities))))]))
     if not activities:
