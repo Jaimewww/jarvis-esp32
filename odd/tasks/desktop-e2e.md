@@ -26,6 +26,7 @@ focus and screenshots are checked by a script instead of the user. Branch `feat/
 - [x] T1 (S1-S3): explore options, build the runner and cases, document. Route: worker. Commit: f021ec8
   (runner `host/e2e/run.sh` = `python3 -m jarvis_e2e`; on top of cherry-picked ad4cf60 as 4e315c8).
   Open: the VS Code `hola mundo` case FAILS against the current helper (L2).
+- [ ] T2 (S1, L2): fix the helper so the runner passes: plan wtype keycode slots (special keysyms on their real keycodes, text characters never on keycodes Chromium treats as special). Route: worker. Commit: —
 
 ## Log
 
@@ -45,3 +46,4 @@ focus and screenshots are checked by a script instead of the user. Branch `feat/
   sentence also failed 4/4 (`Hola mundo este…`, comma on another special keycode). Not fixed
   here (not trivial): typing must keep text keysyms off keycodes VS Code binds (Escape, BackSpace,
   Tab, Return, modifiers, arrows…).
+- L2 (runner, 2026-11-20): 6/7 pass; `hola mundo` in VS Code+Vim fails: register_chars puts characters on the keycodes VS Code reads as BackSpace/Tab (space acts as Tab). Likely also the cause of s2-round2 L27.
