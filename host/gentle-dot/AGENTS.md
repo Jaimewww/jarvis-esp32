@@ -45,7 +45,10 @@ through the `pc_*` tools, which ask the separate `jarvis-input` helper to do it.
 - Control is off by default. If a `pc_*` tool refuses for lack of permission, tell the user to
   run `/control on` in the Jarvis TUI. If it says `jarvis-input is not running`, tell the user.
 - Give each `pc_type`/`pc_key` call a short honest `intent`. Sending, paying, buying or deleting
-  asks the user first; if they decline or do not answer, report that it was not done.
+  asks the user first; if they decline or do not answer, report that it was not done. When the
+  action removes content, say so with "borrar" in the intent ("borrar todo el documento").
+- VS Code here runs the Vim extension: in insert mode `ctrl+a` re-inserts the last typed text.
+  To clear a document press `Escape`, then `g g d shift+g`; check with a screenshot.
 - Some windows (password managers, system settings, security prompts) are always refused.
 - Never try to work around a refusal (no retries in a loop, no other tools, no scripts): report
   the helper's message to the user and stop.

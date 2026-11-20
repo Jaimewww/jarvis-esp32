@@ -439,7 +439,7 @@ líneas; solo la TUI y `jarvis-stop`). Ya no escribe ningún archivo de permiso.
 agrega cada uno en niri, en `~/.config/niri/binds.kdl`, por ejemplo
 `Alt+Shift+Escape { spawn "jarvis-stop"; }`.
 
-**Confirmaciones.** Antes de una acción de riesgo (enviar, pagar, comprar, eliminar, o
+**Confirmaciones.** Antes de una acción de riesgo (enviar, pagar, comprar, eliminar, borrar, vaciar, o
 `Return` en navegadores, correo y mensajería), el ayudante manda por la suscripción
 `{"event":"confirm","id":…,"title":…,"message":…,"timeout_s":30}`. La TUI lo muestra como
 una tarjeta destacada sobre el campo de texto, en las dos vistas, y contesta

@@ -76,7 +76,9 @@ All agent requests share a rate limit of **10 per second** (sliding window).
 * `key`: up to 20 space-separated combos `mod+mod+key`; modifiers `ctrl|control`, `shift`,
   `alt`, `altgr`, `super|logo|win|meta|mod`; aliases `enter|return`, `esc`, `tab`, `space`,
   `backspace`, `delete|del`, `insert`, `home`, `end`, `pageup`, `pagedown`, arrows, `f1`–`f24`;
-  otherwise an xkb keysym name. Runs `wtype -M mod … -k key … -m mod …`.
+  otherwise an xkb keysym name. Runs `wtype -M mod … -k key … -m mod …`. With `shift`, a
+  lowercase letter is sent as its capital keysym (`shift+g` → `-k G`): wtype's keymap has one
+  level per key, so the app would otherwise see `g`.
 * `screenshot`: optional `scale` in `[0.05, 1]`; runs `grim [-s <scale>] -`.
 * `apps`: **reads files only, never runs anything.** Data dirs by precedence:
   `$XDG_DATA_HOME` (or `~/.local/share`), `$XDG_DATA_DIRS` (or `/usr/local/share:/usr/share`;
@@ -176,8 +178,8 @@ For `type` and `key`, in order:
    WezTerm, GNOME Console/Terminal, Konsole, xterm, …), because typing into a terminal would
    run commands outside the daemon's sandbox and could drive the Jarvis TUI itself (`/control on`).
 5. Confirmation through `control.sock` when the text or intent has a word starting with a
-   risky stem (`envi`, `pag`, `compr`, `elimin`, `borr`, `submit`, `send`, `pay`, `buy`,
-   `delet`; text is NFKC-normalized, zero-width/format characters dropped, accents stripped,
+   risky stem (`envi`, `pag`, `compr`, `elimin`, `borr`, `vaci`, `submit`, `send`, `pay`, `buy`,
+   `delet`, `clear`, `wipe`; text is NFKC-normalized, zero-width/format characters dropped, accents stripped,
    case-folded), or when Return/KP_Enter (any modifiers, or a newline in `text`) goes to a
    browser, mail or messaging app (Brave, Firefox, Chromium/Chrome, Zen, Thunderbird,
    Evolution, Telegram, Signal, Discord, Slack, WhatsApp, Element, Teams, …). No subscriber =

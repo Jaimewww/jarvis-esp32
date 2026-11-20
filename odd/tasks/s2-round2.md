@@ -301,3 +301,11 @@ propia solicitud desde `main`; worktree `jarvis-esp32-worktrees/pi-next`.
   la ventana destino ya tiene el foco.
 - L22 (usuario, 2026-11-20): "ahora ya funciona" (T25 + pausa de 400 ms confirmados en el
   escritorio real, con el foco en otra ventana).
+- L23 (usuario y evidencia, 2026-11-20): "Jarvis, borra todo lo que escribiste" → "Sí, vacío el
+  documento completo" → "No pude vaciarlo: los atajos no funcionaron … se agregaron caracteres".
+  Log: `key ctrl+a BackSpace` y luego `key Escape g g d shift+g`, con intención "Vaciar…" y sin
+  tarjeta de confirmación. Causas: VS Code usa la extensión Vim (en inserción `ctrl+a` reinserta
+  el último texto); `shift+g` llegaba como `g` (keymap de wtype de un nivel); "vaciar" no era
+  palabra de riesgo. Luego: "no funciona el lo del alt shiuft esc si funciona bien".
+  Arreglo: shift+letra envía la mayúscula; palabras de riesgo `vaci`, `clear`, `wipe`; AGENTS.md
+  pide "borrar" en la intención y explica Vim en VS Code.

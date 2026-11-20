@@ -23,7 +23,7 @@ class ParseKeysTest(unittest.TestCase):
         self.assertEqual(checks.parse_keys("ctrl+l"), ["-M", "ctrl", "-k", "l", "-m", "ctrl"])
         self.assertEqual(
             checks.parse_keys("ctrl+shift+t"),
-            ["-M", "ctrl", "-M", "shift", "-k", "t", "-m", "shift", "-m", "ctrl"],
+            ["-M", "ctrl", "-M", "shift", "-k", "T", "-m", "shift", "-m", "ctrl"],
         )
         self.assertEqual(checks.parse_keys("super+1"), ["-M", "logo", "-k", "1", "-m", "logo"])
         self.assertEqual(
@@ -32,6 +32,17 @@ class ParseKeysTest(unittest.TestCase):
         )
         self.assertEqual(checks.parse_keys("f5"), ["-k", "F5"])
         self.assertEqual(checks.parse_keys("esc"), ["-k", "Escape"])
+
+    def test_shift_letter_sends_the_capital(self) -> None:
+        # wtype's keymap has one level per key, so shift+g reached VS Code (Vim) as "g" and
+        # "g g d shift+g" did not clear the document (L23). Shift+letter sends the capital keysym.
+        self.assertEqual(checks.parse_keys("shift+g"), ["-M", "shift", "-k", "G", "-m", "shift"])
+        self.assertEqual(
+            checks.parse_keys("Escape g g d shift+g"),
+            ["-k", "Escape", "-k", "g", "-k", "g", "-k", "d", "-M", "shift", "-k", "G", "-m", "shift"],
+        )
+        self.assertEqual(checks.parse_keys("shift+Tab"), ["-M", "shift", "-k", "Tab", "-m", "shift"])
+        self.assertEqual(checks.parse_keys("g"), ["-k", "g"])  # no shift: unchanged
 
     def test_rejects_bad_input(self) -> None:
         for bad in ["", "   ", "ctrl+", "+a", "hyper+a", "ctrl+ctrl+a", "ctrl", "ctrl+shift",
@@ -77,6 +88,11 @@ class RiskyTest(unittest.TestCase):
             "buy now": ["buy"],
             "Deleted": ["delet"],
             "send and pay": ["send", "pay"],
+            # L23: "Vaciar el documento" emptied a document without a confirmation card.
+            "Vaciar el documento": ["vaci"],
+            "vacía todo": ["vaci"],
+            "clear the file": ["clear"],
+            "wipe it": ["wipe"],
         }
         for text, stems in cases.items():
             with self.subTest(text=text):

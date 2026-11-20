@@ -75,6 +75,8 @@ def parse_keys(keys: str) -> list[str]:
             key = key_part.upper() if _FKEY.fullmatch(key_part) else key_part
         if not _KEYSYM.fullmatch(key):
             raise ValueError(f"tecla inválida: {key_part}")
+        if "shift" in mods and len(key) == 1 and "a" <= key <= "z":
+            key = key.upper()  # wtype's keymap has one level per key: shift+g must send "G" (L23)
         for m in mods:
             args += ["-M", m]
         args += ["-k", key]
@@ -114,7 +116,8 @@ def preview(text: str) -> str:
 
 # --- risky words ---------------------------------------------------------------------------
 
-RISKY_STEMS = ("envi", "pag", "compr", "elimin", "borr", "submit", "send", "pay", "buy", "delet")
+RISKY_STEMS = ("envi", "pag", "compr", "elimin", "borr", "vaci", "submit", "send", "pay", "buy",
+               "delet", "clear", "wipe")
 
 # Basic confusables: Cyrillic and Greek letters that look like Latin ones (lowercase, after casefold).
 _CONFUSABLES = str.maketrans({
