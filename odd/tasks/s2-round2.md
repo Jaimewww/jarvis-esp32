@@ -110,6 +110,13 @@ propia solicitud desde `main`; worktree `jarvis-esp32-worktrees/pi-next`.
     entorno de Python, y `~/.local/bin/jarvis` apuntando ahí); el daemon no puede modificarla.
   - `jarvis-stop` usa `PATH=/usr/local/bin:/usr/bin` y `/usr/bin/python3`; el atajo de niri
     usa la ruta absoluta.
+- S16 (L20): "oye y no hay como que cuando le pide por ejemplo irse a vscode ese sea el foco?,
+  porque tipo lo abre y me cambio de foco y ya no anda". `type` y `key` aceptan
+  `"window_id": N` opcional: el ayudante, en un solo paso y con el mismo candado, aplica los
+  controles de `focus` a esa ventana, la enfoca, confirma el foco, teclea, y al terminar
+  devuelve el foco a la ventana que lo tenía antes (si sigue existiendo). Sin `window_id`,
+  igual que hoy. La extensión pasa `window_id` desde `pc_type`/`pc_key` y AGENTS.md indica
+  usarlo siempre que sepa la ventana destino.
 
 ## Tasks
 
@@ -161,6 +168,8 @@ propia solicitud desde `main`; worktree `jarvis-esp32-worktrees/pi-next`.
 - [ ] T23 (S15): endurecer `open` (`host/input/`).
 - [ ] T24 (S15): home en solo lectura, carpeta `~/Jarvis`, bus del sistema, entorno de
   `jarvis-input`, instalación de la TUI y `jarvis-stop` (`host/systemd/`, `host/bin/`).
+- [ ] T25 (S16): tecleo con `window_id` (enfocar, teclear y devolver el foco) en el ayudante y
+  la extensión.
 
 ## Log
 
@@ -281,3 +290,7 @@ propia solicitud desde `main`; worktree `jarvis-esp32-worktrees/pi-next`.
   sube en cada corrida. `wtype -s 250` antes no alcanzó (Jarvis escribió "la mundo"): el keymap
   viaja con la primera tecla. Arreglo final: `wtype -k Shift_L -s 250 -d 8 …` (un Shift inocuo
   lleva el keymap, pausa, y recién el texto). Prueba del usuario: "ahora si aparece hola completo".
+
+- L20 (usuario, 2026-11-20): "ahora si aparece hola completo" (arreglo del keymap confirmado).
+  Luego: "oye y no hay como que cuando le pide por ejemplo irse a vscode ese sea el foco?,
+  porque tipo lo abre y me cambio de foco y ya no anda".
