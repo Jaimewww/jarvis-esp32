@@ -294,3 +294,8 @@ propia solicitud desde `main`; worktree `jarvis-esp32-worktrees/pi-next`.
 - L20 (usuario, 2026-11-20): "ahora si aparece hola completo" (arreglo del keymap confirmado).
   Luego: "oye y no hay como que cuando le pide por ejemplo irse a vscode ese sea el foco?,
   porque tipo lo abre y me cambio de foco y ya no anda".
+- L21 (usuario y evidencia, 2026-11-20): con T25 instalado y el foco en otra ventana: "puso "la mundo"
+  de nuevo". El log muestra `key ctrl+n` y luego `type` con `window_id` 69 (VS Code): cada acción
+  enfoca VS Code y devuelve el foco, y wtype corre apenas niri confirma el foco; Electron todavía no
+  devolvió el foco al editor. Arreglo: pausa de 400 ms tras cambiar el foco, y no se re-enfoca si
+  la ventana destino ya tiene el foco.

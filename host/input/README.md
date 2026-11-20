@@ -99,8 +99,9 @@ All agent requests share a rate limit of **10 per second** (sliding window).
 * `type`/`key` with `window_id` (S16), all under the action lock: the target gets the `focus`
   checks (listed, not blocklisted, not a terminal); risky-word and Return-in-browser
   confirmations name the **target** window and are asked before anything is focused (so the user
-  can answer in the TUI); then the currently focused window id is remembered, the target is
-  focused and confirmed (≤ 500 ms), focus is re-checked against the target right before `wtype`,
+  can answer in the TUI); then the currently focused window id is remembered; if the target is
+  not already focused it is focused, confirmed (≤ 500 ms) and given 400 ms to settle (Electron
+  apps such as VS Code drop keys sent right after they regain focus), focus is re-checked against the target right before `wtype`,
   `wtype` runs, and finally (also when a later step failed) focus goes back to the remembered
   window if it still exists and is not the target — best effort, after a 100 ms pause; failures
   are only logged. The response echoes `window_id`. Without `window_id` nothing changes. Agent

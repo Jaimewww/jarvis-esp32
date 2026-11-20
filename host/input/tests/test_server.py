@@ -928,6 +928,33 @@ class TypeIntoWindowTest(Base):
         self.assertEqual(res, {"ok": True, "window_id": 11})
         self.assertEqual(self.order(), ["focus 11", "wtype", "focus 3"])
 
+    async def _sleeps_during(self, req: dict) -> tuple[dict, list[float]]:
+        real, slept = asyncio.sleep, []
+
+        async def spy(delay: float, *a: object, **k: object) -> object:
+            slept.append(delay)
+            return await real(delay, *a, **k)
+
+        with mock.patch.object(server.asyncio, "sleep", spy):
+            res = await self.agent(req)
+        return res, slept
+
+    async def test_settles_after_focus_change_before_typing(self) -> None:
+        # "la mundo" (L21): VS Code drops the first keys right after it gets focus back.
+        self.focus(GHOSTTY, NOTEPAD)
+        res, slept = await self._sleeps_during({"op": "type", "text": "hola", "window_id": 11})
+        self.assertEqual(res, {"ok": True, "window_id": 11})
+        self.assertIn(server.FOCUS_SETTLE_S, slept)
+        self.assertGreaterEqual(server.FOCUS_SETTLE_S, 0.3)
+        self.assertEqual(self.order(), ["focus 11", "wtype", "focus 3"])
+
+    async def test_no_settle_when_target_already_focused(self) -> None:
+        self.focus(NOTEPAD, NOTEPAD, NOTEPAD)
+        res, slept = await self._sleeps_during({"op": "type", "text": "hola", "window_id": 11})
+        self.assertEqual(res, {"ok": True, "window_id": 11})
+        self.assertNotIn(server.FOCUS_SETTLE_S, slept)
+        self.assertEqual(self.order(), ["wtype"])  # no focus changes, nothing to give back
+
     async def test_focus_confirm_polls(self) -> None:
         self.focus(GHOSTTY, GHOSTTY, GHOSTTY, NOTEPAD)  # focus lands on the 2nd poll
         self.assertTrue((await self.agent({"op": "type", "text": "hola", "window_id": 11}))["ok"])
@@ -973,7 +1000,7 @@ class TypeIntoWindowTest(Base):
     async def test_no_restore_when_previous_is_target_or_gone(self) -> None:
         self.focus(NOTEPAD)
         self.assertTrue((await self.agent({"op": "type", "text": "hola", "window_id": 11}))["ok"])
-        self.assertEqual(self.order(), ["focus 11", "wtype"])
+        self.assertEqual(self.order(), ["wtype"])  # already focused: no focus change at all
         (self.fake / "calls.jsonl").unlink()
         self.focus({"id": 42, "app_id": "x", "title": "cerrada"}, NOTEPAD)
         self.assertTrue((await self.agent({"op": "type", "text": "hola", "window_id": 11}))["ok"])

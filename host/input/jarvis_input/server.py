@@ -40,6 +40,9 @@ GRIM_TIMEOUT_S = 15.0
 OPEN_WAIT_S = 5.0
 FOCUS_CONFIRM_S, FOCUS_POLL_S = 0.5, 0.05
 RESTORE_DELAY_S = 0.1  # let the target app take the last keys before focus goes back (S16)
+# After focus moves to another window, Electron apps (VS Code) need a moment to give the
+# editor its focus back; keys sent sooner are lost ("hola mundo" typed "la mundo", L21).
+FOCUS_SETTLE_S = 0.4
 SUBSCRIBER_BUFFER_MAX = 1024 * 1024
 
 OFF = "Control de la PC apagado. Pídele al usuario que ejecute /control on en la TUI de Jarvis."
@@ -675,8 +678,10 @@ class Helper:
             if target is not None:
                 current = await self._focus()
                 prev_id = current.id if current is not None else None
-                log.info("enfocando %d (%s) para escribir", target.id, target.app_id[:60])
-                await self._focus_and_confirm(target.id)
+                if prev_id != target.id:
+                    log.info("enfocando %d (%s) para escribir", target.id, target.app_id[:60])
+                    await self._focus_and_confirm(target.id)
+                    await asyncio.sleep(FOCUS_SETTLE_S)
             again = await self._focus()  # re-check right before wtype (against the target, if any)
             if again is None or again.id != window.id:
                 raise Deny("El foco cambió antes de escribir; no se hizo nada.")
