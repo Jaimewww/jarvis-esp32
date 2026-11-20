@@ -98,6 +98,15 @@ class ResolveTest(unittest.TestCase):
         got = self.resolve("brave-browser", url="https://example.com/home/u/x")
         self.assertEqual(got.argv, [f"{self.bin}/brave", "--flag", "https://example.com/home/u/x"])
 
+    def test_url_handed_to_app_is_checked(self) -> None:
+        # Review R3-url-unchecked: the URL spliced into argv must pass the same checks as Exec.
+        self.put(self.sys_data, "brave-browser", f"{self.bin}/brave %U")
+        for bad in ("--renderer-cmd-prefix=/home/u/x", "-x", "file:///home/u/evil.html",
+                    "/home/u/evil.html", "javascript:alert(1)", "https://a.b/ x", ""):
+            with self.subTest(url=bad):
+                with self.assertRaises(launch.Refused):
+                    self.resolve("brave-browser", url=bad)
+
     def test_flatpak_allowed(self) -> None:
         target = self.root / "var" / "lib" / "flatpak" / "app" / "com.brave.Browser.desktop"
         target.parent.mkdir(parents=True)

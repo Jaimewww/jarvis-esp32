@@ -238,6 +238,12 @@ def resolve(app_id: str, data_dirs: Iterable[Path], *, home: Path, search_path: 
 
     if checks.validate_desktop_id(app_id):
         raise Refused(checks.validate_desktop_id(app_id) or "")
+    if url is not None:
+        # The URL becomes an argv element of a vetted program: only an http(s) address with
+        # a host, which can be neither an option ("-…") nor a local path or file:// URL.
+        problem = checks.validate_url(url)
+        if problem:
+            raise Refused(problem)
     if checks._is_terminal(app_id.casefold()):
         raise Refused(f"«{app_id}» es una terminal; abrirla daría órdenes fuera del agente.")
     path = find_entry(app_id, data_dirs)
