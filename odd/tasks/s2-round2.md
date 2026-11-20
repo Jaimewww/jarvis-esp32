@@ -299,3 +299,5 @@ propia solicitud desde `main`; worktree `jarvis-esp32-worktrees/pi-next`.
   enfoca VS Code y devuelve el foco, y wtype corre apenas niri confirma el foco; Electron todavía no
   devolvió el foco al editor. Arreglo: pausa de 400 ms tras cambiar el foco, y no se re-enfoca si
   la ventana destino ya tiene el foco.
+- L22 (usuario, 2026-11-20): "ahora ya funciona" (T25 + pausa de 400 ms confirmados en el
+  escritorio real, con el foco en otra ventana).
