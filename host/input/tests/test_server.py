@@ -579,6 +579,18 @@ class KeyTest(Base):
         self.assertEqual(c["argv"], ["-p", "Escape", "-k", "Shift_L", "-s", "250", "-k", "Escape", "-s", "300",
                                      "-k", "g", "-k", "g", "-k", "d", "G"])
 
+    async def test_no_pause_inside_modifier_or_at_end(self) -> None:
+        pre = ["-p", "Escape", "-k", "Shift_L", "-s", "250"]
+        for keys, tail in [
+            ("ctrl+Escape g", ["-M", "ctrl", "-k", "Escape", "-m", "ctrl", "-k", "g"]),
+            ("g Escape", ["-k", "g", "-k", "Escape"]),
+            ("Escape Escape", ["-k", "Escape", "-s", "300", "-k", "Escape"]),
+        ]:
+            (self.fake / "calls.jsonl").unlink(missing_ok=True)
+            self.assertTrue((await self.agent({"op": "key", "keys": keys, "intent": "modo vim"}))["ok"], keys)
+            [c] = self.calls("wtype")
+            self.assertEqual(c["argv"], pre + tail, keys)
+
     async def test_bad_keys(self) -> None:
         for req in [{"op": "key"}, {"op": "key", "keys": ""}, {"op": "key", "keys": "-P x"},
                     {"op": "key", "keys": ["a"]}, {"op": "key", "keys": "hyper+a"}]:

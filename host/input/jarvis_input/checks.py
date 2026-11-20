@@ -75,7 +75,7 @@ def parse_keys(keys: str) -> list[str]:
             key = key_part.upper() if _FKEY.fullmatch(key_part) else key_part
         if not _KEYSYM.fullmatch(key):
             raise ValueError(f"tecla inválida: {key_part}")
-        if mods == ["shift"] and len(key) == 1 and "a" <= key <= "z":
+        if mods == ["shift"] and len(key) == 1 and "a" <= key.lower() <= "z":
             # wtype resolves -k names case-insensitively ("-k G" types "g", L24): send the capital
             # as a text argument, which wtype types with the capital keysym.
             args.append(key.upper())

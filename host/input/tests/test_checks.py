@@ -38,6 +38,7 @@ class ParseKeysTest(unittest.TestCase):
         # VS Code (Vim) as "g" (L23, L24). Plain shift+letter is sent as the capital as text, which
         # wtype types with its own keysym; shortcuts with other modifiers keep the key.
         self.assertEqual(checks.parse_keys("shift+g"), ["G"])
+        self.assertEqual(checks.parse_keys("shift+G"), ["G"])
         self.assertEqual(
             checks.parse_keys("Escape g g d shift+g"),
             ["-k", "Escape", "-k", "g", "-k", "g", "-k", "d", "G"],
