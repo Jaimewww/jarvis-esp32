@@ -65,6 +65,28 @@ WTYPE_PRELUDE = ("-k", "Shift_L", "-s", "250")
 # Text keeps the plain prelude: with the Escape release first VS Code dropped "ho" again (L25).
 WTYPE_KEY_PRELUDE = ("-p", "Escape", *WTYPE_PRELUDE)
 ESCAPE_PAUSE_MS = "300"  # VS Code Vim needs a moment to leave insert mode (L25)
+
+
+def _keysym(ch: str) -> int:
+    """The keysym wtype types for one character (xkb_utf32_to_keysym for what we can type)."""
+    cp = ord(ch)
+    if ch == "\n":
+        return 0xFF0D  # Return
+    if ch == "\t":
+        return 0xFF09  # Tab
+    if 0x20 <= cp <= 0x7E or 0xA0 <= cp <= 0xFF:
+        return cp  # Latin-1 keysyms equal the code point
+    return 0x1000000 + cp
+
+
+def register_chars(text: str) -> list[str]:
+    """wtype adds each new keysym to its keymap and uploads it again while typing; VS Code drops
+    the keys around every upload ("este es un texto" typed "ee es uno", L27). Releasing every
+    character once up front (apps act on press) builds the whole keymap before the Shift tap."""
+    seen: dict[int, None] = {}
+    for ch in text:
+        seen.setdefault(_keysym(ch), None)
+    return [x for ks in seen for x in ("-p", hex(ks))]
 WTYPE_KEY_DELAY_MS = "8"
 
 
@@ -713,7 +735,7 @@ class Helper:
         look = checks.lookalike_stems(text, intent)
         if look:
             raise Deny("Texto con letras que imitan palabras de riesgo (" + ", ".join(look) + "); no se escribe.")
-        return await self._input(req=req, argv=["wtype", *WTYPE_PRELUDE, "-d", WTYPE_KEY_DELAY_MS, "--", text], intent=intent,
+        return await self._input(req=req, argv=["wtype", *register_chars(text), *WTYPE_PRELUDE, "-d", WTYPE_KEY_DELAY_MS, "--", text], intent=intent,
                                  risky=checks.risky_stems(text, intent), presses_return="\n" in text,
                                  what="escriba", shown=f"Texto: {text[:300]}")
 

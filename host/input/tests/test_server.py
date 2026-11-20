@@ -486,7 +486,17 @@ class TypeTest(Base):
         res = await self.agent({"op": "type", "text": "-hola mundo", "intent": "escribir nota"})
         self.assertEqual(res, {"ok": True})
         [c] = self.calls("wtype")
-        self.assertEqual(c["argv"], ["-k", "Shift_L", "-s", "250", "-d", "8", "--", "-hola mundo"])
+        # Every character is registered first (a release only), so wtype's keymap does not change
+        # while typing; VS Code dropped keys after each change ("este es un texto" → "ee es uno", L27).
+        reg = [x for cp in "-hola mund" for x in ("-p", hex(ord(cp)))]
+        self.assertEqual(c["argv"], [*reg, "-k", "Shift_L", "-s", "250", "-d", "8", "--", "-hola mundo"])
+
+    async def test_type_registers_each_character_once(self) -> None:
+        res = await self.agent({"op": "type", "text": "añ\nañ€", "intent": "escribir nota"})
+        self.assertEqual(res, {"ok": True})
+        [c] = self.calls("wtype")
+        self.assertEqual(c["argv"], ["-p", "0x61", "-p", "0xf1", "-p", "0xff0d", "-p", "0x10020ac",
+                                     "-k", "Shift_L", "-s", "250", "-d", "8", "--", "añ\nañ€"])
         niri = self.calls("niri")
         self.assertEqual(len(niri), 2)  # check + re-check right before wtype
         self.assertEqual(niri[0]["argv"], ["msg", "-j", "focused-window"])
@@ -943,7 +953,8 @@ class TypeIntoWindowTest(Base):
         self.assertEqual(res, {"ok": True, "window_id": 11})
         self.assertEqual(self.order(), ["focus 11", "wtype", "focus 3"])
         [c] = self.calls("wtype")
-        self.assertEqual(c["argv"], ["-k", "Shift_L", "-s", "250", "-d", "8", "--", "hola"])
+        self.assertEqual(c["argv"], ["-p", "0x68", "-p", "0x6f", "-p", "0x6c", "-p", "0x61",
+                                     "-k", "Shift_L", "-s", "250", "-d", "8", "--", "hola"])
 
     async def test_key_focuses_types_and_restores(self) -> None:
         self.focus(GHOSTTY, NOTEPAD)

@@ -324,3 +324,8 @@ propia solicitud desde `main`; worktree `jarvis-esp32-worktrees/pi-next`.
 - L26 (usuario, 2026-11-20): "no me parece usable decirle 'quedate en modo insert'. si no supiera
   vim ni sé qué es". AGENTS.md: Jarvis detecta Vim por captura (barra `-- NORMAL --`/`-- INSERT --`)
   y elige `Escape g g d shift+g` o `ctrl+a Delete`; nunca pregunta por modos.
+- L27 (usuario y capturas, 2026-11-20): "mira no pone el texto bien, se equivoca": Jarvis dijo
+  escribir «Hola mundo, este es un texto de prueba.» y VS Code mostró "Hola mundo, ee es uno de
+  prueba.". Además, tras borrar, Jarvis dijo que "la captura muestra otra ventana, no VS Code"
+  (la captura es de pantalla completa y el foco ya volvió a la terminal). Arreglo: registrar
+  cada carácter del texto con `-p` antes del preludio. Pendiente: captura de una ventana dada.
