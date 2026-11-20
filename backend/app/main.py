@@ -12,15 +12,18 @@ docs/nube.md):
                            ``esp32_state`` and turn events.
 - GET  /api/v1/health    : liveness probe.
 
-STT, the agent (Gentle Shell) and TTS are placeholders: ``/converse`` returns a
-canned reply plus a generated beep until those providers are chosen and measured
-(docs/nube.md). The contracts are in docs/contratos.md. PC actions travel to the host over the WebSocket; the ESP32 never
+STT runs behind ``app.ports.Transcriber``, chosen by ``JARVIS_STT`` (``fake`` by
+default, ``whisper`` for a local whisper.cpp server; see ``app.stt``); its result
+and time go out as ``turn_stage{stage:"stt"}``. The agent (Gentle Shell) and TTS
+are still placeholders: ``/converse`` returns a canned reply plus a generated beep
+until those providers are chosen and measured (docs/nube.md). The contracts are in docs/contratos.md. PC actions travel to the host over the WebSocket; the ESP32 never
 receives them.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import os
 import struct
@@ -40,6 +43,12 @@ from fastapi import (
 )
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+
+from app.ports import Transcriber
+from app.stt import make_transcriber
+from app.stt.whisper_server import WhisperServerError
+
+logger = logging.getLogger("uvicorn.error")
 
 DEVICE_TOKEN = os.environ.get("JARVIS_DEVICE_TOKEN", "dev-jarvis-token")
 HOST_TOKEN = os.environ.get("JARVIS_HOST_TOKEN", "dev-host-token")
@@ -116,6 +125,9 @@ def _json_bytes(message: dict) -> bytes:
 
 
 host_clients = HostRegistry()
+
+# The STT stage (C3). Fails at import on an unknown JARVIS_STT value.
+transcriber: Transcriber = make_transcriber()
 
 # Created at import time so StaticFiles and the module import never fail on a
 # fresh checkout.
@@ -218,8 +230,8 @@ async def heartbeat(hb: Heartbeat) -> dict:
 
 @app.post("/api/v1/converse", dependencies=[Depends(require_device_token)])
 async def converse(audio: UploadFile) -> ConverseResponse:
-    # Placeholder pipeline: save the clip, return a canned reply. STT, the agent
-    # and TTS get wired here once the providers are chosen and measured.
+    # Save the clip and transcribe it; the agent and TTS are still placeholders
+    # (canned reply and beep) until those providers are chosen and measured.
     started = time.perf_counter()
     data = await audio.read()
     if not data:
@@ -235,6 +247,35 @@ async def converse(audio: UploadFile) -> ConverseResponse:
     )
     clip_path = UPLOAD_DIR / f"{time.time():.0f}-{uuid.uuid4().hex[:8]}.wav"
     clip_path.write_bytes(data)
+
+    stt_started = time.perf_counter()
+    try:
+        heard = await transcriber.transcribe(data)
+    except WhisperServerError as error:
+        # turn_error (C2) closes the turn; C1 defines no failure status yet.
+        logger.warning("turn %s: stt failed: %s", turn_id, error)
+        await host_clients.broadcast(
+            {
+                "type": "turn_error",
+                "turn_id": turn_id,
+                "stage": "stt",
+                "message": str(error),
+                "ts": time.time(),
+            }
+        )
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    stt_ms = round((time.perf_counter() - stt_started) * 1000, 1)
+    logger.info("turn %s: stt %.1f ms: %r", turn_id, stt_ms, heard)
+    await host_clients.broadcast(
+        {
+            "type": "turn_stage",
+            "turn_id": turn_id,
+            "stage": "stt",
+            "ms": stt_ms,
+            "text": heard,
+            "ts": time.time(),
+        }
+    )
 
     actions = [Action(type="media_key", value="play_pause")]
     await host_clients.broadcast(
