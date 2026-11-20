@@ -58,6 +58,7 @@ All agent requests share a rate limit of **10 per second** (sliding window).
 | `{"op":"key","keys":"ctrl+l","intent":"…"}` | yes | `{"ok":true}` |
 | `{"op":"key","keys":"ctrl+l","window_id":11}` (S16) | yes | `{"ok":true,"window_id":11}` |
 | `{"op":"screenshot","scale":0.5}` | yes | `{"ok":true,"png_base64":"…"}` |
+| `{"op":"screenshot","window_id":11}` (S17) | yes | `{"ok":true,"png_base64":"…","window_id":11}` |
 | `{"op":"apps","query":"notas"}` (S14) | no | `{"ok":true,"apps":[{"id":"<desktop-id>","name":"…"}]}` |
 | `{"op":"windows"}` (S14) | yes | `{"ok":true,"windows":[{"id":11,"app_id":"…","title":"…","focused":false}]}` |
 | `{"op":"focus","window_id":11}` (S14) | yes | `{"ok":true}` |
@@ -83,6 +84,15 @@ All agent requests share a rate limit of **10 per second** (sliding window).
   Code matches shortcuts on; the Shift tap carries wtype's keymap) and pause 300 ms after a bare
   `Escape` followed by more keys; text first releases each distinct character once (`-p 0x65 …`, keysyms from libxkbcommon's `xkb_utf32_to_keysym` like wtype, so ’ — … € get their legacy keysyms; so wtype's keymap is complete before typing and does not change mid-text) and then `-k Shift_L -s 250`.
 * `screenshot`: optional `scale` in `[0.05, 1]`; runs `grim [-s <scale>] -`.
+* `screenshot` with `window_id` (S17), under the action lock: the target gets the `focus`
+  checks with the screenshot rules (listed, not blocklisted; terminals allowed); the focused
+  window is remembered; if the target is not focused it is focused, confirmed (≤ 500 ms) and
+  given 400 ms to settle; `niri msg -j focused-output` names its monitor; focus is re-checked
+  against the target; then `grim [-s <scale>] -o <output> -` (every output if the name is
+  unreadable or not a connector name), and focus goes back as for `type`/`key`. The capture is
+  the target's whole monitor, not just the window: `niri msg action screenshot-window` also
+  overwrites the user's clipboard, and niri does not expose tiled-window geometry for
+  `grim -g`. The response echoes `window_id`. Without `window_id` nothing changes.
 * `apps`: **reads files only, never runs anything.** Data dirs by precedence:
   `$XDG_DATA_HOME` (or `~/.local/share`), `$XDG_DATA_DIRS` (or `/usr/local/share:/usr/share`;
   relative entries ignored), then `<data home>/flatpak/exports/share` and
@@ -196,7 +206,8 @@ against the target id; focus is restored afterwards (see `type`/`key` with `wind
 For `screenshot`: permission, then focus (unreadable = denied); a focused window on the
 password/settings/security blocklist is refused (terminals are allowed, the TUI usually has the
 focus). This addition is not required by S13: it keeps secrets out of captures in the common
-case, but windows that are visible without focus are still captured.
+case, but windows that are visible without focus are still captured. With `window_id` (S17)
+the target from `niri msg -j windows` is checked instead, and re-checked once focused.
 
 ## Tests
 

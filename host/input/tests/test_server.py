@@ -42,6 +42,10 @@ if name == "niri" and "windows" in sys.argv:
     item = json.loads(read("windows.json", '{{"stdout": "[]"}}'))
     sys.stdout.write(item.get("stdout", ""))
     sys.exit(item.get("exit", 0))
+if name == "niri" and "focused-output" in sys.argv:
+    item = json.loads(read("output.json", '{{"stdout": "null"}}'))
+    sys.stdout.write(item.get("stdout", ""))
+    sys.exit(item.get("exit", 0))
 if name == "niri" and "action" in sys.argv:
     sys.exit(int(read("niri_action_exit_" + sys.argv[-1], read("niri_action_exit", "0"))))
 if name == "niri":
@@ -1097,6 +1101,116 @@ class TypeIntoWindowTest(Base):
     async def test_requires_permission(self) -> None:
         await self.control({"op": "revoke"})
         res = await self.agent({"op": "type", "text": "hola", "window_id": 11})
+        self.assertIn("/control on", res["error"])
+        self.assertEqual(self.calls(), [])
+
+
+class ScreenshotWindowTest(Base):
+    """S17: screenshot with window_id focuses the target, captures its output, gives focus back."""
+
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        await self.grant()
+        self.windows({**GHOSTTY, "focused": True}, NOTEPAD, KEEPASS, BRAVE)
+        self.output("HDMI-A-1")
+
+    def output(self, name: str | None = None, *, exit: int = 0, raw: str | None = None) -> None:
+        out = raw if raw is not None else json.dumps(None if name is None else {"name": name, "logical": {}})
+        (self.fake / "output.json").write_text(json.dumps({"stdout": out, "exit": exit}))
+
+    def order(self) -> list[str]:
+        return ["grim" if c["name"] == "grim" else "focus " + c["argv"][-1]
+                for c in self.calls() if c["name"] == "grim" or "action" in c["argv"]]
+
+    async def test_focuses_captures_output_and_restores(self) -> None:
+        self.focus(GHOSTTY, NOTEPAD)  # user on the TUI; the target is focused after the action
+        res = await self.agent({"op": "screenshot", "scale": 0.5, "window_id": 11})
+        self.assertEqual(set(res), {"ok", "png_base64", "window_id"})
+        self.assertEqual(res["window_id"], 11)
+        self.assertEqual(base64.b64decode(res["png_base64"]), PNG)
+        self.assertEqual(self.order(), ["focus 11", "grim", "focus 3"])
+        [g] = self.calls("grim")
+        self.assertEqual(g["argv"], ["-s", "0.5", "-o", "HDMI-A-1", "-"])
+
+    async def test_settles_before_capture(self) -> None:
+        real, slept = asyncio.sleep, []
+
+        async def spy(delay: float, *a: object, **k: object) -> object:
+            slept.append(delay)
+            return await real(delay, *a, **k)
+
+        self.focus(GHOSTTY, NOTEPAD)
+        with mock.patch.object(server.asyncio, "sleep", spy):
+            self.assertTrue((await self.agent({"op": "screenshot", "window_id": 11}))["ok"])
+        self.assertIn(server.FOCUS_SETTLE_S, slept)
+
+    async def test_terminal_target_allowed(self) -> None:
+        # Screenshots skip the terminal rule (the user may want Jarvis to read the TUI).
+        self.focus(NOTEPAD, GHOSTTY)
+        res = await self.agent({"op": "screenshot", "window_id": 3})
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(self.order(), ["focus 3", "grim", "focus 11"])
+
+    async def test_refuses_blocked_missing_and_bad_ids(self) -> None:
+        self.focus(GHOSTTY, NOTEPAD)
+        self.helper._limiter = server.checks.RateLimiter(100, server.RATE_WINDOW_S)
+        r, w = await self.connect(self.agent_path)
+        for wid in [5, 99, "11", True, None, 1.5, -1]:
+            res = await self.ask_on(r, w, {"op": "screenshot", "window_id": wid})
+            self.assertFalse(res["ok"], wid)
+        res = await self.ask_on(r, w, {"op": "screenshot", "window_id": 5})
+        self.assertIn("bloqueo", res["error"])
+        self.assertEqual(self.order(), [])
+
+    async def test_already_focused_no_focus_change(self) -> None:
+        self.focus(NOTEPAD)
+        res = await self.agent({"op": "screenshot", "window_id": 11})
+        self.assertEqual(res["window_id"], 11)
+        self.assertEqual(self.order(), ["grim"])
+
+    async def test_focus_not_confirmed(self) -> None:
+        self.focus(GHOSTTY)
+        res = await self.agent({"op": "screenshot", "window_id": 11})
+        self.assertFalse(res["ok"])
+        self.assertIn("enfocada", res["error"])
+        self.assertEqual(self.order(), ["focus 11", "focus 3"])  # no capture; focus goes back
+
+    async def test_recheck_right_before_capture(self) -> None:
+        self.focus(GHOSTTY, NOTEPAD, GHOSTTY)  # confirmed, then the user switched before grim
+        res = await self.agent({"op": "screenshot", "window_id": 11})
+        self.assertFalse(res["ok"])
+        self.assertIn("foco", res["error"])
+        self.assertEqual(self.calls("grim"), [])
+        self.assertEqual(self.order(), ["focus 11", "focus 3"])
+
+    async def test_unreadable_output_captures_everything(self) -> None:
+        for kwargs in [{"exit": 1}, {"raw": "nope"}, {"raw": "null"}, {"raw": '{"name": "bad name;"}'},
+                       {"raw": '{"name": 3}'}]:
+            (self.fake / "calls.jsonl").unlink(missing_ok=True)
+            self.helper._limiter = server.checks.RateLimiter(100, server.RATE_WINDOW_S)
+            self.output(**kwargs)  # type: ignore[arg-type]
+            self.focus(NOTEPAD)
+            res = await self.agent({"op": "screenshot", "window_id": 11})
+            self.assertTrue(res["ok"], kwargs)
+            self.assertEqual(self.calls("grim")[0]["argv"], ["-"], kwargs)
+
+    async def test_restores_after_grim_failure(self) -> None:
+        (self.fake / "grim_exit").write_text("1")
+        self.focus(GHOSTTY, NOTEPAD)
+        self.assertFalse((await self.agent({"op": "screenshot", "window_id": 11}))["ok"])
+        self.assertEqual(self.order(), ["focus 11", "grim", "focus 3"])
+
+    async def test_without_window_id_unchanged(self) -> None:
+        self.focus(GHOSTTY)
+        res = await self.agent({"op": "screenshot"})
+        self.assertEqual(set(res), {"ok", "png_base64"})
+        self.assertEqual(self.order(), ["grim"])
+        self.assertEqual(self.calls("grim")[0]["argv"], ["-"])
+        self.assertFalse(any("focused-output" in c["argv"] for c in self.calls("niri")))
+
+    async def test_requires_permission(self) -> None:
+        await self.control({"op": "revoke"})
+        res = await self.agent({"op": "screenshot", "window_id": 11})
         self.assertIn("/control on", res["error"])
         self.assertEqual(self.calls(), [])
 

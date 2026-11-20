@@ -166,6 +166,22 @@ describe("S16 window_id on pc_type / pc_key", () => {
 			assert.throws(() => buildRequest("pc_key", { keys: "a", intent: "x", window_id }), /window_id/);
 		}
 	});
+	it("S17: pc_screenshot forwards window_id when given, omits it when absent, rejects bad ids", () => {
+		assert.deepEqual(buildRequest("pc_screenshot", { window_id: 11 }), { op: "screenshot", scale: 0.5, window_id: 11 });
+		assert.deepEqual(buildRequest("pc_screenshot", { scale: 1, window_id: "11" }), { op: "screenshot", scale: 1, window_id: 11 });
+		assert.deepEqual(buildRequest("pc_screenshot", { window_id: undefined }), { op: "screenshot", scale: 0.5 });
+		for (const window_id of [-1, 1.5, "abc", "", Number.NaN, true]) {
+			assert.throws(() => buildRequest("pc_screenshot", { window_id }), /window_id/);
+		}
+	});
+	it("S17: pc_screenshot declares an optional window_id", () => {
+		const src = readFileSync(new URL("../extensions/pc-control.ts", import.meta.url), "utf8");
+		const start = src.indexOf('name: "pc_screenshot"');
+		assert.ok(start >= 0);
+		const block = src.slice(start, src.indexOf("pi.on(", start));
+		assert.match(block, /window_id: Type\.Optional\(Type\.Integer\(/);
+		assert.match(block, /focus (returns|goes back)/i);
+	});
 	it("pc_type and pc_key declare an optional window_id and say focus goes back", () => {
 		const src = readFileSync(new URL("../extensions/pc-control.ts", import.meta.url), "utf8");
 		for (const name of ["pc_type", "pc_key"]) {

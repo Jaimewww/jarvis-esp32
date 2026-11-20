@@ -117,6 +117,14 @@ propia solicitud desde `main`; worktree `jarvis-esp32-worktrees/pi-next`.
   devuelve el foco a la ventana que lo tenía antes (si sigue existiendo). Sin `window_id`,
   igual que hoy. La extensión pasa `window_id` desde `pc_type`/`pc_key` y AGENTS.md indica
   usarlo siempre que sepa la ventana destino.
+- S17 (L27): "la captura muestra otra ventana, no VS Code". `screenshot` acepta
+  `"window_id": N` opcional como `type`/`key` (S16): con el mismo candado aplica los controles de
+  `focus` con las reglas de captura (existe, no está en la lista de bloqueo; las terminales se
+  permiten), recuerda la ventana enfocada, enfoca la destino, confirma el foco, espera
+  `FOCUS_SETTLE_S`, re-chequea el foco justo antes de `grim`, captura el monitor de esa ventana
+  (`grim -o` con `niri msg -j focused-output`; todo si no se lee) y devuelve el foco al final.
+  Sin `window_id`, igual que hoy. `pc_screenshot` pasa `window_id`; AGENTS.md: después de actuar
+  sobre una ventana, verificar con `pc_screenshot` y ese `window_id`.
 
 ## Tasks
 
@@ -170,6 +178,8 @@ propia solicitud desde `main`; worktree `jarvis-esp32-worktrees/pi-next`.
   `jarvis-input`, instalación de la TUI y `jarvis-stop` (`host/systemd/`, `host/bin/`).
 - [x] T25 (S16): tecleo con `window_id` (enfocar, teclear y devolver el foco) en el ayudante y
   la extensión. Commit `82b2b41`.
+- [ ] T26 (S17): captura de una ventana dada (`window_id` en `screenshot` y `pc_screenshot`).
+  `host/input/`, `host/gentle-dot/`. Commit: pendiente.
 
 ## Log
 

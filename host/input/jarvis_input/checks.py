@@ -273,6 +273,20 @@ def parse_windows(stdout: str) -> list[Window]:
     return out
 
 
+_OUTPUT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+
+
+def parse_output_name(stdout: str) -> str | None:
+    """`niri msg -j focused-output`: the output name (e.g. HDMI-A-1) for `grim -o`, or None when
+    there is none or it does not look like a connector name (S17)."""
+    try:
+        data = json.loads(stdout)
+    except ValueError:
+        return None
+    name = data.get("name") if isinstance(data, dict) else None
+    return name if isinstance(name, str) and _OUTPUT_NAME.fullmatch(name) else None
+
+
 # --- apps: visible .desktop entries (S14) --------------------------------------------------
 
 MAX_APPS = 500

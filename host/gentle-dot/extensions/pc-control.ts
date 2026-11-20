@@ -54,6 +54,9 @@ const INTENT = Type.String({ description: "One sentence: what you are doing and 
 const WINDOW_ID =
 	"Target window id from pc_list_windows. The helper focuses it, types and gives focus back to the user's window; omit only when the target is unknown.";
 
+const SCREENSHOT_WINDOW_ID =
+	"Window id from pc_list_windows to capture; the helper focuses it and focus goes back to the user's window afterwards.";
+
 export default function pcControl(pi: ExtensionAPI) {
 	const home = homedir();
 	let extensionsDir = "";
@@ -176,10 +179,12 @@ export default function pcControl(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "pc_screenshot",
 		label: "Captura de pantalla",
-		description: "Takes a screenshot of the user's screen and returns it as an image (scale 0.5 by default). Needs the user's /control on permission.",
-		promptSnippet: "pc_screenshot: see the user's screen",
+		description:
+			"Takes a screenshot and returns it as an image (scale 0.5 by default). Pass window_id (from pc_list_windows) to see a given window: the helper focuses it, captures the monitor showing it, and focus returns to the user's window afterwards. Use it to verify after pc_type/pc_key on that window. Without window_id it captures the whole screen as it is now (focus may already be back on the user's window). Needs the user's /control on permission.",
+		promptSnippet: "pc_screenshot: see the user's screen or a given window (pass window_id)",
 		parameters: Type.Object({
 			scale: Type.Optional(Type.Number({ minimum: 0.1, maximum: 1, description: "Scale factor, default 0.5." })),
+			window_id: Type.Optional(Type.Integer({ minimum: 0, description: SCREENSHOT_WINDOW_ID })),
 		}),
 		executionMode: "sequential",
 		async execute(_id, params, signal) {

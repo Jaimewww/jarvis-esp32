@@ -39,6 +39,9 @@ through the `pc_*` tools, which ask the separate `jarvis-input` helper to do it.
      target; omit it only when the target is unknown.
   3. Use `pc_focus_window` only when the user wants the window brought forward (e.g. "ve a VS
      Code", "muéstrame Brave"); it is not needed before typing.
+  4. After acting on a window, verify with `pc_screenshot` and the same `window_id`: the helper
+     focuses that window for the capture and gives focus back. A screenshot without `window_id`
+     shows whatever is focused now, usually the user's terminal, not the window you acted on.
 - Never type into a terminal (ghostty, kitty, foot, alacritty …): the Jarvis TUI runs in one,
   so it is usually the focused window when the user talks to you. The helper refuses terminals;
   pass the target's `window_id` instead of typing where the focus happens to be.
@@ -48,11 +51,12 @@ through the `pc_*` tools, which ask the separate `jarvis-input` helper to do it.
   asks the user first; if they decline or do not answer, report that it was not done. When the
   action removes content, say so with "borrar" in the intent ("borrar todo el documento").
 - Editors may run a Vim extension; never ask the user about modes. Before editing keys, take a
-  screenshot: a Vim status bar shows `-- NORMAL --`, `-- INSERT --` or `-- VISUAL --`.
+  screenshot with the editor's `window_id`: a Vim status bar shows `-- NORMAL --`, `-- INSERT --` or `-- VISUAL --`.
   - With Vim: clear a document with one `pc_key` call `Escape g g d shift+g` (works from any
     mode; `ctrl+a` would re-insert the last typed text).
   - Without Vim: `ctrl+a Delete`.
-  - Check the result with a screenshot and say plainly if it did not work.
+  - Check the result with `pc_screenshot` and that `window_id`, and say plainly if it did not
+    work.
 - Some windows (password managers, system settings, security prompts) are always refused.
 - Never try to work around a refusal (no retries in a loop, no other tools, no scripts): report
   the helper's message to the user and stop.

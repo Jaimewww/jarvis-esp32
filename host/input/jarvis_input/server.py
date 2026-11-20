@@ -584,15 +584,15 @@ class Helper:
             {"id": w.id, "app_id": w.app_id, "title": w.title[:checks.MAX_TITLE_CHARS], "focused": w.focused}
             for w in windows]}
 
-    async def _target_window(self, wid: object) -> checks.FocusedWindow:
-        """The `focus` checks: a listed window that is neither blocklisted nor a terminal."""
+    async def _target_window(self, wid: object, *, screenshot: bool = False) -> checks.FocusedWindow:
+        """The `focus` checks: a listed window that is neither blocklisted nor (for input) a terminal."""
         if not isinstance(wid, int) or isinstance(wid, bool) or not 0 <= wid < 2**63:
             raise Deny("window_id debe ser un entero (el id de pc_list_windows)")
         window = next((w for w in await self._list_windows() if w.id == wid), None)
         if window is None:
             raise Deny(f"No hay ninguna ventana con id {wid}.")
         target = window.as_focused()
-        reason = checks.blocked_reason(target, screenshot=False, subject="La ventana")
+        reason = checks.blocked_reason(target, screenshot=screenshot, subject="La ventana")
         if reason:
             raise Deny(reason)
         return target
@@ -791,18 +791,63 @@ class Helper:
             if scale is None or not 0.05 <= scale <= 1:
                 raise Deny("scale debe ser un número entre 0.05 y 1")
             argv += ["-s", f"{scale:g}"]
+        if "window_id" in req:
+            return await self._screenshot_window(req["window_id"], argv)
         argv.append("-")
         window = await self._focus()
         if window is not None:
             reason = checks.blocked_reason(window, screenshot=True)
             if reason:
                 raise Deny(reason)
+        return {"ok": True, "png_base64": await self._grim(argv)}
+
+    async def _grim(self, argv: list[str]) -> str:
         code, png = await self._run(argv, timeout=GRIM_TIMEOUT_S, capture=True, track=True,
                                     max_out=MAX_PNG_BYTES)
         if code != 0 or not png:
             raise Deny(f"grim falló (código {code})")
         log.info("screenshot: %d bytes", len(png))
-        return {"ok": True, "png_base64": base64.b64encode(png).decode("ascii")}
+        return base64.b64encode(png).decode("ascii")
+
+    async def _focused_output(self) -> str | None:
+        """The focused output's name, or None (then grim captures every output)."""
+        try:
+            code, out = await self._run(["niri", "msg", "-j", "focused-output"], timeout=NIRI_TIMEOUT_S,
+                                        capture=True, track=False)
+        except Deny:
+            return None
+        if code != 0:
+            return None
+        try:
+            return checks.parse_output_name(out.decode("utf-8"))
+        except UnicodeDecodeError:
+            return None
+
+    async def _screenshot_window(self, wid: object, argv: list[str]) -> dict[str, Any]:
+        """S17: focus the target (same checks as `focus`, terminals allowed as for screenshots),
+        capture its output while it is focused, and give focus back, as type/key do (S16).
+        niri's screenshot-window also fills the user's clipboard, and its window geometry is not
+        exposed for tiled windows, so the capture is the target's whole output."""
+        target = await self._target_window(wid, screenshot=True)
+        prev_id: int | None = None
+        try:
+            current = await self._focus()
+            prev_id = current.id if current is not None else None
+            if prev_id != target.id:
+                log.info("enfocando %d (%s) para la captura", target.id, target.app_id[:60])
+                await self._focus_and_confirm(target.id)
+                await asyncio.sleep(FOCUS_SETTLE_S)  # let the app and niri repaint it
+            output = await self._focused_output()
+            again = await self._focus()  # re-check right before grim
+            if again is None or again.id != target.id:
+                raise Deny("El foco cambió antes de la captura; no se capturó nada.")
+            reason = checks.blocked_reason(again, screenshot=True)
+            if reason:
+                raise Deny(reason)
+            png = await self._grim([*argv, *(["-o", output] if output else []), "-"])
+        finally:
+            await self._restore_focus(prev_id, target.id)
+        return {"ok": True, "png_base64": png, "window_id": target.id}
 
 
 async def run(helper: Helper) -> None:

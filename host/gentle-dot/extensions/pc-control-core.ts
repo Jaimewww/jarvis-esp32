@@ -33,7 +33,7 @@ export type HelperRequest =
 	| { op: "open"; url: string }
 	| { op: "type"; text: string; intent: string; window_id?: number }
 	| { op: "key"; keys: string; intent: string; window_id?: number }
-	| { op: "screenshot"; scale: number }
+	| { op: "screenshot"; scale: number; window_id?: number }
 	| { op: "apps" }
 	| { op: "windows" }
 	| { op: "focus"; window_id: number };
@@ -49,7 +49,7 @@ function windowId(params: Record<string, unknown>): number {
 	return n;
 }
 
-/** S16: pc_type/pc_key target a window only when window_id is given; absent = the focused window. */
+/** S16/S17: pc_type/pc_key/pc_screenshot target a window only when window_id is given; absent = as before. */
 function optionalWindowId(params: Record<string, unknown>): { window_id?: number } {
 	return params.window_id === undefined ? {} : { window_id: windowId(params) };
 }
@@ -74,7 +74,7 @@ export function buildRequest(tool: string, params: Record<string, unknown>): Hel
 		case "pc_screenshot": {
 			const s = params.scale;
 			const scale = typeof s === "number" && Number.isFinite(s) ? Math.min(1, Math.max(0.1, s)) : 0.5;
-			return { op: "screenshot", scale };
+			return { op: "screenshot", scale, ...optionalWindowId(params) };
 		}
 		case "pc_list_apps":
 			return { op: "apps" }; // the optional query is applied locally by formatApps (S14)

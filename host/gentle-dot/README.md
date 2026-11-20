@@ -52,14 +52,15 @@ agente (pc_*) ── agent.sock ────┘   la pantalla)  └── (argv,
 | `pc_open_url{url}` | `{"op":"open","url":"https://…"}` | no (etapa a) |
 | `pc_type{text,intent,window_id?}` | `{"op":"type","text":…,"intent":…,"window_id":42}` (S16: con `window_id` el ayudante enfoca esa ventana, teclea y devuelve el foco; sin él, la enfocada) | `/control on` |
 | `pc_key{keys,intent,window_id?}` | `{"op":"key","keys":"ctrl+l","intent":…,"window_id":42}` (igual que `pc_type`) | `/control on` |
-| `pc_screenshot{scale?}` | `{"op":"screenshot","scale":0.5}` (0,1–1) → `png_base64` | `/control on` |
+| `pc_screenshot{scale?,window_id?}` | `{"op":"screenshot","scale":0.5,"window_id":42}` (0,1–1) → `png_base64` (S17: con `window_id` el ayudante enfoca esa ventana, captura su monitor y devuelve el foco; sin él, la pantalla tal cual) | `/control on` |
 
 Los errores del ayudante (`{"ok":false,"error":"…"}`) vuelven tal cual como error de la
 herramienta. Para teclear, `AGENTS.md` fija el flujo (S14, S16): ventana con `pc_list_windows`
 (o `pc_list_apps` → `pc_open_app` → `pc_list_windows`), y `pc_type`/`pc_key` con su
 `window_id` (el foco vuelve a la ventana del usuario al terminar, así que cambiar de ventana
 mientras tanto no rompe nada); `pc_focus_window` solo para traer una ventana al frente; nunca en
-una terminal (la TUI corre en una).
+una terminal (la TUI corre en una). Para comprobar el resultado, `pc_screenshot` con el mismo
+`window_id` (S17): sin él la captura muestra la ventana enfocada, casi siempre la terminal (L27).
 
 ## Parada de emergencia
 
