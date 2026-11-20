@@ -321,3 +321,6 @@ propia solicitud desde `main`; worktree `jarvis-esp32-worktrees/pi-next`.
   ggdG` → "si se vació"; F `wtype -p Escape -k Shift_L -s 250 -d 8 -- hola mundo` → "sigue el la
   mundo". Arreglo 2: las teclas usan el preludio de E y una pausa de 300 ms tras un Escape suelto;
   el texto conserva `-k Shift_L -s 250`.
+- L26 (usuario, 2026-11-20): "no me parece usable decirle 'quedate en modo insert'. si no supiera
+  vim ni sé qué es". AGENTS.md: Jarvis detecta Vim por captura (barra `-- NORMAL --`/`-- INSERT --`)
+  y elige `Escape g g d shift+g` o `ctrl+a Delete`; nunca pregunta por modos.
