@@ -178,8 +178,8 @@ propia solicitud desde `main`; worktree `jarvis-esp32-worktrees/pi-next`.
   `jarvis-input`, instalación de la TUI y `jarvis-stop` (`host/systemd/`, `host/bin/`).
 - [x] T25 (S16): tecleo con `window_id` (enfocar, teclear y devolver el foco) en el ayudante y
   la extensión. Commit `82b2b41`.
-- [ ] T26 (S17): captura de una ventana dada (`window_id` en `screenshot` y `pc_screenshot`).
-  `host/input/`, `host/gentle-dot/`. Commit: pendiente.
+- [x] T26 (S17): captura de una ventana dada (`window_id` en `screenshot` y `pc_screenshot`).
+  `host/input/`, `host/gentle-dot/`. Commit `06ebc70`; CI de las suites del host en `5f3a7e5`.
 
 ## Log
 
@@ -343,3 +343,11 @@ propia solicitud desde `main`; worktree `jarvis-esp32-worktrees/pi-next`.
   wtype y seguían cambiando el keymap a mitad de texto. Arreglo: `_keysym` usa
   `xkb_utf32_to_keysym` de libxkbcommon vía ctypes. Entrega bloqueada por el guard RDD
   pre-delivery: el rango completo (8.4k líneas) requiere revisión nativa con consentimiento.
+- L29 (worker, 2026-11-20): T26/S17 en `06ebc70`: `screenshot` con `window_id` enfoca la ventana,
+  espera 400 ms, re-chequea el foco y captura su monitor (`grim -o` con `niri msg -j
+  focused-output`); `niri msg action screenshot-window` se descartó porque pisa el portapapeles,
+  y `tile_pos_in_workspace_view` viene `null` en ventanas en mosaico (niri 26.04), así que no hay
+  recorte a la ventana. CI (`5f3a7e5`): jobs para `host/input` (unittest, Python 3.14), la
+  extensión (`node --test`, Node 24, sin npm) y `jarvis-stop`; actionlint OK. Suites: input 159 OK,
+  node 88/88, jarvis-stop 24/24, install 201/201, host pytest 224 passed 6 skipped. Sin probar en la
+  sesión real (no se corrió grim/wtype ni se reinstaló).
