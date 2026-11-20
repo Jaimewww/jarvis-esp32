@@ -148,6 +148,18 @@ cd host && python -m jarvis.tui
 Para cambiar el puerto, un override (`systemctl --user edit gentle-dot.service`, con
 `[Service]` y `Environment=GENTLE_DOT_PORT=4318`) y `python -m jarvis.tui --port 4318`.
 
+Comprobación sin abrir la ventana (cliente y ventana sin pantalla contra el servicio
+real; ver [Tests](#tests)):
+
+```bash
+cd host && JARVIS_REAL_DAEMON=1 python -m pytest tests/test_real_daemon.py -v -rs
+```
+
+Sin una cuenta de IA conectada en Gentle Dot el daemon rechaza cada mensaje con
+`Connect an AI account first: open Accounts or type /login.`; la TUI muestra ese texto
+tal cual (ver [What the window shows](#what-the-window-shows)) y no inicia sesión: la
+cuenta se conecta en Gentle Dot.
+
 ### Desinstalar
 
 ```bash
@@ -168,6 +180,7 @@ Detiene y deshabilita el servicio, borra la unidad y recarga systemd. No toca
 | `EADDRINUSE` en el journal | Otro daemon (la aplicación de escritorio o un `pnpm dev`) ocupa el 4317: cerrarlo o cambiar el puerto |
 | La TUI dice `No access token at …` | El daemon no arrancó nunca con ese `HOME`: ver `status` y el journal |
 | La TUI dice `UNAUTHORIZED` | El token cambió: reiniciar la TUI |
+| La TUI dice `SIGN IN` y `Connect an AI account first: …` | Gentle Dot no tiene una cuenta de IA: conectarla en Gentle Dot (Accounts o `/login` en su propia interfaz) y volver a escribir |
 | El agente no puede usar `sudo` | Efecto buscado de `NoNewPrivileges=yes`; se puede quitar con un override |
 | El servicio se detiene al cerrar sesión | Normal sin linger; ver Requisitos |
 
@@ -244,9 +257,10 @@ theme is one constant, `DEFAULT_DARK` in `jarvis/theme.py`.
 
 | Part | Content |
 |---|---|
-| Jarvis card | the agent's state in large letters (`READY`, `THINKING`, `WORKING`, `NEEDS YOU`, `LISTENING`, `SPEAKING`, `STARTING`, `ERROR`, `OFFLINE`), a spinner and a pulse on the card's edge while it works, what it is working on, and how many messages wait their turn |
+| Jarvis card | the agent's state in large letters (`READY`, `THINKING`, `WORKING`, `NEEDS YOU`, `LISTENING`, `SPEAKING`, `STARTING`, `SIGN IN`, `ERROR`, `OFFLINE`), a spinner and a pulse on the card's edge while it works, what it is working on, and how many messages wait their turn |
 | Voice device card | the device and its state in plain words (`Ready`, `Listening`, `Thinking`, `Speaking`, `Offline`…) with a hint, a level meter, the connection to this PC and the signal as bars (good, fair, weak, poor) |
 | Thread | today's exchanges, newest at the bottom, on a timeline rail: time and `said ◎` / `typed ▸`, the user's words right-aligned in a bubble, the answer under `◆`, and what Jarvis did "on your PC" (`✓` done, `◐` running, `○` in the background, `✗` failed); a failed exchange says what to do next; the live one has an accent rail, a bold answer and `ctrl+a stops it`. `Today · N earlier above` counts the exchanges that do not fit |
+| Sign-in notice | only while Gentle Dot has no AI account: the daemon refused a message with `no_account`, and its own text (`Connect an AI account first: open Accounts or type /login.`) stays on a `✗` row under the header, whole and unchanged, until a prompt runs again; the Jarvis card says `SIGN IN` |
 | Input and footer | the `▸ Message Jarvis` row and the keys |
 
 Voice exchanges come from the backend's turns (heard text, reply, catalogue actions,
@@ -267,7 +281,8 @@ route, agent, tts) with the median of each stage and a pulse under the live stag
 the finished voice turns newest first with a gradient bar against the lane target
 (fast 1.5 s, chat 4.0 s, task none) and the amount over it, and the action (`→`) and
 reply under each; a summary per lane; the typed conversation (`◆ jarvis`); and a card
-with the agent and its PC actions. Both views are fed by every event, so switching
+with the agent and its PC actions (and, while Gentle Dot has no AI account, a `needs`
+row with the daemon's message). Both views are fed by every event, so switching
 always shows current data. Two gaps of contract C2 show on screen: an `action` has no
 `turn_id`, so it is listed under the open turn of the same device; the lane of a live
 turn is only known when it ends (`lane —` until then). The backend does not emit
@@ -289,6 +304,14 @@ cd host
 pip install -r requirements-dev.txt
 python -m pytest tests -q
 ```
+
+`tests/test_real_daemon.py` runs against the **real** daemon and is skipped unless
+`JARVIS_REAL_DAEMON=1` (CI has no daemon). It connects the client, opens the window
+headless and checks it reaches `daemon connected`, then types one short prompt: with
+no AI account it expects the daemon's `no_account` message on screen; with one it
+skips that check and stops the prompt. `JARVIS_DAEMON_URL` and
+`JARVIS_DAEMON_TOKEN_FILE` override the defaults; the token is opened by the client and
+never printed.
 
 ## Security caveat: the catalog is bounded in the backend
 

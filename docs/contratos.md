@@ -132,7 +132,7 @@ class Synthesizer(Protocol):
 | Implementación | Quién | Carril | Estado |
 |---|---|---|---|
 | Motor de charla | Parte de voz (`backend/`) | `chat` | pendiente; motor por elegir (D14) |
-| Adaptador de Gentle Dot | Parte de host | `task` | pendiente |
+| Adaptador de Gentle Dot | Parte de host | `task` | implementado en `backend/app/agents/gentle_dot.py` (sin `reset`); probado con daemon falso y, opcional, con el real (`JARVIS_REAL_DAEMON=1`); sin conectar a `/converse` |
 | `FakeTranscriber`, `FakeAgent`, `FakeSynthesizer` | Ya en `backend/app/fakes.py` | pruebas | implementado |
 
 El adaptador de Gentle Dot vive en `backend/` porque el backend es quien lo llama (D2),

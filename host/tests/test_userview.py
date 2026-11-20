@@ -20,6 +20,7 @@ from jarvis.client import (
     ActivityEvent,
     AgentStateEvent,
     ConnectionStatus,
+    ErrorEvent,
     MessageDeltaEvent,
     MessageDoneEvent,
     QueueEvent,
@@ -27,7 +28,7 @@ from jarvis.client import (
     UserMessageEvent,
 )
 from jarvis.model import HostModel
-from jarvis.userview import Exchange, exchanges, render_rows
+from jarvis.userview import Exchange, exchanges, jarvis_status, notice_rows, render_rows
 
 DEVICE = "esp32-s3"
 #: Developer detail the user view must never show.
@@ -262,3 +263,36 @@ def test_offline_reasons_are_complete_and_never_ready(
         screen = "\n".join(_text(render_rows(model, w, 30)))
         assert first in screen and second in screen and "…" not in screen
         assert "talk or type" not in screen
+
+
+#: What the real daemon (upstream f97d56d) answers a send with when no AI account is connected.
+NO_ACCOUNT = "Connect an AI account first: open Accounts or type /login."
+
+
+def test_no_account_shows_the_daemons_own_message_until_an_answer_runs() -> None:
+    model, _ = _model()
+    model.apply_daemon(ErrorEvent("no_account", NO_ACCOUNT))
+    assert model.agent_notice == NO_ACCOUNT
+    assert model.agent_status == "idle"  # connected; it just cannot answer yet
+    word, mood, what, _ = jarvis_status(model, None)
+    assert (word, mood) == ("SIGN IN", "failed")
+    assert "no AI account" in what[-1]
+    for w in (140, 120, 100, 80):
+        screen = "\n".join(_text(render_rows(model, w, 30)))
+        # The daemon's words, unchanged and whole, once.
+        assert screen.count(NO_ACCOUNT) == 1
+        assert "…" not in screen and "talk or type" not in screen
+    # Too narrow for one line: wrapped, every word still there, in order.
+    rows = _text(notice_rows(model, 40))
+    assert len(rows) > 1 and " ".join(" ".join(rows).replace("✗", " ").split()) == NO_ACCOUNT
+    # Once a prompt runs, an account is connected again.
+    model.apply_daemon(UserMessageEvent("u1", "hola"))
+    assert model.agent_notice is None
+    assert jarvis_status(model, None)[0] == "READY"
+
+
+def test_other_daemon_errors_leave_no_lasting_notice() -> None:
+    model, _ = _model()
+    model.apply_daemon(ErrorEvent("command_failed", "That did not work. Please try again."))
+    assert model.agent_notice is None
+    assert jarvis_status(model, None)[0] == "READY"

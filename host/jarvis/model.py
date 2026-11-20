@@ -36,6 +36,7 @@ from .client import (
     AgentStateEvent,
     ConnectionStatus,
     ConversationsEvent,
+    ErrorEvent,
     Event,
     HistoryEvent,
     MessageDeltaEvent,
@@ -53,6 +54,10 @@ LANE_TARGETS: Final[dict[str, float | None]] = {"fast": 1.5, "chat": 4.0, "task"
 MAX_ACTIVITIES: Final = 50
 #: ``HostModel.agent_status`` while the daemon link is down.
 OFFLINE: Final = "offline"
+#: Daemon ``error`` codes that last until the person acts in Gentle Dot; the views keep
+#: their message on screen. ``no_account``: the daemon refuses every send until an AI
+#: account is connected (upstream f97d56d, observed on the real daemon).
+LASTING_ERRORS: Final = frozenset({"no_account"})
 
 
 class StageState(StrEnum):
@@ -186,6 +191,9 @@ class HostModel:
         self.daemon_detail = ""
         self.agent_state = "starting"
         self.agent_model: str | None = None
+        #: The daemon's own message while it cannot answer until the person acts (for
+        #: example, connect an AI account); shown as is, cleared once a prompt runs.
+        self.agent_notice: str | None = None
         self.chat_title: str | None = None
         self.queue_total = 0
         self.turns: list[Turn] = []
@@ -388,9 +396,14 @@ class HostModel:
             self.agent_model = event.model
         elif isinstance(event, AgentStateEvent):
             self.agent_state = event.state
+        elif isinstance(event, ErrorEvent):
+            if event.code in LASTING_ERRORS and event.message:
+                self.agent_notice = event.message
         elif isinstance(event, UserMessageEvent):
+            self.agent_notice = None  # the daemon started a prompt: it can answer again
             self._message(event.message_id, "user", event.text, streaming=False, at=self._clock())
         elif isinstance(event, MessageDeltaEvent):
+            self.agent_notice = None
             known = self._messages_by_id.get(event.message_id)
             body = (known.answer if known else "") + event.delta
             self._message(event.message_id, "assistant", body, streaming=True, at=self._clock())

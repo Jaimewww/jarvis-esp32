@@ -13,6 +13,16 @@ documents it:
   one ``message_done`` (``text``, ``stopped``, ``error``). ``{"type": "abort"}``
   stops the answer that is running. ``error`` frames carry ``code`` and ``message``.
 
+Verified against the real daemon (upstream ``f97d56d``, see
+``backend/tests/test_gentle_dot_real.py``): a wrong token is closed with 4401, an
+``abort`` with nothing running gets no answer, and with no AI account connected a
+``send`` is refused with ``{"type": "error", "code": "no_account", "message":
+"Connect an AI account first: open Accounts or type /login."}`` and nothing is
+echoed; the adapter raises ``GentleDotNotSignedIn`` with that message unchanged. It
+never tries to sign in. ``ready`` reports ``features.conversations: false``; with that,
+upstream answers ``new_conversation`` with ``error`` ``conversations_off`` ("This
+assistant keeps one continuous chat."), so ``reset`` stays unsupported.
+
 One connection per ``reply``: the daemon has a single agent and a single active
 conversation for all its clients (D14), so the adapter runs one reply at a time.
 The answer is re-chunked by sentence so the caller can synthesize the first one
@@ -111,6 +121,23 @@ class GentleDotDaemonError(GentleDotError):
         self.message = message
 
 
+class GentleDotNotSignedIn(GentleDotDaemonError):
+    """No AI account is connected in Gentle Dot (``error`` code ``no_account``).
+
+    ``str()`` is the daemon's own message, meant to be shown to the person as is;
+    signing in is theirs to do in Gentle Dot, never the adapter's.
+    """
+
+    CODE: Final = "no_account"
+
+    def __init__(self, message: str) -> None:
+        super().__init__(self.CODE, message)
+        self.args = (message,)
+
+    def __str__(self) -> str:
+        return self.message
+
+
 # --- Sentences ---------------------------------------------------------------------
 
 
@@ -191,6 +218,7 @@ class GentleDotAgent:
         self._busy = False
         self._abort_requested = False
         self._message_done = False
+        self._refused = False
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> GentleDotAgent:
@@ -242,6 +270,7 @@ class GentleDotAgent:
         self._busy = True
         self._abort_requested = False
         self._message_done = False
+        self._refused = False
         socket: ClientConnection | None = None
         try:
             token = self.read_token()
@@ -255,9 +284,11 @@ class GentleDotAgent:
         finally:
             self._socket = None
             if socket is not None:
-                if not self._message_done and not self._abort_requested:
+                if not (self._message_done or self._abort_requested or self._refused):
                     # Timeout, error frame, lost link or a cancelled caller: do not leave
-                    # the daemon working on a task nobody is waiting for.
+                    # the daemon working on a task nobody is waiting for. A send the
+                    # daemon refused started nothing; aborting then could stop the task
+                    # of another client.
                     await self._send_abort(socket)
                 with contextlib.suppress(Exception):
                     await socket.close()
@@ -346,9 +377,13 @@ class GentleDotAgent:
                 continue
             kind = payload.get("type")
             if kind == "error":
-                raise GentleDotDaemonError(
-                    _text(payload.get("code")) or "error", _text(payload.get("message"))
-                )
+                code = _text(payload.get("code")) or "error"
+                message = _text(payload.get("message"))
+                # Before our echo the daemon has not started our prompt: it refused it.
+                self._refused = user_id is None
+                if code == GentleDotNotSignedIn.CODE:
+                    raise GentleDotNotSignedIn(message)
+                raise GentleDotDaemonError(code, message)
             if user_id is None:
                 # Frames before our echo belong to an earlier message.
                 if kind == "user_message" and _text(payload.get("text")).strip() == wanted:

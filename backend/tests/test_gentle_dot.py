@@ -21,6 +21,7 @@ from app.agents.gentle_dot import (
     GentleDotBusy,
     GentleDotDaemonError,
     GentleDotError,
+    GentleDotNotSignedIn,
     GentleDotProtocolMismatch,
     GentleDotStopped,
     GentleDotTimeout,
@@ -173,6 +174,48 @@ def test_daemon_error_frame_raises_daemon_error():
     assert "model offline" in str(error)
     # The daemon may still be working on the request: the adapter stops it.
     assert frame_types(daemon.session) == ["hello", "send", "abort"]
+
+
+# Observed on the real daemon (upstream f97d56d) with no AI account connected: the
+# send is refused with this frame and nothing is echoed or started.
+NO_ACCOUNT = "Connect an AI account first: open Accounts or type /login."
+
+
+def test_no_account_raises_not_signed_in_with_the_daemons_exact_message():
+    async def script(s: Session, text: str) -> None:
+        await s.emit({"type": "error", "code": "no_account", "message": NO_ACCOUNT})
+
+    async def scenario() -> tuple[GentleDotNotSignedIn, FakeDaemon]:
+        async with FakeDaemon(script) as daemon:
+            with pytest.raises(GentleDotNotSignedIn) as info:
+                await collect(GentleDotAgent(daemon.url, token=TOKEN))
+            await asyncio.wait_for(daemon.session.closed.wait(), 2)
+            return info.value, daemon
+
+    error, daemon = run(scenario())
+    assert isinstance(error, GentleDotDaemonError)
+    assert error.code == "no_account"
+    assert error.message == NO_ACCOUNT
+    assert str(error) == NO_ACCOUNT  # shown to the person as the daemon words it
+    # Nothing was started, so nothing is aborted (an abort could stop another client's task).
+    assert frame_types(daemon.session) == ["hello", "send"]
+
+
+def test_an_error_before_the_echo_refuses_the_send_without_aborting():
+    async def script(s: Session, text: str) -> None:
+        await s.emit({"type": "error", "code": "unsupported", "message": "I can't run that command here."})
+
+    async def scenario() -> tuple[GentleDotDaemonError, FakeDaemon]:
+        async with FakeDaemon(script) as daemon:
+            with pytest.raises(GentleDotDaemonError) as info:
+                await collect(GentleDotAgent(daemon.url, token=TOKEN))
+            await asyncio.wait_for(daemon.session.closed.wait(), 2)
+            return info.value, daemon
+
+    error, daemon = run(scenario())
+    assert not isinstance(error, GentleDotNotSignedIn)
+    assert error.code == "unsupported"
+    assert frame_types(daemon.session) == ["hello", "send"]
 
 
 def test_message_done_with_error_raises_after_the_partial_answer():

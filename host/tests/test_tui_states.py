@@ -234,3 +234,70 @@ def test_footer_drops_whole_legend_entries_below_140_columns(tmp_path: Path) -> 
     assert shown == ["live", "within", "over target", "failed", "lane target"]
     legend = footer[footer.index("◐") :]
     assert set(re.findall(r"[a-z]+", legend)) <= {w for entry in LEGEND for w in entry.split()}
+
+
+# --- 7. No AI account in Gentle Dot: the daemon's own message stays on screen ---------
+
+NO_ACCOUNT = "Connect an AI account first: open Accounts or type /login."
+
+
+def test_typing_without_an_ai_account_shows_the_daemons_message(tmp_path: Path) -> None:
+    """As the real daemon (upstream f97d56d) does it: the send is refused, nothing echoed."""
+
+    sent: list[dict[str, Any]] = []
+
+    async def daemon(socket: Any) -> None:
+        seq = 0
+
+        async def emit(payload: dict[str, Any]) -> None:
+            nonlocal seq
+            seq += 1
+            await socket.send(json.dumps({**payload, "seq": seq}))
+
+        async for raw in socket:
+            message = json.loads(raw)
+            sent.append(message)
+            if message.get("type") == "hello":
+                await emit({"type": "ready", "agentState": "idle", "model": "unknown",
+                            "features": {"conversations": False}})
+            elif message.get("type") == "send":
+                await emit({"type": "error", "code": "no_account", "message": NO_ACCOUNT})
+
+    async def backend(socket: Any) -> None:
+        await socket.send(IDLE)
+        await socket.wait_closed()
+
+    async def scenario() -> tuple[str, str]:
+        token = tmp_path / "token"
+        token.write_text("daemon-token\n", encoding="utf-8")
+        async with fake_server(backend) as port, fake_server(daemon) as daemon_port:
+            app = JarvisApp(
+                url=f"ws://127.0.0.1:{daemon_port}/ws",
+                token_path=token,
+                backend_url=f"ws://127.0.0.1:{port}/api/v1/ws",
+                backend_token="t",
+                animate=False,
+            )
+            async with app.run_test(size=(140, 40)) as pilot:
+                await wait_for(lambda: app._host.agent_status == "idle", timeout=5.0)
+                await pilot.click("#prompt")
+                await pilot.press(*"hola", "enter")
+                await wait_for(lambda: app._host.agent_notice is not None, timeout=5.0)
+                await pilot.pause()
+                user = app.query_one(UserView).render().plain
+                await pilot.press("f2")
+                await pilot.pause()
+                return user, app.query_one(DeveloperView).render().plain
+
+    user, developer = asyncio.run(scenario())
+    assert {"type": "send", "text": "hola"} in sent
+    # Never signs in (the client's read-only ``auth_list`` on connect is not a sign-in).
+    assert not any(m.get("type") in ("auth_login", "auth_reply") for m in sent)
+    assert NO_ACCOUNT in user  # whole, on its own row under the header
+    assert "talk or type" not in user
+    # Developer view: the Agent card's "needs" row, wrapped to the card.
+    lines = developer.splitlines()
+    i = next(n for n, line in enumerate(lines) if " needs " in line)
+    col = lines[i].index(" needs ") + len(" needs ")
+    wrapped = " ".join(line[col:].replace("│", " ") for line in lines[i : i + 3])
+    assert " ".join(wrapped.split()).startswith(NO_ACCOUNT)
