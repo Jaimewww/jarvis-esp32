@@ -255,8 +255,16 @@ input, in both views and in the active theme. Nothing opens a browser by itself.
    hidden as you type (`•`); a choice (`select`) is a numbered list; a text or a pasted
    code (`text`, `manual_code`) shows as typed.
 5. The card ends with `✓ Signed in to <account>.` or the daemon's own message
-   (`Sign-in cancelled.`, a refusal…); the sign-in notice goes away on success. Esc
-   closes the card.
+   (`Sign-in cancelled.`, a refusal, `That sign-in is no longer active.`…); the sign-in
+   notice goes away on success. Esc closes the card; a second Esc closes it even while
+   the daemon has not confirmed a cancel. If the daemon link drops, the sign-in ends
+   (`The connection to Gentle Dot dropped: the sign-in ended.`): start it again.
+
+Whenever a prompt closes (answered, Esc, the daemon ends it, the link drops, the card
+closes) the input is emptied before it stops hiding what was typed, so a half-typed API
+key is never shown and never sent as a message. While a secret is hidden, copy and cut
+(Ctrl+C, Ctrl+X) and Ctrl+Y do nothing. A flow left with Esc before the daemon named it
+is cancelled as soon as the daemon does, so the next `/login` is not refused as busy.
 
 Anthropic is offered with an API key only: the daemon refuses a Claude subscription
 sign-in, and the card shows its message as is. What you type in the card goes straight

@@ -67,7 +67,7 @@ from .client import (
 )
 from .devview import DeveloperView, footer_row
 from .loginview import LoginPanel
-from .model import HostModel, Login, LoginStage
+from .model import LOGIN_CANCELLED, HostModel, Login, LoginStage
 from .theme import DEFAULT_DARK, LIGHT, THEMES, Theme, to_text
 from .userview import UserView
 
@@ -170,6 +170,18 @@ class KeysFooter(Widget):
 
 
 
+class PromptInput(Input):
+    """The input row. While it hides a secret, copy and cut do nothing."""
+
+    def action_copy(self) -> None:
+        if not self.password:
+            super().action_copy()
+
+    def action_cut(self) -> None:
+        if not self.password:
+            super().action_cut()
+
+
 class JarvisApp(App[None]):
     """The host window: user view and developer view over one model."""
 
@@ -263,6 +275,9 @@ class JarvisApp(App[None]):
             token_path=token_path,
         )
         self._client_task: asyncio.Task[None] | None = None
+        #: The prompt and panel state the input was last fitted to (``_sync_login``).
+        self._shown_prompt: object | None = None
+        self._shown_open = False
 
     # Layout
 
@@ -274,7 +289,7 @@ class JarvisApp(App[None]):
         yield self._login
         with Horizontal(id="input-row"):
             yield Static("▸", id="prompt-mark")
-            yield Input(placeholder=PLACEHOLDER, id="prompt", compact=True)
+            yield PromptInput(placeholder=PLACEHOLDER, id="prompt", compact=True)
         yield self._footer
 
     def action_toggle_view(self) -> None:
@@ -302,6 +317,13 @@ class JarvisApp(App[None]):
         except Exception:  # noqa: BLE001 - not composed yet
             return
         asked = login.prompt if login.open and login.running else None
+        if asked is not self._shown_prompt or login.open != self._shown_open:
+            # A prompt opened or closed (an answer, Esc, auth_done, a refusal, a dropped
+            # link, the panel closing): what was typed for it goes, and it goes before
+            # the input stops hiding it, so a half-typed secret is never drawn or sent.
+            prompt.value = ""
+        self._shown_prompt = asked
+        self._shown_open = login.open
         # Hidden while a secret is asked, and only then.
         prompt.password = asked is not None and asked.kind == "secret"
         if not login.open:
@@ -391,6 +413,15 @@ class JarvisApp(App[None]):
     def _on_event(self, event: Event) -> None:
         login = self._host.login
         was_open = login.open
+        if isinstance(event, (AuthPromptEvent, AuthFlowEvent)) and login.cancel_next:
+            # The panel was left before the daemon named a flow: the first flow named that
+            # this sign-in has not taken as its own is that one. End it, even while a new
+            # sign-in waits (the daemon answers that one ``auth_busy`` until it ends).
+            flow_id = event.prompt.flow_id if isinstance(event, AuthPromptEvent) else event.flow_id
+            if flow_id and flow_id != login.flow_id and flow_id not in login.ignored:
+                self._client.auth_reply(flow_id, cancelled=True)
+                login.ignored.add(flow_id)
+                login.cancel_next = False
         self._host.apply_daemon(event)
         if (
             isinstance(event, (AuthPromptEvent, AuthFlowEvent))
@@ -431,6 +462,12 @@ class JarvisApp(App[None]):
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         login = self._host.login
+        asked = login.prompt if login.open and login.running else None
+        if event.input.password and (asked is None or asked.kind != "secret"):
+            # Typed hidden for a prompt that is gone: never an answer, never a message.
+            event.input.value = ""
+            self._refresh_views()
+            return
         if login.open:
             value = event.value
             # Cleared at once: what was typed (maybe a secret) does not stay in the input.
@@ -521,15 +558,31 @@ class JarvisApp(App[None]):
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         # Esc and ctrl+y belong to the panel only; otherwise the keys go where they went.
+        if action == "login_copy" and self._prompt_hidden():
+            return False  # nothing is copied while a secret is being typed
         if action in ("login_escape", "login_copy"):
             return self._host.login.open
         return True
+
+    def _prompt_hidden(self) -> bool:
+        try:
+            return self.query_one("#prompt", Input).password
+        except Exception:  # noqa: BLE001 - not composed yet
+            return False
 
     def action_login_escape(self) -> None:
         login = self._host.login
         if not login.open:
             return
-        if login.running:
+        if login.running and (login.cancelling or login.cancel_pending):
+            # The cancel went (or waits for the flow's name): Esc again always closes.
+            pending = login.cancel_pending
+            if login.flow_id is not None:
+                login.ignored.add(login.flow_id)
+            login.finish(False, LOGIN_CANCELLED)
+            login.cancel_next = pending
+            login.close()
+        elif login.running:
             if login.flow_id is not None:
                 self._client.auth_reply(login.flow_id, cancelled=True)
                 login.cancelling = True

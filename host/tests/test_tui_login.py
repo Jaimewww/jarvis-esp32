@@ -56,6 +56,11 @@ def _has(screen: str, phrase: str) -> bool:
     return _flat(phrase) in _flat(screen)
 
 
+#: The open connection of the fake daemon: ``emit`` and ``socket``, for tests that act
+#: as the daemon on their own (a late frame, a dropped connection).
+LINK: dict[str, Any] = {}
+
+
 def _daemon(sent: list[dict[str, Any]], script: Script) -> Callable[[Any], Awaitable[None]]:
     async def daemon(socket: Any) -> None:
         seq = 0
@@ -64,6 +69,8 @@ def _daemon(sent: list[dict[str, Any]], script: Script) -> Callable[[Any], Await
             nonlocal seq
             seq += 1
             await socket.send(json.dumps({**payload, "seq": seq}))
+
+        LINK.update(emit=emit, socket=socket)
 
         async for raw in socket:
             message = json.loads(raw)
@@ -344,3 +351,277 @@ def test_sign_in_notice_guides_to_login_in_both_views() -> None:
     model.apply_daemon(ErrorEvent("no_account", NO_ACCOUNT))
     user = "\n".join("".join(t for t, _ in row) for row in userview.notice_rows(model, 100))
     assert "Type /login to connect one." not in user
+
+
+
+# --- Regressions: a secret never outlives its prompt -----------------------------------
+
+
+def _secret_prompt(flow: str = "f1") -> Script:
+    async def script(message: dict[str, Any], emit: Emit) -> None:
+        if message["type"] == "auth_login":
+            await emit({"type": "auth_prompt", "prompt": {
+                "flowId": flow, "kind": "secret", "message": "Paste your Anthropic API key"}})
+
+    return script
+
+
+async def _to_secret_prompt(pilot: Any, app: JarvisApp) -> None:
+    await _type(pilot, app, "/login")
+    await wait_for(lambda: _has(_screen(app), "Anthropic"), timeout=5.0)
+    await _type(pilot, app, "1")
+    await wait_for(lambda: _has(_screen(app), "Paste your Anthropic API key"), timeout=5.0)
+
+
+def _no_secret(app: JarvisApp) -> None:
+    screen = _flat(_screen(app))
+    assert SECRET not in screen and "SECRET4242" not in screen
+    assert "SECRET" not in app.query_one("#prompt").value
+
+
+def _carrying_secret(sent: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [m for m in sent if SECRET in json.dumps(m)]
+
+
+def test_esc_after_typing_a_secret_clears_it_and_it_never_becomes_chat(tmp_path: Path) -> None:
+    async def script(message: dict[str, Any], emit: Emit) -> None:
+        await _secret_prompt()(message, emit)
+        if message["type"] == "auth_reply" and message.get("cancelled"):
+            await emit({"type": "auth_done", "flowId": "f1", "providerId": "anthropic", "ok": False,
+                        "message": "Sign-in cancelled."})
+
+    async def body(pilot: Any, app: JarvisApp) -> dict[str, Any]:
+        await _to_secret_prompt(pilot, app)
+        await pilot.press(*SECRET)
+        await pilot.press("escape")
+        await pilot.pause()
+        _no_secret(app)
+        await wait_for(lambda: _has(_screen(app), "Sign-in cancelled."), timeout=5.0)
+        _no_secret(app)
+        await pilot.press("escape")  # closes the panel
+        await pilot.pause()
+        _no_secret(app)
+        await pilot.press("enter")  # the old value must not go out as a message
+        await pilot.pause()
+        await asyncio.sleep(0.2)
+        return {"open": app._host.login.open}
+
+    out, sent = _run(tmp_path, script, body)
+    assert out["open"] is False
+    assert {"type": "auth_reply", "flowId": "f1", "cancelled": True} in sent
+    assert _carrying_secret(sent) == []
+    assert not any(m["type"] == "send" for m in sent)
+
+
+@pytest.mark.parametrize("ending", [
+    {"type": "auth_done", "flowId": "f1", "providerId": "anthropic", "ok": False, "message": "Sign-in did not finish. Please try again."},
+    {"type": "auth_done", "flowId": "f1", "providerId": "anthropic", "ok": True},
+    {"type": "error", "code": "auth_flow_not_found", "message": "That sign-in is no longer active."},
+])
+def test_a_prompt_ended_by_the_daemon_while_typing_drops_the_secret(tmp_path: Path, ending: dict[str, Any]) -> None:
+    async def body(pilot: Any, app: JarvisApp) -> bool:
+        await _to_secret_prompt(pilot, app)
+        await pilot.press(*SECRET)
+        await LINK["emit"](ending)
+        await wait_for(lambda: app._host.login.prompt is None, timeout=5.0)
+        await pilot.pause()
+        _no_secret(app)
+        assert app.query_one("#prompt").password is False
+        await pilot.press("enter")
+        await pilot.press("escape")
+        await pilot.pause()
+        await pilot.press("enter")
+        await asyncio.sleep(0.2)
+        _no_secret(app)
+        return app._host.login.open
+
+    still_open, sent = _run(tmp_path, _secret_prompt(), body)
+    assert still_open is False
+    assert _carrying_secret(sent) == []
+
+
+def test_a_dropped_connection_ends_the_sign_in_and_no_stale_prompt_is_answered(tmp_path: Path) -> None:
+    async def body(pilot: Any, app: JarvisApp) -> dict[str, Any]:
+        await _to_secret_prompt(pilot, app)
+        await pilot.press(*SECRET[:6])
+        first = LINK["socket"]
+        await first.close()
+        await wait_for(lambda: app._host.daemon_status.value != "connected", timeout=5.0)
+        await pilot.pause()
+        down = _screen(app)
+        assert app.query_one("#prompt").value == ""
+        await wait_for(lambda: LINK["socket"] is not first and app._host.daemon_status.value == "connected",
+                       timeout=5.0)
+        await pilot.pause()
+        n_sent = len(sent_ref)
+        await pilot.press(*SECRET, "enter")
+        await asyncio.sleep(0.2)
+        await pilot.pause()
+        _no_secret(app)
+        await pilot.press("escape")
+        await pilot.pause()
+        return {"down": down, "after": sent_ref[n_sent:], "prompt": app._host.login.prompt,
+                "running": app._host.login.running, "open": app._host.login.open}
+
+    # Run by hand: the body needs the frames sent so far, which ``_run`` only returns.
+    sent_ref: list[dict[str, Any]] = []
+    token = tmp_path / "token"
+    token.write_text("daemon-token\n", encoding="utf-8")
+
+    async def scenario() -> dict[str, Any]:
+        async with fake_server(_backend) as port, fake_server(_daemon(sent_ref, _secret_prompt())) as dport:
+            app = JarvisApp(url=f"ws://127.0.0.1:{dport}/ws", token_path=token,
+                            backend_url=f"ws://127.0.0.1:{port}/api/v1/ws", backend_token="t", animate=False)
+            async with app.run_test(size=(140, 40)) as pilot:
+                await wait_for(lambda: app._host.agent_status == "idle", timeout=5.0)
+                await pilot.click("#prompt")
+                return await body(pilot, app)
+
+    out = asyncio.run(scenario())
+    assert _has(out["down"], "The connection to Gentle Dot dropped: the sign-in ended.")
+    assert not _has(out["down"], "Paste your Anthropic API key")
+    assert out["prompt"] is None and out["running"] is False and out["open"] is False
+    assert not any(m["type"] in ("auth_reply", "send") for m in out["after"])
+    assert _carrying_secret(sent_ref) == []
+
+
+def test_auth_flow_not_found_ends_the_flow_and_esc_closes(tmp_path: Path) -> None:
+    async def script(message: dict[str, Any], emit: Emit) -> None:
+        await _secret_prompt()(message, emit)
+        if message["type"] == "auth_reply":
+            await emit({"type": "error", "code": "auth_flow_not_found", "message": "That sign-in is no longer active."})
+
+    async def body(pilot: Any, app: JarvisApp) -> dict[str, Any]:
+        await _to_secret_prompt(pilot, app)
+        await _type(pilot, app, "typed-key")
+        await wait_for(lambda: _has(_screen(app), "That sign-in is no longer active."), timeout=5.0)
+        running = app._host.login.running
+        await pilot.press("escape")
+        await pilot.pause()
+        return {"running": running, "open": app._host.login.open}
+
+    out, sent = _run(tmp_path, script, body)
+    assert out == {"running": False, "open": False}
+    assert sum(1 for m in sent if m.get("cancelled")) == 0
+
+
+def test_esc_before_the_daemon_names_the_flow_cancels_it_when_it_does(tmp_path: Path) -> None:
+    async def script(message: dict[str, Any], emit: Emit) -> None:
+        if message["type"] == "auth_reply" and message.get("cancelled"):
+            await emit({"type": "auth_done", "flowId": message["flowId"], "providerId": "anthropic", "ok": False,
+                        "message": "Sign-in cancelled."})
+
+    async def body(pilot: Any, app: JarvisApp) -> dict[str, Any]:
+        await _type(pilot, app, "/login")
+        await wait_for(lambda: _has(_screen(app), "Anthropic"), timeout=5.0)
+        await _type(pilot, app, "1")  # the daemon stays quiet for now
+        await pilot.press("escape")
+        await pilot.pause()
+        cancelling = _has(_screen(app), "Cancelling…")
+        await LINK["emit"]({"type": "auth_prompt", "prompt": {"flowId": "f5", "kind": "secret", "message": "Key please"}})
+        await wait_for(lambda: _has(_screen(app), "Sign-in cancelled."), timeout=5.0)
+        return {"cancelling": cancelling, "asked": _has(_screen(app), "Key please")}
+
+    out, sent = _run(tmp_path, script, body)
+    assert out == {"cancelling": True, "asked": False}
+    assert sent.count({"type": "auth_reply", "flowId": "f5", "cancelled": True}) == 1
+
+
+def test_esc_closes_even_when_the_daemon_never_answers_the_cancel(tmp_path: Path) -> None:
+    async def body(pilot: Any, app: JarvisApp) -> dict[str, Any]:
+        await _to_secret_prompt(pilot, app)
+        await pilot.press("escape")
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+        return {"open": app._host.login.open, "running": app._host.login.running}
+
+    out, sent = _run(tmp_path, _secret_prompt(), body)
+    assert out == {"open": False, "running": False}
+    assert sent.count({"type": "auth_reply", "flowId": "f1", "cancelled": True}) == 1
+
+
+def test_frames_of_another_flow_are_ignored(tmp_path: Path) -> None:
+    async def body(pilot: Any, app: JarvisApp) -> dict[str, Any]:
+        await _to_secret_prompt(pilot, app)
+        emit = LINK["emit"]
+        await emit({"type": "auth_event", "flowId": "f9", "event": {"kind": "progress", "message": "FOREIGN step"}})
+        await emit({"type": "auth_prompt", "prompt": {"flowId": "f9", "kind": "text", "message": "FOREIGN ask"}})
+        await emit({"type": "auth_done", "flowId": "f9", "providerId": "openai", "ok": True})
+        await asyncio.sleep(0.2)
+        await pilot.pause()
+        login = app._host.login
+        return {"screen": _screen(app), "flow": login.flow_id, "result": login.result,
+                "kind": login.prompt.kind if login.prompt else None}
+
+    out, _ = _run(tmp_path, _secret_prompt(), body)
+    assert "FOREIGN" not in out["screen"]
+    assert out["flow"] == "f1" and out["result"] is None and out["kind"] == "secret"
+
+
+BUSY = "Another sign-in is in progress. Finish or cancel it first."
+
+
+def test_an_abandoned_flow_named_during_a_new_sign_in_is_cancelled_and_login_works_again(tmp_path: Path) -> None:
+    """Esc twice before the flow is named, then /login again: the old flow's first frame
+    lands between the new ``auth_login`` and its ``auth_busy``."""
+
+    state: dict[str, Any] = {"logins": 0, "old": False}
+
+    async def script(message: dict[str, Any], emit: Emit) -> None:
+        if message["type"] == "auth_login":
+            state["logins"] += 1
+            if state["logins"] == 1:
+                state["old"] = True  # the daemon starts "old" but names it later
+            elif state["old"]:
+                await emit({"type": "auth_prompt", "prompt": {"flowId": "old", "kind": "secret", "message": "OLD key"}})
+                await emit({"type": "error", "code": "auth_busy", "message": BUSY})
+            else:
+                await emit({"type": "auth_prompt", "prompt": {"flowId": "new", "kind": "secret", "message": "NEW key"}})
+        elif message["type"] == "auth_reply" and message.get("cancelled") and message["flowId"] == "old":
+            state["old"] = False
+            await emit({"type": "auth_done", "flowId": "old", "providerId": "anthropic", "ok": False,
+                        "message": "Sign-in cancelled."})
+
+    async def body(pilot: Any, app: JarvisApp) -> dict[str, Any]:
+        await _type(pilot, app, "/login")
+        await wait_for(lambda: _has(_screen(app), "Anthropic"), timeout=5.0)
+        await _type(pilot, app, "1")
+        await pilot.press("escape", "escape")
+        await pilot.pause()
+        await _type(pilot, app, "/login")
+        await wait_for(lambda: _has(_screen(app), "Anthropic"), timeout=5.0)
+        await _type(pilot, app, "1")
+        await wait_for(lambda: not state["old"] and not app._host.login.running, timeout=5.0)
+        await asyncio.sleep(0.2)
+        await pilot.pause()
+        busy = {"screen": _screen(app), "result": app._host.login.result}
+        await _type(pilot, app, "1")  # the daemon is free again: this sign-in starts
+        await wait_for(lambda: _has(_screen(app), "NEW key"), timeout=5.0)
+        return {**busy, "cancel_next": app._host.login.cancel_next, "flow": app._host.login.flow_id}
+
+    out, sent = _run(tmp_path, script, body)
+    assert sent.count({"type": "auth_reply", "flowId": "old", "cancelled": True}) == 1
+    assert "OLD key" not in out["screen"]
+    assert out["result"] == (False, BUSY)  # the old flow's auth_done does not replace it
+    assert out["cancel_next"] is False and out["flow"] == "new"
+
+
+def test_a_hidden_secret_cannot_be_copied_or_cut(tmp_path: Path) -> None:
+    async def body(pilot: Any, app: JarvisApp) -> dict[str, Any]:
+        await _to_secret_prompt(pilot, app)
+        await pilot.press(*SECRET)
+        prompt = app.query_one("#prompt")
+        prompt.select_all()
+        await pilot.press("ctrl+c")
+        await pilot.pause()
+        copied = app.clipboard
+        await pilot.press("ctrl+x")
+        await pilot.pause()
+        await pilot.press("ctrl+y")
+        await pilot.pause()
+        return {"copied": copied, "clipboard": app.clipboard, "value": prompt.value}
+
+    out, _ = _run(tmp_path, _secret_prompt(), body)
+    assert SECRET not in out["copied"] and SECRET not in out["clipboard"]
+    assert out["value"] == SECRET  # cut did not take it out either

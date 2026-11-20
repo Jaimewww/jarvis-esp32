@@ -193,6 +193,9 @@ class LoginStage(StrEnum):
 
 #: Steps of a sign-in kept for the panel, newest last.
 MAX_LOGIN_STEPS: Final = 20
+#: The sign-in ends when the daemon link drops: its flow does not survive the connection.
+LOGIN_DROPPED: Final = "The connection to Gentle Dot dropped: the sign-in ended."
+LOGIN_CANCELLED: Final = "Sign-in cancelled."
 
 
 @dataclass(slots=True)
@@ -217,6 +220,10 @@ class Login:
     cancel_pending: bool = False
     #: Esc sent ``auth_reply{cancelled}``; the daemon's ``auth_done`` ends it.
     cancelling: bool = False
+    #: The panel was left before the daemon named the flow: cancel the next flow it names.
+    cancel_next: bool = False
+    #: Flows this window cancelled and left: their late frames change nothing.
+    ignored: set[str] = field(default_factory=set)
 
     @property
     def running(self) -> bool:
@@ -311,6 +318,8 @@ class HostModel:
     def set_daemon_status(self, status: ConnectionStatus, detail: str = "") -> None:
         self.daemon_status = status
         self.daemon_detail = "" if status is ConnectionStatus.CONNECTED else detail
+        if status is not ConnectionStatus.CONNECTED and self.login.running:
+            self.login.finish(False, LOGIN_DROPPED)
 
     @property
     def agent_status(self) -> str:
@@ -504,8 +513,8 @@ class HostModel:
         elif isinstance(event, ErrorEvent):
             if event.code in LASTING_ERRORS and event.message:
                 self.agent_notice = event.message
-            elif event.code in AUTH_ERRORS and self.login.running and self.login.flow_id is None:
-                # The daemon refused to start this sign-in: its own words, as they are.
+            elif event.code in AUTH_ERRORS and self.login.running:
+                # The daemon refused or no longer knows this sign-in: its own words, as they are.
                 self.login.finish(False, event.message or "The sign-in did not start.")
         elif isinstance(event, (AuthProvidersEvent, AuthPromptEvent, AuthFlowEvent, AuthDoneEvent)):
             self._apply_login(event)
@@ -553,6 +562,9 @@ class HostModel:
             if event.open:
                 login.show()
             return
+        flow_id = event.prompt.flow_id if isinstance(event, AuthPromptEvent) else event.flow_id
+        if flow_id in login.ignored:
+            return  # a flow this window cancelled: not this sign-in's outcome
         if isinstance(event, AuthDoneEvent):
             if login.flow_id not in (None, event.flow_id):
                 return  # another window's sign-in
@@ -563,7 +575,6 @@ class HostModel:
             else:
                 login.finish(False, event.message or "Sign-in did not finish.")
             return
-        flow_id = event.prompt.flow_id if isinstance(event, AuthPromptEvent) else event.flow_id
         if not login.running or login.flow_id not in (None, flow_id):
             return
         if isinstance(event, AuthPromptEvent):

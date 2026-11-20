@@ -209,8 +209,9 @@ AUTH_METHODS: Final = ("oauth", "api_key")
 AUTH_PROMPT_KINDS: Final = ("text", "secret", "select", "manual_code")
 #: Kinds of ``auth_event``.
 AUTH_EVENT_KINDS: Final = ("info", "auth_url", "device_code", "progress")
-#: ``error`` codes the daemon answers an ``auth_login`` or ``auth_logout`` with.
-AUTH_ERRORS: Final = frozenset({"auth_busy", "auth_unsupported", "unknown_provider"})
+#: ``error`` codes the daemon answers an ``auth_login``, ``auth_reply`` or ``auth_logout``
+#: with; each one ends the sign-in this window is running.
+AUTH_ERRORS: Final = frozenset({"auth_busy", "auth_unsupported", "unknown_provider", "auth_flow_not_found"})
 
 
 @dataclass(slots=True)
