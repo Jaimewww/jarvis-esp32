@@ -38,6 +38,78 @@ propia solicitud desde `main`; worktree `jarvis-esp32-worktrees/pi-next`.
 - S11 (L12): "y no podemos agrgar en jarvios un shorucut para grabar directo desde alla?";
   elegido: "Whisper → Gentle Dot (como escribir)": la TUI graba con el micrófono, transcribe
   con el whisper-server local y manda el texto al agente.
+- S12 (L14): resguardos de la etapa b aprobados ("si dale de acuerdo en los puntos"):
+  (1) control apagado por defecto, se enciende desde la TUI y vence a los 30 min;
+  (2) parada de emergencia `Alt+Shift+Esc` que quita el permiso y corta la tarea;
+  (3) lista de bloqueo (gestores de contraseñas, ajustes del sistema, diálogos de seguridad,
+  por `app_id` de `niri msg -j focused-window`) y confirmación en la TUI ante enviar, pagar,
+  comprar, eliminar (send, pay, buy, delete).
+  Contrato compartido entre la extensión y la TUI:
+  - Permiso: `$XDG_RUNTIME_DIR/jarvis/control.json`, modo 0600, `{"enabled": true,
+    "expires_at": "<ISO-8601 UTC>", "granted_at": "<ISO-8601 UTC>"}`. Ausente, vencido, ilegible
+    o `enabled` falso = denegado. Lo escribe y borra solo la TUI y la parada; la extensión lo lee
+    en cada llamada, sin caché.
+  - Confirmación: la extensión llama `ctx.ui.confirm` con `timeoutMs` 30000; el daemon lo manda
+    a los clientes como `{"type":"ask","ask":{"method":"confirm",...}}`; la TUI contesta
+    `{"type":"ui_response","requestId":...,"confirmed":true|false}`. Sin respuesta = denegado.
+  - Parada: borrar el archivo de permiso es la llave principal; además manda `{"type":"abort"}`
+    al daemon.
+- S13 (L15): "Barrera real: ayudante aparte" — un servicio separado es el único con acceso a
+  la pantalla; el daemon pierde el acceso directo a Wayland y abre apps o teclea pidiéndoselo.
+  Reemplaza el archivo de permiso de S12 (el agente podía falsificarlo). Diseño:
+  - **Ayudante `jarvis-input`** (servicio de usuario en `graphical-session.target`, Python
+    stdlib, instalado en `~/.local/share/jarvis/input/`): único proceso que corre `wtype`,
+    `grim`, `niri msg`, `gtk-launch` y `xdg-open`. Estado del permiso en memoria (reiniciar el
+    ayudante = permiso revocado). Dos sockets Unix, JSON por líneas:
+    - `$XDG_RUNTIME_DIR/jarvis/agent.sock` (lo usa la extensión del agente):
+      `{"op":"open","app":"<desktop-id>"}` o `{"op":"open","url":"https://…"}` (sin permiso:
+      etapa a); `{"op":"type","text":…,"intent":…}`, `{"op":"key","keys":…,"intent":…}`,
+      `{"op":"screenshot","scale":0.5}` (requieren permiso). Respuesta `{"ok":true,...}` o
+      `{"ok":false,"error":"…"}`; captura: `{"ok":true,"png_base64":"…"}`.
+    - `$XDG_RUNTIME_DIR/jarvis-control/control.sock` (solo la TUI y `jarvis-stop`):
+      `{"op":"grant","minutes":30}` (máximo 30) → `{"ok":true,"expires_at":"…Z"}`;
+      `{"op":"revoke"}`; `{"op":"status"}`; `{"op":"subscribe"}` → eventos
+      `{"event":"state","enabled":…,"expires_at":…}` y
+      `{"event":"confirm","id":…,"title":…,"message":…,"timeout_s":30}`; respuesta del cliente
+      `{"op":"answer","id":…,"allow":true|false}`. Sin suscriptor o sin respuesta = denegado.
+  - El ayudante hace todos los controles de S12 (3): lista de bloqueo por `app_id`/título,
+    foco ilegible = denegado, re-chequeo de foco justo antes de `wtype`, palabras de riesgo
+    por raíz (envi*, pag*, compr*, elimin*, borr*, submit, send*, pay*, buy*, delet*), y
+    confirmación de `Return`/`ctrl+Return` en navegadores, correo y mensajería; límite de 10
+    acciones por segundo; texto máximo 2000 caracteres; `argv` sin shell.
+  - **Daemon aislado** (unidad `gentle-dot.service`): sin acceso a los sockets de Wayland, X11,
+    niri, al bus de sesión ni a `jarvis-control/`; solo lectura sobre el ayudante instalado,
+    `~/.config/systemd/user`, `~/.local/bin/jarvis-stop` y las extensiones del agente. Se
+    prueba en la máquina que Gentle Dot sigue andando (chat, `/login`, modelos).
+  - **Parada** `jarvis-stop`: `revoke` por `control.sock` y `abort` al daemon.
+- S14 (L16): prueba guiada: el agente no encuentra la app ("No pude abrir Notas: `gtk-launch
+  terminó con código 2`") y siempre teclea en la terminal de la TUI ("la ventana activa es una
+  terminal y está bloqueada"). Agregar al protocolo de `agent.sock`:
+  `{"op":"apps"}` → `{"ok":true,"apps":[{"id":"<desktop-id>","name":"…"}]}` (entradas `.desktop`
+  visibles de los `XDG_DATA_DIRS` del ayudante; sin permiso);
+  `{"op":"windows"}` → `{"ok":true,"windows":[{"id":…,"app_id":…,"title":…,"focused":…}]}`
+  (requiere permiso); `{"op":"focus","window_id":…}` (requiere permiso; se niega si la ventana
+  está en la lista de bloqueo o es una terminal). Flujo del agente para teclear: abrir o elegir
+  la ventana, enfocarla, y recién ahí `type`/`key`.
+- S15 (L17): el verificador dio FAIL a S13 como barrera: `open` sin permiso lanza código que el
+  daemon puede reescribir (`~/.local/bin`, `~/.config/fish`, `mimeapps.list`, AppImages), puede
+  crear drop-ins de systemd (`~/.config/systemd/user.control`, `~/.local/share/systemd`,
+  `environment.d`), reescribir la TUI (`~/.local/bin/jarvis`, su código y su `.venv`) y sombrear
+  `jarvis-stop` en el PATH de niri; además la config de niri es escribible. Decisión del
+  usuario: "Home solo lectura + carpeta de trabajo". Requisitos:
+  - El daemon ve `$HOME` en solo lectura (`ProtectHome=read-only` o equivalente) y solo escribe
+    en `~/.gentle-dot` y en la carpeta de trabajo `~/Jarvis` (se crea si falta). Sin acceso al
+    bus del sistema (`/run/dbus/system_bus_socket`).
+  - `open`: solo apps cuyo `Exec` resuelve a un ejecutable fuera de `$HOME` y que no sean
+    terminales ni `Terminal=true`; URLs `http(s)` abiertas con el navegador por defecto
+    resuelto por el ayudante sin `xdg-open` genérico (o `xdg-open` con `mimeapps.list` protegido,
+    que ya queda en solo lectura para el daemon).
+  - `jarvis-input` arranca con entorno mínimo (`UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH`,
+    `PATH=/usr/local/bin:/usr/bin`).
+  - La TUI se instala como el ayudante (copia en `~/.local/share/jarvis/tui` con su propio
+    entorno de Python, y `~/.local/bin/jarvis` apuntando ahí); el daemon no puede modificarla.
+  - `jarvis-stop` usa `PATH=/usr/local/bin:/usr/bin` y `/usr/bin/python3`; el atajo de niri
+    usa la ruta absoluta.
 
 ## Tasks
 
@@ -65,14 +137,30 @@ propia solicitud desde `main`; worktree `jarvis-esp32-worktrees/pi-next`.
 - [ ] T13 (S10, etapa a): el servicio del daemon arranca dentro de la sesión gráfica
   (`graphical-session.target`) para heredar `WAYLAND_DISPLAY`; prueba abriendo una app.
   `host/systemd/`.
-- [ ] T14 (S10, etapa b): resguardos (permiso con vencimiento, parada, lista de bloqueo,
-  confirmaciones) y luego teclado y capturas con `wtype` y `grim`.
+- [ ] T14 (S10, S12, etapa b): rama `feat/pc-control-stage-b`.
+  - [ ] T14a: extensión de Pi `host/gentle-dot/extensions/pc-control.ts` (herramientas
+    `pc_type`, `pc_key`, `pc_screenshot`; bloqueo de `wtype`/`grim` por `bash`), instalación,
+    y script de parada `host/bin/jarvis-stop`.
+  - [ ] T14b: TUI: `/control on|off|status`, cuenta regresiva, y respuesta a los `ask` de
+    confirmación.
 - [ ] T15 (S10, etapa c): cursor.
 - [ ] T16 (S11): grabar desde la TUI (tecla para hablar). `host/`. Rama
   `feat/tui-push-to-talk`. Commit: pendiente.
 - [ ] T17 (S10, etapa a): reglas del agente para abrir apps sin bloquear
   (`~/.gentle-dot/agent/AGENTS.md`), versionadas en `host/` e instaladas por `install.sh`.
   Rama `fix/agent-gui-launch`.
+- [ ] T18 (S13): ayudante `jarvis-input` (`host/input/`).
+- [ ] T19 (S13): extensión del agente sobre `agent.sock` (+ `pc_open_app`) y `jarvis-stop`
+  sobre `control.sock` (`host/gentle-dot/`, `host/bin/`).
+- [ ] T20 (S13): TUI sobre `control.sock` (`/control`, confirmaciones) (`host/jarvis/`).
+- [ ] T21 (S13): unidades e instalador: `jarvis-input.service`, aislamiento de
+  `gentle-dot.service` (`host/systemd/`).
+- [ ] T22 (S14): ops `apps`, `windows`, `focus` en el ayudante (`host/input/`) y herramientas
+  `pc_list_apps`, `pc_list_windows`, `pc_focus_window` + reglas en `AGENTS.md`
+  (`host/gentle-dot/`).
+- [ ] T23 (S15): endurecer `open` (`host/input/`).
+- [ ] T24 (S15): home en solo lectura, carpeta `~/Jarvis`, bus del sistema, entorno de
+  `jarvis-input`, instalación de la TUI y `jarvis-stop` (`host/systemd/`, `host/bin/`).
 
 ## Log
 
@@ -152,3 +240,38 @@ propia solicitud desde `main`; worktree `jarvis-esp32-worktrees/pi-next`.
   confirmarlo, aunque Brave abrió. Con `~/.gentle-dot/agent/AGENTS.md` (lanzar con `setsid -f`
   o `gtk-launch` y confirmar con `pgrep`) y el servicio reiniciado, "Abrí Brave." corrió
   `setsid -f brave >/dev/null 2>&1; pgrep -f brave` y respondió "Listo, abrí Brave." (4,2 s).
+
+- L14 (usuario y evidencia, 2026-11-20): "si dale de acuerdo en los puntos, ya intalo wtype".
+  Exploración: el daemon fija `@earendil-works/pi-coding-agent` 1.5.0; las extensiones se
+  cargan con jiti desde `~/.gentle-dot/agent/extensions/*.ts` o rutas en `settings.json`;
+  `pi.registerTool`, `pi.on("tool_call")` con `{block:true}`, `ctx.ui.confirm`; el daemon
+  reenvía los pedidos de UI como `ask` (`protocol/src/index.ts:22-34, 433`) y acepta
+  `ui_response` (`:353`) y `abort` (`:352`). niri: `~/.config/niri` es un enlace a
+  `~/dotfiles/config/niri/` (atajos en `binds.kdl`).
+
+- L15 (evidencia y usuario, 2026-11-20): el verificador independiente dio FAIL a S12 (1) como
+  barrera: desde `bash` el agente falsifica `control.json` (ruta relativa o Python) y corre
+  `wtype`/`grim` disfrazados (`x=wty; ${x}pe`, `w''type`, base64, `subprocess`), y puede plantar
+  extensiones o editar `settings.json`; los demás controles pasan tal como se especificaron.
+  Con `wtype` instalado, el agente ya puede teclear sin resguardos. Pregunta: "¿Cómo
+  seguimos?"; respuesta: "Barrera real: ayudante aparte".
+
+- L16 (usuario y evidencia, 2026-11-20): prueba guiada. Sin permiso: "No escribí nada porque el
+  control del escritorio está apagado" (correcto). `jarvis` corre `main` y no tenía F5 ("no
+  fuinciona el f5"); desde la rama sí. Registro del ayudante: permiso concedido, revocado y
+  concedido (F5 alterna); "abri notas y escribe hola mundo" → `gtk-launch org.gnome.TextEditor`
+  terminó con código 2 (la app real es `dev.duxlabs.shell.notepad`); "ya abri yo, escribe" →
+  denegado porque el foco era la terminal de la TUI (`com.mitchellh.ghostty`).
+
+- L17 (evidencia y usuario, 2026-11-20): segundo verificador: el aislamiento cierra todo lo
+  previsto (runtime, X11, uinput, docker, `/proc` de niri, Landlock), pero `open` sin permiso
+  + home escribible = escape; drop-ins de systemd, TUI escribible, `jarvis-stop` sombreable,
+  niri escribible. Pregunta: "¿Qué preferís?"; respuesta: "Home solo lectura + carpeta de
+  trabajo".
+- L18 (evidencia, 2026-11-20): tercer verificador: L17 (a)-(c) cerrados; FAIL por `/tmp`,
+  `/var/tmp` y `/dev/shm` compartidos (caché jiti de `pi` sin aislar, `SingletonSocket` de
+  Brave) y porque el atajo de parada todavía no está en niri. Arreglo: `PrivateTmp=disconnected`
+  y `TemporaryFileSystem=/dev/shm` (`test_install.sh` 201 pasan); reinstalado: desde el daemon
+  `/tmp` es un tmpfs propio (sin `jiti` ni `org.chromium*`), `/dev/shm` y `/var/tmp` vacíos, y
+  el chat responde (4,55 s). Riesgo anotado: un `.git` con hooks en `~/Jarvis` se ejecutaría al
+  entrar con un prompt que lea git.
