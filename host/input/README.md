@@ -81,7 +81,7 @@ All agent requests share a rate limit of **10 per second** (sliding window).
   names case-insensitively, so `-k G` or `-M shift -k g` would type `g`. Key actions start with
   `-p Escape -k Shift_L -s 250` (the Escape release keeps Escape on its real keycode, which VS
   Code matches shortcuts on; the Shift tap carries wtype's keymap) and pause 300 ms after a bare
-  `Escape` followed by more keys; text first releases each distinct character once (`-p 0x65 …`, so wtype's keymap is complete before typing and does not change mid-text) and then `-k Shift_L -s 250`.
+  `Escape` followed by more keys; text first releases each distinct character once (`-p 0x65 …`, keysyms from libxkbcommon's `xkb_utf32_to_keysym` like wtype, so ’ — … € get their legacy keysyms; so wtype's keymap is complete before typing and does not change mid-text) and then `-k Shift_L -s 250`.
 * `screenshot`: optional `scale` in `[0.05, 1]`; runs `grim [-s <scale>] -`.
 * `apps`: **reads files only, never runs anything.** Data dirs by precedence:
   `$XDG_DATA_HOME` (or `~/.local/share`), `$XDG_DATA_DIRS` (or `/usr/local/share:/usr/share`;

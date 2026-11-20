@@ -329,3 +329,7 @@ propia solicitud desde `main`; worktree `jarvis-esp32-worktrees/pi-next`.
   prueba.". Además, tras borrar, Jarvis dijo que "la captura muestra otra ventana, no VS Code"
   (la captura es de pantalla completa y el foco ya volvió a la terminal). Arreglo: registrar
   cada carácter del texto con `-p` antes del preludio. Pendiente: captura de una ventana dada.
+- L28 (verificador, 2026-11-20): e504a07 PASS; 606 caracteres (’ — … € …) usan keysyms heredados en
+  wtype y seguían cambiando el keymap a mitad de texto. Arreglo: `_keysym` usa
+  `xkb_utf32_to_keysym` de libxkbcommon vía ctypes. Entrega bloqueada por el guard RDD
+  pre-delivery: el rango completo (8.4k líneas) requiere revisión nativa con consentimiento.
