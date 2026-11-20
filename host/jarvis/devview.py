@@ -604,6 +604,8 @@ def rail_rows(model: HostModel, g: Grid, n: int) -> list[list[Seg]]:
         # The daemon's own message (e.g. no AI account), whole, wrapped to the card.
         for i, line in enumerate(textwrap.wrap(model.agent_notice, room) or [""]):
             body.append(kv("needs" if i == 0 else "", [S(line, "er")]))
+        if model.login_hint:
+            body.append(kv("", [S(clip(model.login_hint, room), "t2")]))
     body.append(inside([]))
     activities = model.activities
     body.append(inside([(xr, header("PC actions", str(len(activities))))]))

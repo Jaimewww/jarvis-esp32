@@ -32,9 +32,16 @@ from .backend import (
     TurnStarted,
 )
 from .client import (
+    AUTH_ERRORS,
     Activity,
     ActivityEvent,
     AgentStateEvent,
+    AuthDoneEvent,
+    AuthFlowEvent,
+    AuthPrompt,
+    AuthPromptEvent,
+    AuthProvider,
+    AuthProvidersEvent,
     ConnectionStatus,
     ConversationsEvent,
     ErrorEvent,
@@ -61,6 +68,8 @@ OFFLINE: Final = "offline"
 #: their message on screen. ``no_account``: the daemon refuses every send until an AI
 #: account is connected (upstream f97d56d, observed on the real daemon).
 LASTING_ERRORS: Final = frozenset({"no_account"})
+#: Under the sign-in notice, unless the daemon's own words already say it.
+LOGIN_HINT: Final = "Type /login to connect one."
 
 
 class StageState(StrEnum):
@@ -217,6 +226,99 @@ class LaneStats:
         return self.worst_s - self.target_s
 
 
+class LoginStage(StrEnum):
+    """Where the ``/login`` panel is."""
+
+    PROVIDERS = "providers"  # choose an account
+    METHOD = "method"  # choose subscription or API key
+    RUNNING = "running"  # a sign-in is under way (waiting, or a prompt is open)
+
+
+#: Steps of a sign-in kept for the panel, newest last.
+MAX_LOGIN_STEPS: Final = 20
+#: The sign-in ends when the daemon link drops: its flow does not survive the connection.
+LOGIN_DROPPED: Final = "The connection to Gentle Dot dropped: the sign-in ended."
+LOGIN_CANCELLED: Final = "Sign-in cancelled."
+
+
+@dataclass(slots=True)
+class Login:
+    """The ``/login`` panel. It holds what the daemon said, never what the person typed."""
+
+    open: bool = False
+    stage: LoginStage = LoginStage.PROVIDERS
+    providers: tuple[AuthProvider, ...] = ()
+    #: ``True`` once the daemon answered ``auth_list`` at least once.
+    listed: bool = False
+    provider: AuthProvider | None = None
+    method: str | None = None
+    flow_id: str | None = None
+    prompt: AuthPrompt | None = None
+    steps: list[AuthFlowEvent] = field(default_factory=list)
+    #: The outcome of the last sign-in: ``(ok, text)``.
+    result: tuple[bool, str] | None = None
+    #: A hint about the last answer (for example a number out of range).
+    hint: str | None = None
+    #: Esc came before the daemon named the flow: cancel it as soon as it does.
+    cancel_pending: bool = False
+    #: Esc sent ``auth_reply{cancelled}``; the daemon's ``auth_done`` ends it.
+    cancelling: bool = False
+    #: The panel was left before the daemon named the flow: cancel the next flow it names.
+    cancel_next: bool = False
+    #: Flows this window cancelled and left: their late frames change nothing.
+    ignored: set[str] = field(default_factory=set)
+
+    @property
+    def running(self) -> bool:
+        return self.stage is LoginStage.RUNNING
+
+    @property
+    def link(self) -> str | None:
+        """The newest address of this sign-in, for ctrl+y."""
+
+        for step in reversed(self.steps):
+            if step.kind == "auth_url" and step.url:
+                return step.url
+            if step.kind == "device_code" and step.verification_uri:
+                return step.verification_uri
+        return None
+
+    def show(self) -> None:
+        """Open the panel on the list, keeping a sign-in that is under way."""
+
+        self.open = True
+        if not self.running:
+            self.stage = LoginStage.PROVIDERS
+            self.hint = None
+
+    def close(self) -> None:
+        self.open = False
+        self.hint = None
+        if not self.running:
+            self.stage = LoginStage.PROVIDERS
+            self.result = None
+
+    def start(self, provider: AuthProvider, method: str) -> None:
+        self.stage = LoginStage.RUNNING
+        self.provider = provider
+        self.method = method
+        self.flow_id = None
+        self.prompt = None
+        self.steps = []
+        self.result = None
+        self.hint = None
+        self.cancel_pending = False
+        self.cancelling = False
+
+    def finish(self, ok: bool, text: str) -> None:
+        self.stage = LoginStage.PROVIDERS
+        self.prompt = None
+        self.flow_id = None
+        self.cancel_pending = False
+        self.cancelling = False
+        self.result = (ok, text)
+
+
 def _median(values: Iterable[float]) -> float | None:
     items = list(values)
     return statistics.median(items) if items else None
@@ -252,6 +354,8 @@ class HostModel:
         self.agent_notice: str | None = None
         self.chat_title: str | None = None
         self.queue_total = 0
+        #: The ``/login`` panel, shared by both views.
+        self.login = Login()
         self.turns: list[Turn] = []
         self._turns_by_id: dict[str, Turn] = {}
         #: Actions that arrived while their device had no open turn.
@@ -270,6 +374,8 @@ class HostModel:
     def set_daemon_status(self, status: ConnectionStatus, detail: str = "") -> None:
         self.daemon_status = status
         self.daemon_detail = "" if status is ConnectionStatus.CONNECTED else detail
+        if status is not ConnectionStatus.CONNECTED and self.login.running:
+            self.login.finish(False, LOGIN_DROPPED)
 
     @property
     def agent_status(self) -> str:
@@ -280,6 +386,14 @@ class HostModel:
         """
 
         return self.agent_state if self.daemon_status is ConnectionStatus.CONNECTED else OFFLINE
+
+    @property
+    def login_hint(self) -> str | None:
+        """How to act on the sign-in notice, when the notice does not say it."""
+
+        if not self.agent_notice or "/login" in self.agent_notice:
+            return None
+        return LOGIN_HINT
 
     @property
     def agent_offline_reason(self) -> str | None:
@@ -466,6 +580,11 @@ class HostModel:
         elif isinstance(event, ErrorEvent):
             if event.code in LASTING_ERRORS and event.message:
                 self.agent_notice = event.message
+            elif event.code in AUTH_ERRORS and self.login.running:
+                # The daemon refused or no longer knows this sign-in: its own words, as they are.
+                self.login.finish(False, event.message or "The sign-in did not start.")
+        elif isinstance(event, (AuthProvidersEvent, AuthPromptEvent, AuthFlowEvent, AuthDoneEvent)):
+            self._apply_login(event)
         elif isinstance(event, UserMessageEvent):
             self.agent_notice = None  # the daemon started a prompt: it can answer again
             self._message(event.message_id, "user", event.text, streaming=False, at=self._clock())
@@ -499,6 +618,48 @@ class HostModel:
                         break
         elif isinstance(event, QueueEvent):
             self.queue_total = len(event.steering) + len(event.follow_up)
+
+    def _apply_login(
+        self, event: AuthProvidersEvent | AuthPromptEvent | AuthFlowEvent | AuthDoneEvent
+    ) -> None:
+        login = self.login
+        if isinstance(event, AuthProvidersEvent):
+            login.providers = event.providers
+            login.listed = True
+            if event.open:
+                login.show()
+            return
+        flow_id = event.prompt.flow_id if isinstance(event, AuthPromptEvent) else event.flow_id
+        if flow_id in login.ignored:
+            return  # a flow this window cancelled: not this sign-in's outcome
+        if isinstance(event, AuthDoneEvent):
+            if login.flow_id not in (None, event.flow_id):
+                return  # another window's sign-in
+            if event.ok:
+                self.agent_notice = None  # an account is connected: the daemon answers again
+                name = login.provider.name if login.provider else event.provider_id
+                login.finish(True, f"Signed in to {name}.")
+            else:
+                login.finish(False, event.message or "Sign-in did not finish.")
+            return
+        if not login.running or login.flow_id not in (None, flow_id):
+            return
+        if isinstance(event, AuthPromptEvent):
+            login.flow_id = event.prompt.flow_id
+            if login.cancelling:
+                return  # being cancelled: nothing more to answer
+            login.prompt = event.prompt
+            login.hint = None
+        else:
+            login.flow_id = event.flow_id
+            login.steps.append(event)
+            del login.steps[:-MAX_LOGIN_STEPS]
+
+    def answered_login_prompt(self) -> None:
+        """The open prompt was answered; the answer itself is not kept."""
+
+        self.login.prompt = None
+        self.login.hint = None
 
     def _time(self, event: Event) -> None:
         if isinstance(event, Ready):

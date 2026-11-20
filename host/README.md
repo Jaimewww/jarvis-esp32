@@ -162,8 +162,8 @@ cd host && JARVIS_REAL_DAEMON=1 python -m pytest tests/test_real_daemon.py -v -r
 
 Sin una cuenta de IA conectada en Gentle Dot el daemon rechaza cada mensaje con
 `Connect an AI account first: open Accounts or type /login.`; la TUI muestra ese texto
-tal cual (ver [What the window shows](#what-the-window-shows)) y no inicia sesión: la
-cuenta se conecta en Gentle Dot.
+tal cual (ver [What the window shows](#what-the-window-shows)). La cuenta se conecta
+desde la misma TUI escribiendo `/login` (ver [Signing in with /login](#signing-in-with-login)).
 
 ### Desinstalar
 
@@ -185,7 +185,10 @@ Detiene y deshabilita el servicio, borra la unidad y recarga systemd. No toca
 | `EADDRINUSE` en el journal | Otro daemon (la aplicación de escritorio o un `pnpm dev`) ocupa el 4317: cerrarlo o cambiar el puerto |
 | La TUI dice `No access token at …` | El daemon no arrancó nunca con ese `HOME`: ver `status` y el journal |
 | La TUI dice `UNAUTHORIZED` | El token cambió: reiniciar la TUI |
-| La TUI dice `SIGN IN` y `Connect an AI account first: …` | Gentle Dot no tiene una cuenta de IA: conectarla en Gentle Dot (Accounts o `/login` en su propia interfaz) y volver a escribir |
+| La TUI dice `SIGN IN` y `Connect an AI account first: …` | Gentle Dot no tiene una cuenta de IA: escribir `/login` en la TUI, elegir la cuenta y volver a escribir |
+| `/login` dice `Gentle Dot is not connected: /login needs it.` | El daemon no está conectado: ver `status` y esperar `daemon connected` |
+| `/login` con Anthropic muestra `Signing in with a Claude subscription is not supported. …` | El daemon solo acepta Anthropic con API key: elegir `API key` |
+| `/login` muestra `Another sign-in is in progress. …` | Otra ventana (o la app de escritorio) tiene un inicio de sesión abierto: terminarlo o cancelarlo allí |
 | El agente no puede usar `sudo` | Efecto buscado de `NoNewPrivileges=yes`; se puede quitar con un override |
 | El servicio se detiene al cerrar sesión | Normal sin linger; ver Requisitos |
 
@@ -245,7 +248,44 @@ python tools/sim_device.py --url http://127.0.0.1:8000
 
 Keys (all listed in the footer): **Enter** sends the text in the input row, **Ctrl+A**
 stops the answer that is running, **Ctrl+Q** quits, **F2** switches between the user
-view and the developer view, **F3** switches between dark and light mode.
+view and the developer view, **F3** switches between dark and light mode. While the
+`/login` panel is open the footer shows its own keys: **Enter** chooses or answers,
+**Esc** goes back, closes the panel or cancels the sign-in that is running, and
+**Ctrl+Y** copies the sign-in address (when one is shown) to the clipboard.
+
+## Signing in with /login
+
+Type `/login` and press Enter: the window does not send it to the assistant, it asks
+the daemon for its accounts (`auth_list`) and opens the **Sign in** card above the
+input, in both views and in the active theme. Nothing opens a browser by itself.
+
+1. The card lists every account the daemon offers, numbered, with `connected` /
+   `not connected` and the ways to sign in (`subscription (<plan>)`, `API key`). Type
+   the number and press Enter.
+2. With two ways, choose one by number (Esc goes back to the list).
+3. The daemon drives the rest and the card shows each step: an address to open (whole,
+   on its own rows, so it can be selected; Ctrl+Y copies it), a device code with the
+   address to type it at and when it expires, progress and info lines.
+4. When the daemon asks something, answer in the same input: an API key (`secret`) is
+   hidden as you type (`•`); a choice (`select`) is a numbered list; a text or a pasted
+   code (`text`, `manual_code`) shows as typed.
+5. The card ends with `✓ Signed in to <account>.` or the daemon's own message
+   (`Sign-in cancelled.`, a refusal, `That sign-in is no longer active.`…); the sign-in
+   notice goes away on success. Esc closes the card; a second Esc closes it even while
+   the daemon has not confirmed a cancel. If the daemon link drops, the sign-in ends
+   (`The connection to Gentle Dot dropped: the sign-in ended.`): start it again.
+
+Whenever a prompt closes (answered, Esc, the daemon ends it, the link drops, the card
+closes) the input is emptied before it stops hiding what was typed, so a half-typed API
+key is never shown and never sent as a message. While a secret is hidden, copy and cut
+(Ctrl+C, Ctrl+X) and Ctrl+Y do nothing. A flow left with Esc before the daemon named it
+is cancelled as soon as the daemon does, so the next `/login` is not refused as busy.
+
+Anthropic is offered with an API key only: the daemon refuses a Claude subscription
+sign-in, and the card shows its message as is. What you type in the card goes straight
+to the daemon: it is not shown (a secret), kept in the window's state, written to the
+history or logged, even with `--log-level debug` (the WebSocket frame log never goes
+below `info`).
 
 Without a daemon the client retries with backoff (500 ms, 1 s, 2 s, 5 s) with no
 traceback and no freeze. The user view says that Gentle Dot is not running (or has no
@@ -275,7 +315,7 @@ theme is one constant, `DEFAULT_DARK` in `jarvis/theme.py`.
 | Jarvis card | the agent's state in large letters (`READY`, `THINKING`, `WORKING`, `NEEDS YOU`, `LISTENING`, `SPEAKING`, `STARTING`, `SIGN IN`, `ERROR`, `OFFLINE`), a spinner and a pulse on the card's edge while it works, what it is working on, and how many messages wait their turn |
 | Voice device card | the device and its state in plain words (`Ready`, `Listening`, `Thinking`, `Speaking`, `Offline`…) with a hint, a level meter, the connection to this PC and the signal as bars (good, fair, weak, poor) |
 | Thread | today's exchanges, newest at the bottom, on a timeline rail: time and `said ◎` / `typed ▸`, the user's words right-aligned in a bubble, the answer under `◆`, and what Jarvis did "on your PC" (`✓` done, `◐` running, `○` in the background, `✗` failed); a failed exchange says what to do next; the live one has an accent rail, a bold answer and `ctrl+a stops it`. `Today · N earlier above` counts the exchanges that do not fit |
-| Sign-in notice | only while Gentle Dot has no AI account: the daemon refused a message with `no_account`, and its own text (`Connect an AI account first: open Accounts or type /login.`) stays on a `✗` row under the header, whole and unchanged, until a prompt runs again; the Jarvis card says `SIGN IN` |
+| Sign-in notice | only while Gentle Dot has no AI account: the daemon refused a message with `no_account`, and its own text (`Connect an AI account first: open Accounts or type /login.`) stays on a `✗` row under the header, whole and unchanged, until a prompt runs again or `/login` succeeds (when the text does not mention `/login`, a `Type /login to connect one.` row follows it); the Jarvis card says `SIGN IN` |
 | Input and footer | the `▸ Message Jarvis` row and the keys |
 
 Voice exchanges come from the backend's turns (heard text, reply, catalogue actions,
@@ -313,8 +353,8 @@ What it deliberately does not do:
 * **It never answers an `ask` approval.** Approvals are shown by the desktop app over
   its private channel, and this window only writes that one is waiting. A `pin` ask on
   a server is answered in the browser.
-* No file attachments, no attachments upload, no conversation switching, no sign-in
-  flows, and no paging back past the first history page.
+* No file attachments, no attachments upload, no conversation switching, no sign-out
+  (`/login` signs in only), and no paging back past the first history page.
 
 ## Timing the typed path: `python -m jarvis.bench`
 
@@ -387,5 +427,8 @@ with the agent state, model, conversation, and features, and closes with `4401` 
 the token is wrong and `4400` when the protocol version is not supported. Every frame
 from the daemon carries a per-connection monotonic `seq`. The client asks for
 `get_history`, `list_conversations`, and `auth_list` once `ready` arrives, and sends
-`send`, `steer`, and `abort`. The message shapes are the ones in the fork's
+`send`, `steer`, and `abort`. For `/login` it sends `auth_login{providerId, method}`
+and `auth_reply{flowId, value | cancelled}`, and reads `auth_providers`,
+`auth_prompt`, `auth_event` and `auth_done` (`auth_logout` exists in the client but
+the window offers no sign-out). The message shapes are the ones in the fork's
 `packages/protocol/src/index.ts`, the same ones the desktop app and the web UI use.
