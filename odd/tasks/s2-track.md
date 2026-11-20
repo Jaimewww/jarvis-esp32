@@ -29,7 +29,7 @@ solicitud sobre `docs/contratos.md`.
 
 - [x] T1 (S1, S5): cliente del backend + panel de ESP32 y turnos en la TUI, con
   pruebas. Inline. Rama `feat/host-backend-ws`. Commit: `feat(host): show esp32 state and voice turns`.
-- [ ] T2 (S2): rediseño visual de la TUI; boceto aprobado por el usuario antes de
+- [x] T2 (S2): rediseño visual de la TUI; boceto aprobado por el usuario antes de
   programar. Rama `feat/host-tui-views` (sobre `feat/host-backend-ws`).
   - [x] T2a: modelo compartido (`host/jarvis/model.py`) + vista desarrollador según
     `design/tui-developer/06-pipeline-refined.html` + tecla para alternar vistas
@@ -39,15 +39,15 @@ solicitud sobre `docs/contratos.md`.
     convenciones unificadas + vista usuario según
     `design/tui-user/08-story-chat-polished.html`. Worker. Commits: `ee1f26b` (tokens) y
     `5398f71` (vista usuario, `f3`, repintado). Correcciones del verificador en un tercer commit.
-- [ ] T3 (S3): daemon upstream fijado como servicio de usuario de systemd.
+- [x] T3 (S3): daemon upstream fijado como servicio de usuario de systemd.
   - [x] T3a: unidad, instalador, pruebas y docs, sin tocar el sistema. Rama
     `feat/gentle-dot-service`, commit `2a2ec81`, solicitud #5.
   - [x] T3b: instalación real en la máquina del usuario (L26).
-- [ ] T4 (S4): `backend/app/agents/gentle_dot.py` con daemon falso y luego real.
+- [x] T4 (S4): `backend/app/agents/gentle_dot.py` con daemon falso y luego real.
   - [x] T4a: con daemon falso. Rama `feat/gentle-dot-agent`. Commit `c5b1c00`,
     solicitud #4 fusionada en `main`.
-  - [ ] T4b: con daemon real; espera a T3. Rama `feat/gentle-dot-agent-real`. Parcial (L28):
-    falta conectar una cuenta de IA en Gentle Dot para cerrar las pruebas que dependen de una respuesta.
+  - [x] T4b: con daemon real. Rama `feat/gentle-dot-agent-real`, commit `5f3aa81`,
+    solicitud #7 fusionada (`8b79d3b`); pruebas con cuenta conectada en L29.
 - [x] T5 (S6): integración continua con GitHub Actions. Rama `ci/github-actions` desde
   `main`, worktree `jarvis-esp32-worktrees/pi-ci`. Worker. Commit: `b7a0f0e`, solicitud #3.
 
@@ -202,3 +202,9 @@ solicitud sobre `docs/contratos.md`.
   y `stopped` tras `abort`. `reset()` sigue imposible con `features.conversations: false`.
   pyright no se corrió localmente. Textos sin revisar por el usuario: `SIGN IN`,
   "no AI account in Gentle Dot", "connect one there, then type again", etiqueta `needs`.
+- L29 (evidencia T4b, 2026-11-20): el usuario conectó una cuenta de IA desde la interfaz web
+  del daemon (compilada con `pnpm build` en `_scratch-gentle-dot`). Con
+  `JARVIS_REAL_DAEMON=1`: backend 4 pasan y 1 omitida (la de "sin cuenta", ya no aplica),
+  incluidas eco con el mismo texto, respuesta con id de mensaje propio y `stopped` tras
+  `abort`; host 2 pasan y 1 omitida (`test_real_window_typing_shows_the_answer_or_the_daemons_message`
+  se omite con cuenta: confirma eco aceptado, no que la respuesta se vea en la TUI).
