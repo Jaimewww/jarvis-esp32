@@ -218,7 +218,17 @@ python -m jarvis.tui --backend-url ws://192.168.1.10:8000/api/v1/ws
 python -m jarvis.tui --backend-token <token>  # default: $JARVIS_HOST_TOKEN, then dev-host-token
 python -m jarvis.tui --theme paper            # start in another theme (see below)
 python -m jarvis.tui --log-level debug        # client log on stderr (noisy under Textual)
+python -m jarvis.tui --thinking low           # wanted thinking level for typed prompts
+python -m jarvis.tui --model openai/gpt-6.1-terra --thinking low
 ```
+
+`--model provider/id` and `--thinking LEVEL` (`off`, `minimal`, `low`, `medium`,
+`high`, `xhigh`, `max`; defaults `$JARVIS_TYPED_MODEL` and `$JARVIS_TYPED_THINKING`)
+are optional. On connect the window asks the daemon for its models (`models_list`) and
+sends `model_set` only when the running model or thinking level differs; without them
+it never changes the model. The daemon saves a `model_set` as its default, for every
+window, and rejects a level the model lacks with its own `thinking_unavailable`
+message, shown as a notification.
 
 The window opens two independent connections: the Gentle Dot daemon (conversation and
 actions) and the Jarvis backend (`ws://127.0.0.1:8000/api/v1/ws` by default; ESP32
@@ -286,8 +296,12 @@ route, agent, tts) with the median of each stage and a pulse under the live stag
 the finished voice turns newest first with a gradient bar against the lane target
 (fast 1.5 s, chat 4.0 s, task none) and the amount over it, and the action (`→`) and
 reply under each; a summary per lane; the typed conversation (`◆ jarvis`); and a card
-with the agent and its PC actions (and, while Gentle Dot has no AI account, a `needs`
-row with the daemon's message). Both views are fed by every event, so switching
+with the agent and its PC actions: `model` is the running model and thinking level
+(`GPT-6.1 Sol · medium`), `reply` the timing of the last prompt typed in this window
+(`first text 2.6s · total 2.9s`, measured on the host from sending to the first
+non-empty `message_delta` and to `message_done`; the daemon's frames carry no time),
+and, while Gentle Dot has no AI account, a `needs` row with the daemon's message.
+The user view shows no timing. Both views are fed by every event, so switching
 always shows current data. Two gaps of contract C2 show on screen: an `action` has no
 `turn_id`, so it is listed under the open turn of the same device; the lane of a live
 turn is only known when it ends (`lane —` until then). The backend does not emit
@@ -301,6 +315,29 @@ What it deliberately does not do:
   a server is answered in the browser.
 * No file attachments, no attachments upload, no conversation switching, no sign-in
   flows, and no paging back past the first history page.
+
+## Timing the typed path: `python -m jarvis.bench`
+
+```bash
+cd host
+python -m jarvis.bench --list                  # running model, its thinking levels, all models
+python -m jarvis.bench                         # 3 x "Responde solo: ok": echo, first text, total, medians
+python -m jarvis.bench -n 5 --prompt "Di hola"
+python -m jarvis.bench --thinking low          # model_set on the running model first (PERSISTS)
+python -m jarvis.bench --model openai/gpt-6-luna --thinking off
+python -m jarvis.bench --model openai/gpt-6.1-sol --thinking medium --list   # switch back, no prompt
+```
+
+It connects like the window (`--url`, `--host`, `--port`, `--token-file`; the token is
+read from the file and never printed) and sends prompts into the daemon's active
+conversation. Per run it prints the seconds from sending to the echo (`user_message`),
+to the first non-empty `message_delta` and to `message_done`, then the medians.
+**`--model` / `--thinking` send `model_set`, which the daemon saves as its default**:
+note the `model:` line first and pass it back to restore. Exit codes: 0 ok, 2 usage,
+3 cannot connect (no daemon, token missing or refused), 4 the daemon answered an error
+(printed as `code: message`, e.g. `thinking_unavailable`, `model_unavailable`,
+`no_account`, or a failed reply), 5 timed out (`--timeout`, default 120 s; the prompt
+is aborted).
 
 ## Tests
 
