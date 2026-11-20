@@ -36,16 +36,16 @@ propia solicitud desde `main`; worktree `jarvis-esp32-worktrees/pi-next`.
 - [x] T3 (S2): instalador de systemd: reintento del `daemon-reload`, límite de arranques
   (ya existe en la unidad: fijarlo con una prueba), revisión de checkout sucio, backup de
   la unidad previa. `host/systemd/`. Rama `fix/systemd-installer`. Worker. Evidencia L5.
-- [ ] T4 (S1): `/login` en la TUI. `host/jarvis/`. Commit: pendiente.
-- [ ] T5 (S5): medir el camino escrito (eco, primer texto, fin) y bajar el razonamiento o
+- [x] T4 (S1): `/login` en la TUI. `host/jarvis/`. Commits `d361a3a`, `886bf7a`, fusión `0c2c810`; solicitud #14. Evidencia L7.
+- [x] T5 (S5): medir el camino escrito (eco, primer texto, fin) y bajar el razonamiento o
   elegir un modelo más ágil vía el daemon. `host/`, `gentle_dot.py`. Commit: pendiente.
 - [ ] T6 (S6): whisper.cpp con CUDA en el sistema, `whisper-server` como servicio de
   usuario con el modelo cargado una vez, medición con un WAV en español. Inline.
 - [ ] T7 (S6): V1 — transcriptor real detrás de `Transcriber` en `/converse`, con el tiempo
   de la etapa `stt`. `backend/`. Solicitud aparte para Jaime. Commit: pendiente.
-- [ ] T8 (S7): sitio Quarto en `docs/` sobre cómo trabajamos (ODD, pistas, worktrees, CI,
+- [x] T8 (S7): sitio Quarto en `docs/` sobre cómo trabajamos (ODD, pistas, worktrees, CI,
   solicitudes). Commit: pendiente.
-- [ ] T9 (S8): `README.md` visual. Solicitud propia. Commit: pendiente.
+- [x] T9 (S8): `README.md` visual. Solicitud propia. Commit: pendiente.
 
 ## Log
 
@@ -80,3 +80,22 @@ propia solicitud desde `main`; worktree `jarvis-esp32-worktrees/pi-next`.
   shellcheck (no instalado); no probado contra el systemd real. El checkout de Gentle Dot
   tiene `.atl/` sin seguimiento (caché de agente del 2026-11-18): con la nueva revisión,
   reinstalar exige borrarlo o `--allow-dirty`.
+- L6 (evidencia T9, T8): README visual en la solicitud #10; sitio Quarto en `docs/sitio/` en la
+  #11 (`quarto render docs/sitio` sin advertencias, 4 páginas). Diagramas Mermaid sin mirar en
+  navegador.
+- L7 (evidencia T4): verificador independiente (riesgo 2, credenciales) falló dos veces: la
+  clave quedaba visible tras `Esc` y podía salir como chat; un corte dejaba el flujo trabado;
+  un flujo viejo trababa `/login`; `Ctrl+C` copiaba la clave oculta. Todo corregido con
+  pruebas; veredicto final PASS en `0c2c810`. Host 143 pasan y 5 omitidas. Pendiente menor:
+  `Esc` doble antes de que el daemon nombre el flujo, si ese flujo termina sin tramas, hace
+  que el siguiente `/login` se cancele solo (sale con `Esc` doble).
+- L8 (evidencia T5, solicitud #12): medianas con "Responde solo: ok", N=3: gpt-6.1-sol medium
+  5,07 s; sol low 3,36 s; gpt-6.1-terra low 2,88 s; gpt-6-luna off 2,57 s; eco 0,03 s; gpt-5.x
+  falla en esta cuenta ("Something went wrong while answering"). El usuario eligió "gpt-6.1-sol
+  en low (3,4 s)"; aplicado con `python -m jarvis.bench --model openai/gpt-6.1-sol --thinking
+  low` (mediana medida al aplicar 3,97 s, una corrida de 5,3 s).
+- L9 (evidencia T7, solicitud #13 abierta para Jaime): `WhisperServerTranscriber` con
+  `JARVIS_STT=whisper`, `turn_stage` de `stt` y `turn_error` con 502. Backend 53 pasan y 6
+  omitidas. En CPU, unos 15 s por clip; sin WAV con voz real en español. Dos revisiones
+  nativas aprobadas con hallazgos no bloqueantes (excepciones fuera de `WhisperServerError`
+  dejan el turno abierto; `JARVIS_STT_TIMEOUT_S` sin validar).
