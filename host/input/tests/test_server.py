@@ -486,7 +486,7 @@ class TypeTest(Base):
         res = await self.agent({"op": "type", "text": "-hola mundo", "intent": "escribir nota"})
         self.assertEqual(res, {"ok": True})
         [c] = self.calls("wtype")
-        self.assertEqual(c["argv"], ["--", "-hola mundo"])
+        self.assertEqual(c["argv"], ["-s", "250", "-d", "8", "--", "-hola mundo"])
         niri = self.calls("niri")
         self.assertEqual(len(niri), 2)  # check + re-check right before wtype
         self.assertEqual(niri[0]["argv"], ["msg", "-j", "focused-window"])
@@ -566,7 +566,7 @@ class KeyTest(Base):
         res = await self.agent({"op": "key", "keys": "ctrl+l", "intent": "barra"})
         self.assertEqual(res, {"ok": True})
         [c] = self.calls("wtype")
-        self.assertEqual(c["argv"], ["-M", "ctrl", "-k", "l", "-m", "ctrl"])
+        self.assertEqual(c["argv"], ["-s", "250", "-M", "ctrl", "-k", "l", "-m", "ctrl"])
 
     async def test_bad_keys(self) -> None:
         for req in [{"op": "key"}, {"op": "key", "keys": ""}, {"op": "key", "keys": "-P x"},

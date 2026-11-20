@@ -275,3 +275,7 @@ propia solicitud desde `main`; worktree `jarvis-esp32-worktrees/pi-next`.
   `/tmp` es un tmpfs propio (sin `jiti` ni `org.chromium*`), `/dev/shm` y `/var/tmp` vacíos, y
   el chat responde (4,55 s). Riesgo anotado: un `.git` con hooks en `~/Jarvis` se ejecutaría al
   entrar con un prompt que lea git.
+- L19 (usuario y evidencia, 2026-11-20): Jarvis abrió VS Code, enfocó, `ctrl+n` y escribió, pero
+  no apareció nada. Prueba del usuario `sleep 4; wtype hola` en VS Code: "solo pone la". Causa:
+  apps Chromium/Electron pierden las primeras teclas mientras aplican el keymap que `wtype`
+  sube en cada corrida. Arreglo en el ayudante: `wtype -s 250` antes y `-d 8` entre teclas.

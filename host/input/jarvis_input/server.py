@@ -49,6 +49,13 @@ class StartupError(Exception):
     """The helper refuses to start (unsafe or unusable runtime directory or socket)."""
 
 
+# wtype uploads a fresh keymap on every run; Chromium/Electron apps (Brave, VS Code) drop
+# the first keystrokes that arrive before they apply it ("wtype hola" typed only "la" in
+# VS Code, L19). A short sleep first and a small delay between keys avoid that.
+WTYPE_PRELUDE = ("-s", "250")
+WTYPE_KEY_DELAY_MS = "8"
+
+
 class Deny(Exception):
     """An action is refused; the message goes back to the agent as the error."""
 
@@ -652,7 +659,7 @@ class Helper:
         look = checks.lookalike_stems(text, intent)
         if look:
             raise Deny("Texto con letras que imitan palabras de riesgo (" + ", ".join(look) + "); no se escribe.")
-        return await self._input(argv=["wtype", "--", text], intent=intent,
+        return await self._input(argv=["wtype", *WTYPE_PRELUDE, "-d", WTYPE_KEY_DELAY_MS, "--", text], intent=intent,
                                  risky=checks.risky_stems(text, intent), presses_return="\n" in text,
                                  what="escriba", shown=f"Texto: {text[:300]}")
 
@@ -668,7 +675,7 @@ class Helper:
         look = checks.lookalike_stems(intent)
         if look:
             raise Deny("Intención con letras que imitan palabras de riesgo (" + ", ".join(look) + ").")
-        return await self._input(argv=["wtype", *args], intent=intent, risky=checks.risky_stems(intent),
+        return await self._input(argv=["wtype", *WTYPE_PRELUDE, *args], intent=intent, risky=checks.risky_stems(intent),
                                  presses_return=checks.presses_return(args), what=f"pulse {keys[:60]}",
                                  shown="")
 
