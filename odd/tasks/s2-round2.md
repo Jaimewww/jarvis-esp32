@@ -168,8 +168,8 @@ propia solicitud desde `main`; worktree `jarvis-esp32-worktrees/pi-next`.
 - [ ] T23 (S15): endurecer `open` (`host/input/`).
 - [ ] T24 (S15): home en solo lectura, carpeta `~/Jarvis`, bus del sistema, entorno de
   `jarvis-input`, instalación de la TUI y `jarvis-stop` (`host/systemd/`, `host/bin/`).
-- [ ] T25 (S16): tecleo con `window_id` (enfocar, teclear y devolver el foco) en el ayudante y
-  la extensión.
+- [x] T25 (S16): tecleo con `window_id` (enfocar, teclear y devolver el foco) en el ayudante y
+  la extensión. Commit `82b2b41`.
 
 ## Log
 
