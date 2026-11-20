@@ -31,7 +31,7 @@ from rich.text import Text
 from textual.widget import Widget
 
 from .client import ConnectionStatus
-from .model import STAGES, HostModel, StageState, Turn
+from .model import STAGES, HostModel, StageState, Turn, fmt_seconds
 from .theme import DEFAULT_DARK, THEMES, Theme, gradient_class, to_text
 
 Seg = tuple[str, str]
@@ -550,10 +550,16 @@ def conversation_rows(model: HostModel, g: Grid) -> list[list[Seg]]:
     for i, message in enumerate(messages):
         who = "you" if message.role == "user" else "jarvis"
         live = message.streaming
+        # A reply typed and timed here shows its total, dim, at the pane's right edge.
+        timing = None if live or who != "jarvis" else model.reply_timing(message.message_id)
+        stamp = [S(fmt_seconds(timing.total_s), "mu")] if timing and timing.total_s is not None else None
+        room = tw - (width(stamp) + 2 if stamp else 0)
+        if room < 8:
+            stamp, room = None, tw
         lines = [
             line
             for paragraph in (message.text or " ").split("\n")
-            for line in (textwrap.wrap(paragraph, tw) or [""])
+            for line in (textwrap.wrap(paragraph, room) or [""])
         ]
         for j, line in enumerate(lines):
             items: list[Item] = []
@@ -565,7 +571,7 @@ def conversation_rows(model: HostModel, g: Grid) -> list[list[Seg]]:
             if live and j == len(lines) - 1:
                 body.append(S("▍", "lv"))
             items.append((X_ID, body))
-            out.append(place(items, w, "bc"))
+            out.append(place(items, w, "bc", right=stamp if j == 0 else None))
         if who == "jarvis" and i < len(messages) - 1:
             out.append(blank(w, "bc"))
     return out

@@ -168,6 +168,12 @@ def fmt_seconds(seconds: float | None) -> str:
 class PromptTiming:
     """Monotonic stamps of one typed prompt: send, echo, first non-empty text, done.
 
+    A prompt may bring several messages (a tool-using one: an empty message with the
+    tool call, then the text), so the first text is the first across all of them and
+    the end is the agent going back to ``idle``. Until then ``done_at`` is the last
+    ``message_done`` and ``settled`` is false; a stop, an error, the next prompt or a
+    dropped link settle it where it is, so a daemon that never says idle does not hang it.
+
     The daemon's frames carry no time, so these are host-side: they include the
     local WebSocket hop, which is small next to the model's own time.
     """
@@ -178,6 +184,9 @@ class PromptTiming:
     done_at: float | None = None
     error: str | None = None
     stopped: bool = False
+    settled: bool = False
+    #: The newest assistant message of this prompt: the reply the time belongs to.
+    reply_id: str | None = None
 
     def _since(self, at: float | None) -> float | None:
         return None if at is None else at - self.sent_at
@@ -339,6 +348,8 @@ class HostModel:
         #: The typed prompt being answered now, and the last one that finished.
         self._timing: PromptTiming | None = None
         self.last_timing: PromptTiming | None = None
+        #: Timed replies by assistant message id (typed here, in this window).
+        self._reply_timings: dict[str, PromptTiming] = {}
         self.devices: dict[str, Device] = {}
         self.backend_status = ConnectionStatus.DISCONNECTED
         self.daemon_status = ConnectionStatus.DISCONNECTED
@@ -374,8 +385,10 @@ class HostModel:
     def set_daemon_status(self, status: ConnectionStatus, detail: str = "") -> None:
         self.daemon_status = status
         self.daemon_detail = "" if status is ConnectionStatus.CONNECTED else detail
-        if status is not ConnectionStatus.CONNECTED and self.login.running:
-            self.login.finish(False, LOGIN_DROPPED)
+        if status is not ConnectionStatus.CONNECTED:
+            self._settle_timing()  # the link dropped: no idle will come for it
+            if self.login.running:
+                self.login.finish(False, LOGIN_DROPPED)
 
     @property
     def agent_status(self) -> str:
@@ -661,12 +674,25 @@ class HostModel:
         self.login.prompt = None
         self.login.hint = None
 
+    def reply_timing(self, message_id: str) -> PromptTiming | None:
+        """The time of the typed prompt this assistant message ended, if it was timed here."""
+
+        return self._reply_timings.get(message_id)
+
+    def _settle_timing(self) -> None:
+        """End the open timing where it is (its last ``message_done``), if one is open."""
+
+        timing, self._timing = self._timing, None
+        if timing is not None and timing.done_at is not None:
+            timing.settled = True
+
     def _time(self, event: Event) -> None:
         if isinstance(event, Ready):
             # A new connection: prompts sent before it will not be echoed to this one.
             self._sent.clear()
-            self._timing = None
+            self._settle_timing()
         elif isinstance(event, UserMessageEvent):
+            self._settle_timing()  # the agent went on to the next prompt without idle
             # Only prompts typed here are timed; one from another window is not.
             self._timing = PromptTiming(self._sent.popleft()) if self._sent else None
             if self._timing is not None:
@@ -677,12 +703,23 @@ class HostModel:
             if event.delta and self._timing.first_text_at is None:
                 self._timing.first_text_at = self._monotonic()
         elif isinstance(event, MessageDoneEvent):
-            timing, self._timing = self._timing, None
+            timing = self._timing
             timing.done_at = self._monotonic()
             if timing.first_text_at is None and event.text:
                 timing.first_text_at = timing.done_at  # the whole text came at once
             timing.error = event.error
             timing.stopped = event.stopped
+            if timing.reply_id is not None:
+                self._reply_timings.pop(timing.reply_id, None)
+            timing.reply_id = event.message_id
+            self._reply_timings[event.message_id] = timing
+            self.last_timing = timing  # provisional until idle
+            if event.error or event.stopped:
+                self._settle_timing()
+        elif isinstance(event, AgentStateEvent) and event.state == "idle":
+            timing, self._timing = self._timing, None
+            timing.done_at = self._monotonic()
+            timing.settled = True
             self.last_timing = timing
 
     @property
