@@ -1,0 +1,174 @@
+#!/bin/bash
+# Jarvis emergency stop (S13): take PC control away and cut the running task.
+#
+#   jarvis-stop
+#
+# Bind it in niri with the absolute path (install.sh prints it expanded), never the bare name:
+#   Alt+Shift+Escape { spawn "/home/<user>/.local/bin/jarvis-stop"; }
+#
+# 1. Sends {"op":"revoke"} to the jarvis-input helper on $XDG_RUNTIME_DIR/jarvis-control/control.sock:
+#    the primary kill switch. The permission lives only in the helper's memory, so a helper that is
+#    not running has no permission to revoke.
+# 2. Sends {"type":"abort"} to the Gentle Dot daemon (ws://127.0.0.1:${GENTLE_DOT_PORT:-4317}/ws,
+#    hello with protocol 1 and the token read from ${GENTLE_DOT_DATA_DIR:-~/.gentle-dot}/token;
+#    the token is never printed).
+# 3. Backup: kills any running wtype (pkill -x wtype).
+# Always exits 0 and prints what happened. JARVIS_STOP_NOTIFY=0 skips the desktop notification.
+# S15: root-owned directories only, set before anything runs, so a python3, timeout or pkill
+# planted in a user-writable directory on the caller's PATH is never used; python is the
+# system one by absolute path.
+PATH=/usr/local/bin:/usr/bin
+export PATH
+set -uo pipefail
+readonly PY=/usr/bin/python3
+
+say() { printf 'jarvis-stop: %s\n' "$*"; }
+
+runtime="${XDG_RUNTIME_DIR:-}"
+[[ "${runtime}" == /* ]] || runtime="/run/user/$(id -u)"
+control_sock="${runtime}/jarvis-control/control.sock"
+if [[ ! -x "${PY}" ]]; then
+	revoke_msg="ERROR: sin ${PY}; no se pudo pedir revoke a jarvis-input"
+else
+	revoke_msg="$(timeout 5 "${PY}" -I - "${control_sock}" <<'PY' 2>&1
+import json, socket, sys
+
+path = sys.argv[1]
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.settimeout(3)
+try:
+    s.connect(path)
+except (FileNotFoundError, ConnectionRefusedError):
+    print(f"jarvis-input no está corriendo ({path}); sin ayudante no hay permiso activo")
+    sys.exit(0)
+except OSError as error:
+    print(f"ERROR: no se pudo conectar a jarvis-input ({type(error).__name__})")
+    sys.exit(0)
+try:
+    s.sendall(b'{"op":"revoke"}\n')
+    buf = b""
+    while b"\n" not in buf and len(buf) < 65536:
+        chunk = s.recv(4096)
+        if not chunk:
+            break
+        buf += chunk
+    reply = json.loads(buf.split(b"\n", 1)[0] or b"null")
+    if isinstance(reply, dict) and reply.get("ok") is True:
+        print("permiso de control revocado en jarvis-input")
+    else:
+        err = reply.get("error") if isinstance(reply, dict) else None
+        print(f"ERROR: jarvis-input no confirmó el revoke ({str(err or 'respuesta inesperada')[:200]})")
+except (OSError, ValueError) as error:
+    print(f"ERROR: revoke sin respuesta válida de jarvis-input ({type(error).__name__})")
+finally:
+    s.close()
+PY
+)" || revoke_msg="${revoke_msg:-ERROR: revoke falló o tardó demasiado}"
+fi
+say "${revoke_msg}"
+
+data_dir="${GENTLE_DOT_DATA_DIR:-${HOME:-}/.gentle-dot}"
+data_dir="${data_dir/#\~/${HOME:-}}"
+port="${GENTLE_DOT_PORT:-4317}"
+abort_msg="abort no enviado"
+if ! [[ "${port}" =~ ^[0-9]{1,5}$ ]]; then
+	say "aviso: GENTLE_DOT_PORT inválido (${port}); no se envió abort"
+elif [[ ! -x "${PY}" ]]; then
+	say "aviso: sin ${PY}; no se envió abort al daemon"
+else
+	# The helper gets the token path, never the token; it prints one status line.
+	abort_msg="$(timeout 6 "${PY}" -I - "${port}" "${data_dir}/token" <<'PY' 2>&1
+import base64, json, os, socket, struct, sys
+
+port, token_path = int(sys.argv[1]), sys.argv[2]
+try:
+    with open(token_path, encoding="utf-8") as f:
+        token = f.read().strip()
+except OSError:
+    print("abort no enviado: no se pudo leer el token del daemon")
+    sys.exit(0)
+
+def frame(text):
+    data = text.encode("utf-8")
+    head = bytes([0x81])
+    n = len(data)
+    if n < 126:
+        head += bytes([0x80 | n])
+    elif n < 65536:
+        head += bytes([0x80 | 126]) + struct.pack(">H", n)
+    else:
+        head += bytes([0x80 | 127]) + struct.pack(">Q", n)
+    mask = os.urandom(4)
+    return head + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(data))
+
+def read_exact(sock, n):
+    buf = b""
+    while len(buf) < n:
+        chunk = sock.recv(n - len(buf))
+        if not chunk:
+            raise ConnectionError("cerrado")
+        buf += chunk
+    return buf
+
+def read_frame(sock):
+    b1, b2 = read_exact(sock, 2)
+    n = b2 & 0x7F
+    if n == 126:
+        n = struct.unpack(">H", read_exact(sock, 2))[0]
+    elif n == 127:
+        n = struct.unpack(">Q", read_exact(sock, 8))[0]
+    if b2 & 0x80:
+        read_exact(sock, 4)
+    return b1 & 0x0F, read_exact(sock, n)
+
+try:
+    sock = socket.create_connection(("127.0.0.1", port), timeout=2)
+except OSError:
+    print(f"daemon no disponible en 127.0.0.1:{port}; abort no enviado")
+    sys.exit(0)
+try:
+    key = base64.b64encode(os.urandom(16)).decode()
+    sock.sendall((
+        f"GET /ws HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+        f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n").encode())
+    head = b""
+    while b"\r\n\r\n" not in head and len(head) < 8192:
+        chunk = sock.recv(1024)
+        if not chunk:
+            break
+        head += chunk
+    if not head.startswith(b"HTTP/1.1 101"):
+        print("el daemon rechazó la conexión WebSocket; abort no enviado")
+        sys.exit(0)
+    sock.sendall(frame(json.dumps({"type": "hello", "token": token, "protocol": 1})))
+    # The daemon closes at once (4401/4400) when it refuses the hello; anything else means it took it.
+    try:
+        opcode, payload = read_frame(sock)
+    except socket.timeout:
+        opcode, payload = 1, b""
+    if opcode == 8:
+        code = struct.unpack(">H", payload[:2])[0] if len(payload) >= 2 else 0
+        print(f"el daemon rechazó el hello (código {code}); abort no enviado")
+        sys.exit(0)
+    sock.sendall(frame(json.dumps({"type": "abort"})))
+    sock.sendall(bytes([0x88, 0x82]) + b"\0\0\0\0" + struct.pack(">H", 1000))
+    print("abort enviado al daemon")
+except (OSError, ConnectionError, ValueError) as error:
+    print(f"abort no enviado: {type(error).__name__}")
+finally:
+    sock.close()
+PY
+)" || abort_msg="${abort_msg:-abort no enviado: el ayudante falló o tardó demasiado}"
+	say "${abort_msg}"
+fi
+
+if command -v pkill >/dev/null 2>&1; then
+	if pkill -x wtype 2>/dev/null; then say "wtype detenido"; else say "no había wtype corriendo"; fi
+else
+	say "aviso: sin pkill; no se revisó wtype"
+fi
+
+if [[ "${JARVIS_STOP_NOTIFY:-1}" != 0 ]] && command -v notify-send >/dev/null 2>&1; then
+	notify-send -a Jarvis "Jarvis detenido" "${revoke_msg}; ${abort_msg}." >/dev/null 2>&1 || true
+fi
+exit 0
