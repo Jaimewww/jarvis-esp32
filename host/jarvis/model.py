@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import statistics
 import time
+from collections import deque
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -48,6 +49,8 @@ from .client import (
     HistoryEvent,
     MessageDeltaEvent,
     MessageDoneEvent,
+    ModelRef,
+    ModelsEvent,
     QueueEvent,
     Ready,
     UserMessageEvent,
@@ -155,6 +158,46 @@ class Message:
             return self.text
         suffix = f"[error: {self.error}]"
         return self.text.removesuffix(suffix).removesuffix("\n")
+
+
+def fmt_seconds(seconds: float | None) -> str:
+    return "—" if seconds is None else f"{seconds:.1f}s"
+
+
+@dataclass(slots=True)
+class PromptTiming:
+    """Monotonic stamps of one typed prompt: send, echo, first non-empty text, done.
+
+    The daemon's frames carry no time, so these are host-side: they include the
+    local WebSocket hop, which is small next to the model's own time.
+    """
+
+    sent_at: float
+    echo_at: float | None = None
+    first_text_at: float | None = None
+    done_at: float | None = None
+    error: str | None = None
+    stopped: bool = False
+
+    def _since(self, at: float | None) -> float | None:
+        return None if at is None else at - self.sent_at
+
+    @property
+    def echo_s(self) -> float | None:
+        return self._since(self.echo_at)
+
+    @property
+    def first_text_s(self) -> float | None:
+        return self._since(self.first_text_at)
+
+    @property
+    def total_s(self) -> float | None:
+        return self._since(self.done_at)
+
+    def summary(self) -> str:
+        """``first text 1.2s · total 3.4s``, as the developer view shows it."""
+
+        return f"first text {fmt_seconds(self.first_text_s)} · total {fmt_seconds(self.total_s)}"
 
 
 @dataclass(slots=True, frozen=True)
@@ -284,8 +327,18 @@ def _median(values: Iterable[float]) -> float | None:
 class HostModel:
     """State of both connections. ``apply_*`` and ``set_*`` change it; views read it."""
 
-    def __init__(self, clock: Callable[[], float] = time.time) -> None:
+    def __init__(
+        self,
+        clock: Callable[[], float] = time.time,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
         self._clock = clock
+        self._monotonic = monotonic
+        #: Send stamps of typed prompts not echoed yet, oldest first (the daemon queues).
+        self._sent: deque[float] = deque()
+        #: The typed prompt being answered now, and the last one that finished.
+        self._timing: PromptTiming | None = None
+        self.last_timing: PromptTiming | None = None
         self.devices: dict[str, Device] = {}
         self.backend_status = ConnectionStatus.DISCONNECTED
         self.daemon_status = ConnectionStatus.DISCONNECTED
@@ -293,6 +346,9 @@ class HostModel:
         self.daemon_detail = ""
         self.agent_state = "starting"
         self.agent_model: str | None = None
+        #: The running model and thinking level, from the daemon's ``models`` reply.
+        self.agent_model_ref: ModelRef | None = None
+        self.agent_thinking: str | None = None
         #: The daemon's own message while it cannot answer until the person acts (for
         #: example, connect an AI account); shown as is, cleared once a prompt runs.
         self.agent_notice: str | None = None
@@ -504,10 +560,21 @@ class HostModel:
 
     # Daemon events
 
+    def note_sent(self) -> None:
+        """A typed prompt left this host now; its echo, first text and end are timed."""
+
+        self._sent.append(self._monotonic())
+
     def apply_daemon(self, event: Event) -> None:
+        self._time(event)
         if isinstance(event, Ready):
             self.agent_state = event.agent_state
             self.agent_model = event.model
+        elif isinstance(event, ModelsEvent):
+            if event.current is not None:
+                self.agent_model_ref = event.current
+                self.agent_model = event.current.name
+                self.agent_thinking = event.current.thinking
         elif isinstance(event, AgentStateEvent):
             self.agent_state = event.state
         elif isinstance(event, ErrorEvent):
@@ -593,6 +660,30 @@ class HostModel:
 
         self.login.prompt = None
         self.login.hint = None
+
+    def _time(self, event: Event) -> None:
+        if isinstance(event, Ready):
+            # A new connection: prompts sent before it will not be echoed to this one.
+            self._sent.clear()
+            self._timing = None
+        elif isinstance(event, UserMessageEvent):
+            # Only prompts typed here are timed; one from another window is not.
+            self._timing = PromptTiming(self._sent.popleft()) if self._sent else None
+            if self._timing is not None:
+                self._timing.echo_at = self._monotonic()
+        elif self._timing is None:
+            return
+        elif isinstance(event, MessageDeltaEvent):
+            if event.delta and self._timing.first_text_at is None:
+                self._timing.first_text_at = self._monotonic()
+        elif isinstance(event, MessageDoneEvent):
+            timing, self._timing = self._timing, None
+            timing.done_at = self._monotonic()
+            if timing.first_text_at is None and event.text:
+                timing.first_text_at = timing.done_at  # the whole text came at once
+            timing.error = event.error
+            timing.stopped = event.stopped
+            self.last_timing = timing
 
     @property
     def activities(self) -> list[Activity]:

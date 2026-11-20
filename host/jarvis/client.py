@@ -45,6 +45,9 @@ DEFAULT_TOKEN_PATH: Final = Path("~/.gentle-dot/token")
 CLOSE_UNAUTHORIZED: Final = 4401
 CLOSE_BAD_PROTOCOL: Final = 4400
 
+#: Reasoning effort levels the daemon accepts in ``model_set`` (protocol ``THINKING_LEVELS``).
+THINKING_LEVELS: Final = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
+
 # The daemon gives a client a moment to say hello; the same window applies here.
 HELLO_DEADLINE_SECONDS: Final = 5.0
 BACKOFF_SECONDS: Final = (0.5, 1.0, 2.0, 5.0)
@@ -196,6 +199,8 @@ class QueueEvent:
 
 @dataclass(slots=True)
 class ErrorEvent:
+    """An ``error`` frame, code and message as the daemon words them (e.g. ``thinking_unavailable``)."""
+
     code: str
     message: str
 
@@ -287,6 +292,59 @@ class AuthDoneEvent:
     message: str | None = None
 
 
+@dataclass(slots=True)
+class ModelChoice:
+    """A model of a connected account; ``thinking_levels`` is empty when it does not think."""
+
+    provider: str
+    id: str
+    name: str
+    images: bool = False
+    thinking_levels: tuple[str, ...] = ()
+
+    @property
+    def spec(self) -> str:
+        return f"{self.provider}/{self.id}"
+
+
+@dataclass(slots=True)
+class ModelGroup:
+    provider: str
+    name: str
+    models: tuple[ModelChoice, ...] = ()
+
+
+@dataclass(slots=True)
+class ModelRef:
+    """The main assistant's model; ``thinking`` only when the model thinks."""
+
+    provider: str
+    id: str
+    name: str
+    thinking: str | None = None
+
+    @property
+    def spec(self) -> str:
+        return f"{self.provider}/{self.id}"
+
+
+@dataclass(slots=True)
+class ModelsEvent:
+    """The ``models`` reply to ``models_list`` (also broadcast after ``model_set``)."""
+
+    current: ModelRef | None = None
+    #: A switch chosen during a reply, waiting for the next message.
+    next: ModelRef | None = None
+    groups: tuple[ModelGroup, ...] = ()
+
+    def choice(self, provider: str, model_id: str) -> ModelChoice | None:
+        for group in self.groups:
+            for model in group.models:
+                if model.provider == provider and model.id == model_id:
+                    return model
+        return None
+
+
 Event = (
     Ready
     | AgentStateEvent
@@ -306,6 +364,7 @@ Event = (
     | AuthPromptEvent
     | AuthFlowEvent
     | AuthDoneEvent
+    | ModelsEvent
 )
 
 EventCallback = Callable[[Event], None]
@@ -354,6 +413,54 @@ def _strings(value: Any) -> tuple[str, ...]:
     if not isinstance(value, list):
         return ()
     return tuple(item for item in value if isinstance(item, str))
+
+
+def parse_model_spec(spec: str) -> tuple[str, str]:
+    """Split ``provider/model-id``; ``ValueError`` when either side is missing."""
+
+    provider, slash, model_id = spec.strip().partition("/")
+    if not slash or not provider or not model_id:
+        raise ValueError(f"expected provider/model-id, got {spec!r}")
+    return provider, model_id
+
+
+def _parse_model_ref(raw: Any) -> ModelRef | None:
+    if not isinstance(raw, dict):
+        return None
+    provider, model_id = _text(raw.get("provider")), _text(raw.get("id"))
+    if not provider or not model_id:
+        return None
+    thinking = raw.get("thinking")
+    return ModelRef(
+        provider=provider,
+        id=model_id,
+        name=_text(raw.get("name"), model_id),
+        thinking=thinking if thinking in THINKING_LEVELS else None,
+    )
+
+
+def _parse_models(payload: dict[str, Any]) -> ModelsEvent:
+    groups: list[ModelGroup] = []
+    for raw_group in _records(payload.get("groups")):
+        models = tuple(
+            ModelChoice(
+                provider=_text(raw.get("provider")),
+                id=_text(raw.get("id")),
+                name=_text(raw.get("name"), _text(raw.get("id"))),
+                images=raw.get("images") is True,
+                thinking_levels=tuple(
+                    level for level in _strings(raw.get("thinkingLevels")) if level in THINKING_LEVELS
+                ),
+            )
+            for raw in _records(raw_group.get("models"))
+        )
+        provider = _text(raw_group.get("provider"))
+        groups.append(ModelGroup(provider, _text(raw_group.get("name"), provider), models))
+    return ModelsEvent(
+        current=_parse_model_ref(payload.get("current")),
+        next=_parse_model_ref(payload.get("next")),
+        groups=tuple(groups),
+    )
 
 
 def _parse_activity(raw: dict[str, Any]) -> Activity:
@@ -534,6 +641,8 @@ def parse_event(payload: dict[str, Any]) -> Event | None:
             steering=_strings(payload.get("steering")),
             follow_up=_strings(payload.get("followUp")),
         )
+    if kind == "models":
+        return _parse_models(payload)
     if kind == "error":
         return ErrorEvent(_text(payload.get("code"), "error"), _text(payload.get("message")))
     if isinstance(kind, str) and kind.startswith("auth_"):
@@ -666,6 +775,27 @@ class JarvisClient:
         """Sign out of one account."""
 
         return self._queue({"type": "auth_logout", "providerId": provider_id})
+
+    def models_list(self) -> bool:
+        """Ask for the current model and the connected accounts' models (``models`` reply)."""
+
+        return self._queue({"type": "models_list"})
+
+    def model_set(self, provider: str, model_id: str, thinking: str | None = None) -> bool:
+        """Switch the main assistant's model; the daemon saves it as its default.
+
+        It applies from the next message when a reply is running. The daemon answers
+        ``models`` on success or an ``error`` (``model_unavailable``,
+        ``thinking_unavailable``, ``model_switch_failed``). ``ValueError`` for a
+        thinking level the protocol does not know.
+        """
+
+        if thinking is not None and thinking not in THINKING_LEVELS:
+            raise ValueError(f"unknown thinking level {thinking!r}; one of {', '.join(THINKING_LEVELS)}")
+        message: dict[str, Any] = {"type": "model_set", "provider": provider, "id": model_id}
+        if thinking is not None:
+            message["thinking"] = thinking
+        return self._queue(message)
 
     # Lifetime
 

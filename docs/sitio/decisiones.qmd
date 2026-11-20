@@ -1,0 +1,97 @@
+---
+title: "Decisiones"
+subtitle: "Resumen de docs/decisiones.md"
+---
+
+El registro completo, con qué se decidió, por qué y qué se descartó, está en
+[`docs/decisiones.md`](https://github.com/Jaimewww/jarvis-esp32/blob/main/docs/decisiones.md).
+Las decisiones base se tomaron el **2026-11-18**: D1–D12 fijan la arquitectura, D13–D19
+el comportamiento del software y D20–D21 el uso de Gentle Dot y el reparto del trabajo.
+
+::: {.callout-warning}
+Ninguna está validada en hardware todavía: son las reglas con las que se construye, no
+resultados medidos.
+:::
+
+## Arquitectura (D1–D12)
+
+| # | Tema | Decisión |
+|---|---|---|
+| D1 | Relación con Gentle Dot | Dependencia externa detrás de un adaptador propio |
+| D2 | Topología en la PC | El backend es la pasarela de voz y cliente del daemon |
+| D3 | Framework del firmware | ESP-IDF |
+| D4 | STT y TTS | Locales en la PC |
+| D5 | Enlace ESP32 ↔ PC | Wi-Fi, con el contrato HTTP v0 |
+| D6 | Formato de audio | PCM 16 kHz, mono, 16 bits, en WAV |
+| D7 | Fin del habla | Se detecta en el ESP32 |
+| D8 | Acciones en la PC | Catálogo sin confirmación; lo demás va al agente |
+| D9 | Estado del ESP32 en la TUI | La TUI se conecta también al backend |
+| D10 | Primer hito | Turno completo desde la PC, sin hardware |
+| D11 | Estructura del repositorio | `firmware/`, `backend/`, `host/`, `cad/`, `docs/` |
+| D12 | Plataforma de la PC | Arch Linux con niri (Wayland) |
+
+## Comportamiento del software (D13–D19)
+
+| # | Tema | Decisión |
+|---|---|---|
+| D13 | Camino rápido | Las órdenes del catálogo no pasan por el agente |
+| D14 | Carriles | Rápido, charla de voz y tarea larga, con dos motores |
+| D15 | Interrupción | Con la voz, por etapas; pulsador como respaldo |
+| D16 | Estados | Una máquina de estados por eventos, con tiempos máximos |
+| D17 | Latencia | Meta de 1,5 s en acciones y 4 s en preguntas |
+| D18 | Placa | ESP32-S3 N16R8, por duplicado |
+| D19 | Convenciones de software | Interfaces por etapa, pruebas, CI y configuración |
+
+## Gentle Dot y reparto (D20–D21)
+
+| # | Tema | Decisión |
+|---|---|---|
+| D20 | Control de la PC por el agente | Fuera de la demostración; al final, si sobra tiempo |
+| D21 | Reparto del trabajo | Dos pistas en la PC, con un responsable por carpeta |
+
+## Las que más pesan en cómo trabajamos
+
+::: {.panel-tabset}
+
+### D19 — Convenciones
+
+- Cada etapa (STT, agente, TTS, acciones) detrás de una interfaz, para comparar modelos
+  y probar con dobles.
+- Pruebas de contrato de `/converse` con etapas falsas.
+- Integración continua mínima: formato, tipos y pruebas en cada envío.
+- Configuración por variables de entorno.
+- Un solo comando para iniciar el backend y el daemon.
+
+### D21 — Reparto
+
+- Ramas y solicitudes de fusión en lugar de enviar directo a `main`.
+- Un cambio de contrato va primero al documento, en su propia solicitud.
+- Nadie espera a nadie: el simulador de dispositivo y las etapas falsas permiten avanzar
+  sin la placa y sin el agente.
+- El adaptador de tareas largas vive en `backend/` pero lo escribe la pista de agente,
+  contra la interfaz de agente del contrato C3.
+
+### D20 — Control de la PC, al final
+
+Capturas, teclado y cursor manejados por el agente quedan fuera de la demostración; se
+intentan al final, solo si el turno completo ya funciona. El mecanismo esquiva una
+protección deliberada del proyecto original y no se probó.
+
+:::
+
+## Decisiones abiertas
+
+Según `docs/decisiones.md`:
+
+- Motor de la charla de voz (D14).
+- Modelos concretos de STT y TTS (D4) y modelo del agente.
+- Lista concreta de acciones (D8).
+- Autenticación: los tokens actuales son valores de desarrollo.
+
+::: {.callout-note}
+## Un punto desactualizado
+`docs/decisiones.md` todavía lista como abierto *"Pruebas e integración continua: no hay
+ninguna todavía"*, pero la CI existe desde la solicitud #3 (`f2247e5`) y hay pruebas en
+`backend/tests/` y `host/tests/`. Corregirlo toca un documento compartido, así que va en
+su propia solicitud.
+:::
