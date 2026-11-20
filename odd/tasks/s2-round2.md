@@ -27,6 +27,14 @@ propia solicitud desde `main`; worktree `jarvis-esp32-worktrees/pi-next`.
   (HTML)".
 - S8 (L1): "actualices el readme que quede super visual". `README.md` es compartido: va en
   su propia solicitud.
+- S9 (L10): "en la tui de dev no veo cuanto tarda en responder cada rquest"; aceptado:
+  "si dale hazlo" para (1) medir hasta que el agente vuelve a idle y no hasta el primer
+  `message_done` (un pedido con herramienta trae un mensaje vacío y después el texto),
+  (2) mostrar el tiempo de cada respuesta al lado de cada `jarvis` en la conversación,
+  (3) una prueba con el caso de herramienta.
+- S10 (L11): "quiero que jarvis controle entera la pc, creo que es una fnciuonadlidad extra
+  que nos toca, verdaD?"; "dale entonces diagnostica, actualiza decesiones para que es parte
+  sea mia y vamos probando por secciones".
 
 ## Tasks
 
@@ -46,6 +54,17 @@ propia solicitud desde `main`; worktree `jarvis-esp32-worktrees/pi-next`.
 - [x] T8 (S7): sitio Quarto en `docs/` sobre cómo trabajamos (ODD, pistas, worktrees, CI,
   solicitudes). Commit: pendiente.
 - [x] T9 (S8): `README.md` visual. Solicitud propia. Commit: pendiente.
+- [ ] T10 (S9): tiempos por respuesta en la vista desarrollador. `host/`. Rama
+  `fix/typed-reply-timing`. Commit `f013a55`, solicitud #16.
+- [x] T11 (S10): diagnóstico de "abre spotify"/"abre brave". Evidencia L11.
+- [ ] T12 (S10): `docs/decisiones.md` D20/D21: el control de la PC pasa a S2, por etapas.
+  Rama `docs/pc-control-s2`, solicitud propia (archivo compartido).
+- [ ] T13 (S10, etapa a): el servicio del daemon arranca dentro de la sesión gráfica
+  (`graphical-session.target`) para heredar `WAYLAND_DISPLAY`; prueba abriendo una app.
+  `host/systemd/`.
+- [ ] T14 (S10, etapa b): resguardos (permiso con vencimiento, parada, lista de bloqueo,
+  confirmaciones) y luego teclado y capturas con `wtype` y `grim`.
+- [ ] T15 (S10, etapa c): cursor.
 
 ## Log
 
@@ -99,3 +118,17 @@ propia solicitud desde `main`; worktree `jarvis-esp32-worktrees/pi-next`.
   omitidas. En CPU, unos 15 s por clip; sin WAV con voz real en español. Dos revisiones
   nativas aprobadas con hallazgos no bloqueantes (excepciones fuera de `WhisperServerError`
   dejan el turno abierto; `JARVIS_STT_TIMEOUT_S` sin validar).
+
+- L10 (usuario, 2026-11-20, con captura): "en la tui de dev no veo cuanto tarda en responder
+  cada rquest o depende de abckend y por eso no sale?"; luego "si dale hazlo". Evidencia:
+  la fila `reply` mostraba `first text — · total 4.6s` tras "abre spotify": `_time`
+  (`host/jarvis/model.py:664-686`) cierra la medición en el primer `message_done`, que fue un
+  mensaje vacío de herramienta; el texto "No pude abrir Spotify…" llegó en un segundo mensaje
+  sin medir.
+- L11 (evidencia T11, 2026-11-20): el daemon sí ejecuta órdenes (`xdg-open
+  'https://open.spotify.com'`, `brave`), pero el proceso del servicio no tenía
+  `WAYLAND_DISPLAY` ni `DISPLAY` (arrancó 05:41, antes de la sesión gráfica); Brave:
+  `Missing X server or $DISPLAY`. Tras `systemctl --user restart gentle-dot` el proceso tiene
+  ambas variables y "Abrí el navegador Brave" abrió una ventana nueva (Brave ya corría).
+  El registro también explica gpt-5.x: "The 'gpt-5.4-mini' model is not supported when using
+  Codex with a ChatGPT account." `wtype` no está instalado; `grim` y `gtk-launch` sí.

@@ -31,7 +31,7 @@ Los contratos que derivan de estas decisiones están en [contratos](contratos.md
 | D17 | Latencia | Meta de 1,5 s en acciones y 4 s en preguntas |
 | D18 | Placa | ESP32-S3 N16R8, por duplicado |
 | D19 | Convenciones de software | Interfaces por etapa, pruebas, CI y configuración |
-| D20 | Control de la PC por el agente | Fuera de la demostración; al final, si sobra tiempo |
+| D20 | Control de la PC por el agente | Pista S2, por etapas y con resguardos propios antes de cada etapa |
 | D21 | Reparto del trabajo | Dos pistas en la PC, con un responsable por carpeta |
 
 ## D1 — Gentle Dot es una dependencia externa
@@ -313,10 +313,29 @@ unidades duplicadas.
   arranque en lugar de valores por defecto.
 - **Un solo comando** para iniciar el backend y el daemon.
 
-## D20 — Control de la PC por el agente: al final
+## D20 — Control de la PC por el agente: pista S2, por etapas
 
-Capturas de pantalla, teclado y cursor manejados por el agente quedan fuera de la
-demostración. Se intentan al final, solo si el turno completo ya funciona.
+El control completo de la PC por el agente (abrir aplicaciones, teclado, capturas de
+pantalla y cursor) es responsabilidad de la pista S2 (D21). Se hace por etapas, de
+menor a mayor riesgo, y cada etapa se prueba antes de pasar a la siguiente:
+
+| Etapa | Qué | Base |
+|---|---|---|
+| a | Abrir aplicaciones y órdenes del sistema desde el agente | El servicio del daemon con acceso a la sesión gráfica (`WAYLAND_DISPLAY`) |
+| b | Teclado y capturas de pantalla | `wtype` y `grim`, como la rama `feat/linux-computer-use` del fork |
+| c | Cursor | Dispositivo virtual de Wayland con permisos propios |
+
+Los resguardos van antes que el control: permiso con vencimiento, parada de
+emergencia, lista de bloqueo y confirmación ante acciones irreversibles. Las etapas b y
+c no se habilitan sin ellos.
+
+**Diagnóstico de la etapa a (2026-11-20):** el agente ya ejecuta órdenes del sistema,
+pero el servicio arrancó con el sistema, antes de que la sesión gráfica exportara
+`WAYLAND_DISPLAY` y `DISPLAY`, y Brave falló con `Missing X server or $DISPLAY`.
+Reiniciado el servicio dentro de la sesión, `brave` abrió una ventana nueva.
+
+**Cambio:** la primera versión dejaba este control fuera de la demostración y para el
+final. Se adelantó a pedido de la pista S2, que lo toma como funcionalidad propia.
 
 **Cómo se haría:** un programa propio arranca el daemon y ocupa el lugar de la
 aplicación de escritorio para registrarle un control de la PC para Linux. El daemon
@@ -331,8 +350,9 @@ rechaza a propósito. Es un añadido sobre el servicio de D1, no un reemplazo.
   bloqueo y las confirmaciones habría que escribirlos.
 - Mover el cursor en Wayland requiere un dispositivo virtual con permisos propios.
 
-**Por qué al final:** el catálogo y el camino rápido no lo necesitan, y es la parte
-de mayor costo y menor aporte a un asistente de voz.
+**Frontera con el catálogo (D8, D13):** las órdenes de bajo riesgo sin confirmación
+(abrir una aplicación conocida, volumen, multimedia) siguen siendo el catálogo y el
+camino rápido de la pista de voz; el control del agente cubre lo que el catálogo no.
 
 ## D21 — Reparto del trabajo
 
@@ -343,7 +363,7 @@ carpeta tiene un responsable, y las fronteras son los
 | Pista | Rol | Incluye | Carpeta |
 |---|---|---|---|
 | Voz | S1 | STT, TTS, motor de la charla, camino rápido y catálogo, registro de turnos | `backend/` |
-| Agente y pantalla | S2 | TUI y su conexión al backend, servicio del daemon, adaptador de tareas largas | `host/` |
+| Agente y pantalla | S2 | TUI y su conexión al backend, servicio del daemon, adaptador de tareas largas, control de la PC por el agente (D20) | `host/` |
 | Dispositivo | Por asignar cuando llegue la placa | Activación, captura, reproducción, luces, máquina de estados | `firmware/` |
 
 - **Ramas y solicitudes de fusión** en lugar de enviar directo a `main`.
@@ -360,4 +380,5 @@ contra la interfaz de agente del contrato C3.
 - **Modelos concretos** de STT y TTS (D4) y modelo del agente.
 - **Lista concreta de acciones** (D8).
 - **Autenticación:** los tokens actuales son valores de desarrollo.
-- **Pruebas e integración continua:** no hay ninguna todavía.
+- **Resguardos del control de la PC** (D20): forma concreta del permiso, la parada de
+  emergencia, la lista de bloqueo y las confirmaciones.
