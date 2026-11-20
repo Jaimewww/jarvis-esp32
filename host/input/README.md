@@ -209,3 +209,62 @@ The tests run the helper in-process on a temp `XDG_RUNTIME_DIR` with fake `wtype
 `niri` and `xdg-mime` scripts first on `PATH` that record their argv; `open` tests use a fake
 `$HOME` and a fake fixed `PATH` with fake apps. `test_launch.py` checks the `open` rules on temp
 dirs without running anything. No real Wayland tool or app runs. `test_main.py` starts `python3 -m jarvis_input` with `PATH=/nonexistent`.
+`test_e2e.py` covers the pure parts of the desktop E2E runner below (it starts nothing).
+
+## Desktop E2E (real wtype, browser and VS Code + Vim)
+
+Automates the manual checks of `odd/tasks/s2-round2.md` L19-L27 (`odd/tasks/desktop-e2e.md`):
+
+```sh
+host/e2e/run.sh                 # = cd host/input && python3 -m jarvis_e2e
+host/e2e/run.sh --no-vscode     # browser cases only (~6 s)
+host/e2e/run.sh --keep -v       # keep the temp dir (client logs) and print tracebacks
+```
+
+How it works (`jarvis_e2e/`):
+
+* `desktop.py` starts a **nested niri** (`niri -c <temp config>`: no autostart, no Xwayland, US
+  layout) with its own `XDG_RUNTIME_DIR` under a temp dir, so it has its own Wayland and IPC
+  sockets. niri 26.04 has no headless backend: the nested niri is one window on your desktop
+  (it may take the focus while the run lasts, ~20 s). Clients get the nested
+  `WAYLAND_DISPLAY`/`NIRI_SOCKET` and no `DISPLAY`; they can never receive input from your
+  session and your windows never receive input from them.
+* Clients: Brave (or Chromium/Chrome) with a temp `--user-data-dir` showing two local pages
+  (a textarea with a keydown logger, and an "other" window that plays the user's window), and
+  VS Code (`/usr/share/code/code`) with a temp `--user-data-dir` and `--extensions-dir` holding a
+  copy of `~/.vscode/extensions/vscodevim.vim-*`, editing a temp `doc.txt`.
+* `run.py` runs the **real helper** (`jarvis_input.server.Helper`) in-process on the nested
+  runtime dir, grants it through `control.sock`, and sends `focus`/`type`/`key` requests with
+  `window_id` through `agent.sock`, like the agent. So the wtype argv (`register_chars`,
+  `WTYPE_PRELUDE`, `WTYPE_KEY_PRELUDE`, `parse_keys`, the Escape pause), the focus switch, the
+  400 ms settle and the focus restore are the production code, run with the real `wtype` and
+  `niri msg`. Before the helper starts, the runner refuses to go on unless `WAYLAND_DISPLAY`,
+  `NIRI_SOCKET` and `XDG_RUNTIME_DIR` all point inside the temp dir and `DISPLAY` is unset.
+* Results are read back over the Chrome DevTools Protocol (`--remote-debugging-port=0`, a
+  stdlib WebSocket client in `cdp.py`): the textarea value and keydown log; in VS Code the
+  rendered editor lines (`.view-line`, by position), the Vim mode from the status bar
+  (`-- NORMAL --`/`-- INSERT --`) and, on failure, a capture-phase keydown log (key/code).
+
+Cases (each starts with the "other" window focused through the helper's `focus`, and checks that
+focus is back on it afterwards):
+
+| Case | Checks |
+| --- | --- |
+| browser: type `hola mundo` | complete right after the window gets focus (L19-L22) |
+| browser: type the L27 sentence + `’ — …` | complete text, legacy keysyms included |
+| browser: key `Escape g g d shift+g` | keydowns `Escape g g d G`, Escape with `code` `Escape` (L24-L25); textarea `ggdG` |
+| vscode+vim: key `i`, type `hola mundo` | INSERT mode, buffer exactly `hola mundo` |
+| vscode+vim: key `Escape g g d shift+g` | buffer empty, NORMAL mode (L23-L25) |
+| vscode+vim: key `i`, type the sentence | buffer exactly the sentence (L27) |
+| vscode+vim: key `Escape g g d shift+g` again | buffer empty, NORMAL mode |
+
+Output: `PASS|FAIL|SKIP: <case> (<s>) — <detail>` per case, then
+`summary: N passed, N failed, N skipped in Ns`. Exit **0** all ran cases passed, **1** a case
+failed (or the desktop could not start: `FAIL: setup`, with the tails of the client logs), **77**
+skipped (automake's SKIP code): no `WAYLAND_DISPLAY`, no `niri`/`wtype` on `PATH`, or no
+Chromium-based browser; the reason is printed as `SKIP: requirements — …`. Missing VS Code or
+vscodevim only skips the VS Code cases. Teardown (also on failure, Ctrl-C, SIGTERM or SIGHUP):
+clients and the nested niri are killed by process group, the helper's sockets closed, and the
+temp dir removed (unless `--keep`). Requirements: niri (as the running session), wtype, Brave or
+Chromium, optionally VS Code at `/usr/share/code/code` with vscodevim; Python 3.11+, stdlib only.
+Not for CI without a Wayland session (it skips there).
