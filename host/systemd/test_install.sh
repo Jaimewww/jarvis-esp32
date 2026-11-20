@@ -54,7 +54,7 @@ check() { if eval "$2"; then ok "$1"; else ko "$1" "${OUT:-}"; fi; }
 # sandboxed ARGS...: run install.sh with the sandbox environment; sets OUT and RC.
 sandboxed() {
 	set +e
-	OUT="$(env -i PATH="${STUBS}:/usr/bin:/bin" HOME="${FAKE_HOME}" XDG_CONFIG_HOME="${FAKE_CONFIG}" \
+	OUT="$(env -i PATH="${STUBS}:/usr/bin:/bin" HOME="${FAKE_HOME}" XDG_CONFIG_HOME="${CFG:-${FAKE_CONFIG}}" \
 		bash "${INSTALL}" "$@" 2>&1)"
 	RC=$?
 	set -e
@@ -116,6 +116,53 @@ check "--enable on a stale unit reloads, try-restarts, enables" \
 unit_section="$(awk '/^\[/{s=$0; next} s=="[Unit]"' "${UNIT}")"
 check "unit pins StartLimitIntervalSec=10min in [Unit]" 'grep -qxF "StartLimitIntervalSec=10min" <<<"${unit_section}"'
 check "unit pins StartLimitBurst=10 in [Unit]" 'grep -qxF "StartLimitBurst=10" <<<"${unit_section}"'
+
+# 5g. Graphical session: the unit starts with the session, after the compositor has put
+# WAYLAND_DISPLAY/DISPLAY into the user manager, and stops with it (not default.target).
+check "unit orders After=graphical-session.target in [Unit]" 'grep -qxF "After=graphical-session.target" <<<"${unit_section}"'
+check "unit is PartOf=graphical-session.target in [Unit]" 'grep -qxF "PartOf=graphical-session.target" <<<"${unit_section}"'
+install_section="$(awk '/^\[/{s=$0; next} s=="[Install]"' "${UNIT}")"
+check "unit is WantedBy=graphical-session.target only" \
+	'[[ "$(grep -E "^WantedBy=" <<<"${install_section}")" == "WantedBy=graphical-session.target" ]]'
+
+# Upgrade from a unit enabled under default.target: reenable drops the stale
+# default.target.wants link (the stub cannot remove it, so it stays for the next cases).
+readonly CFG_UP="${SANDBOX}/config-upgrade"
+readonly UNIT_UP="${CFG_UP}/systemd/user/gentle-dot.service"
+mkdir -p "${CFG_UP}/systemd/user/default.target.wants"
+sed -e '/graphical-session.target/d' -e '/^\[Install\]/a WantedBy=default.target' "${UNIT}" >"${UNIT_UP}"
+ln -s ../gentle-dot.service "${CFG_UP}/systemd/user/default.target.wants/gentle-dot.service"
+reenable_msg="La unidad seguía habilitada en default.target; se vuelve a habilitar en graphical-session.target."
+reset_calls
+CFG="${CFG_UP}" sandboxed "${BASE[@]}" --enable
+check "upgrade from default.target rewrites the unit" '[[ ${RC} -eq 0 && "$(sha256sum <"${UNIT_UP}")" == "$(sha256sum <"${UNIT}")" ]]'
+check "upgrade from default.target reloads, try-restarts, reenables, starts" \
+	'[[ "$(calls)" == $'"'"'--user daemon-reload\n--user try-restart gentle-dot.service\n--user reenable gentle-dot.service\n--user start gentle-dot.service'"'"' ]] && grep -qxF "${reenable_msg}" <<<"${OUT}"'
+reset_calls
+CFG="${CFG_UP}" sandboxed "${BASE[@]}" --enable
+check "--enable on an unchanged unit with a stale link only reenables and starts" \
+	'[[ ${RC} -eq 0 && "$(calls)" == $'"'"'--user reenable gentle-dot.service\n--user start gentle-dot.service'"'"' ]]'
+reset_calls
+CFG="${CFG_UP}" sandboxed "${BASE[@]}"
+check "install without --enable warns about a stale default.target link, calls nothing" \
+	'[[ ${RC} -eq 0 && ! -s "${CALLS}" ]] && grep -qxF "aviso: la unidad sigue habilitada en default.target; para pasarla a graphical-session.target: systemctl --user reenable gentle-dot.service (o este script con --enable)." <<<"${OUT}"'
+check "default install does not suggest linger" '! grep -q "enable-linger" <<<"${OUT}"'
+
+# --headless: for a PC without a graphical session, back to default.target.
+reset_calls
+sandboxed "${BASE[@]}" --headless --dry-run
+check "--headless renders WantedBy=default.target and no session binding" \
+	'[[ ${RC} -eq 0 ]] && grep -qxF "    | WantedBy=default.target" <<<"${OUT}" && ! grep -q "graphical-session.target" <<<"${OUT}" && [[ ! -s "${CALLS}" ]]'
+check "--headless suggests linger" 'grep -q "enable-linger" <<<"${OUT}"'
+readonly CFG_HL="${SANDBOX}/config-headless"
+readonly UNIT_HL="${CFG_HL}/systemd/user/gentle-dot.service"
+mkdir -p "${CFG_HL}/systemd/user/graphical-session.target.wants"
+ln -s ../gentle-dot.service "${CFG_HL}/systemd/user/graphical-session.target.wants/gentle-dot.service"
+reset_calls
+CFG="${CFG_HL}" sandboxed "${BASE[@]}" --headless --enable
+check "--headless --enable over a graphical-session link reenables and starts" \
+	'[[ ${RC} -eq 0 && "$(calls)" == $'"'"'--user daemon-reload\n--user try-restart gentle-dot.service\n--user reenable gentle-dot.service\n--user start gentle-dot.service'"'"' ]]'
+check "--headless unit has WantedBy=default.target" 'grep -qxF "WantedBy=default.target" "${UNIT_HL}" && ! grep -q "graphical-session.target" "${UNIT_HL}"'
 
 readonly BAK="${UNIT}.bak"
 readonly PENDING="${UNIT}.reload-pending"
@@ -200,6 +247,7 @@ fi
 
 sandboxed --help
 check "help documents --allow-dirty" '[[ ${RC} -eq 0 ]] && grep -qE "^  --allow-dirty +" <<<"${OUT}"'
+check "help documents --headless" 'grep -qE "^  --headless +" <<<"${OUT}"'
 
 # 6. Dry-run uninstall: prints, removes nothing, calls nothing.
 reset_calls
@@ -288,6 +336,12 @@ if command -v systemd-analyze >/dev/null 2>&1; then
 	set -e
 	OUT="${VERIFY}"
 	check "systemd-analyze --user verify accepts the unit" '[[ ${VRC} -eq 0 && -z "${VERIFY}" ]]'
+	set +e
+	VERIFY="$(env HOME="${FAKE_HOME}" XDG_CONFIG_HOME="${CFG_HL}" systemd-analyze --user verify "${UNIT_HL}" 2>&1)"
+	VRC=$?
+	set -e
+	OUT="${VERIFY}"
+	check "systemd-analyze --user verify accepts the --headless unit" '[[ ${VRC} -eq 0 && -z "${VERIFY}" ]]'
 else
 	printf 'skip systemd-analyze not installed\n'
 fi
