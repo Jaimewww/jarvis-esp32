@@ -23,9 +23,25 @@ focus and screenshots are checked by a script instead of the user. Branch `feat/
 
 ## Tasks
 
-- [ ] T1 (S1-S3): explore options, build the runner and cases, document. Route: worker. Commit: —
+- [x] T1 (S1-S3): explore options, build the runner and cases, document. Route: worker. Commit: f021ec8
+  (runner `host/e2e/run.sh` = `python3 -m jarvis_e2e`; on top of cherry-picked ad4cf60 as 4e315c8).
+  Open: the VS Code `hola mundo` case FAILS against the current helper (L2).
 
 ## Log
 
 - L1 (usuario, 2026-11-20): "tengo que salir dejare de probar, entrega todo y crea un mecanimos
   para que este tipo de pruebas se haga en automatico"
+- L2 (worker, 2026-11-20): nested niri (no headless backend in niri 26.04; no sudo, so no
+  sway/cage), real helper in-process, real wtype, Brave + VS Code 1.147 with vscodevim 1.32.4,
+  read back over CDP; ~17 s per run, teardown verified (no leftover processes). Five runs on
+  f021ec8: browser `hola mundo`, browser L27 sentence + `’ — …`, browser `Escape g g d shift+g`
+  (keydowns Escape/code Escape, g, g, d, G), both VS Code clears and the VS Code sentence PASS
+  every time; **VS Code `i` + `hola mundo` FAILS every time** (`holamundo   `, `hola    mundo`,
+  `h   olamundo`). Keydown log: `a/Backspace  /Tab`: the text keys land on the keycodes of
+  Backspace and Tab, and VS Code dispatches shortcuts by `code`, so the space acts as Tab. Cause:
+  wtype matches `-p` (keysym) entries and text (character) entries separately, so
+  `register_chars` does not pre-build the text keymap; it adds N+1 extra entries and shifts every
+  text key to keycode N+2…, here onto Backspace (14) and Tab (15). Before ad4cf60 the browser
+  sentence also failed 4/4 (`Hola mundo este…`, comma on another special keycode). Not fixed
+  here (not trivial): typing must keep text keysyms off keycodes VS Code binds (Escape, BackSpace,
+  Tab, Return, modifiers, arrows…).
