@@ -25,6 +25,7 @@ import argparse
 import asyncio
 import contextlib
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -47,12 +48,16 @@ from .client import (
     DEFAULT_HOST,
     DEFAULT_PORT,
     DEFAULT_TOKEN_PATH,
+    THINKING_LEVELS,
     AskEvent,
     ConnectionStatus,
     ErrorEvent,
     Event,
     JarvisClient,
+    ModelsEvent,
+    Ready,
     ToastEvent,
+    parse_model_spec,
 )
 from .devview import DeveloperView, footer_row
 from .model import HostModel
@@ -62,6 +67,10 @@ from .userview import UserView
 logger = logging.getLogger(__name__)
 
 TOAST_SEVERITY = {"info": "information", "warning": "warning", "error": "error"}
+
+#: Environment defaults of ``--model`` (``provider/model-id``) and ``--thinking``.
+MODEL_ENV = "JARVIS_TYPED_MODEL"
+THINKING_ENV = "JARVIS_TYPED_THINKING"
 
 #: Theme tokens exposed to the stylesheet as ``$jarvis-<token>``.
 TOKEN_FIELDS = (
@@ -186,8 +195,17 @@ class JarvisApp(App[None]):
         backend_token: str | None = None,
         theme_name: str = DEFAULT_DARK,
         animate: bool = True,
+        typed_model: str | None = None,
+        typed_thinking: str | None = None,
     ) -> None:
         super().__init__()
+        #: The model and thinking level wanted for typed prompts, applied on connect
+        #: only when the daemon runs something else; ``None``: leave the daemon's choice.
+        self._wanted_model = parse_model_spec(typed_model) if typed_model else None
+        if typed_thinking is not None and typed_thinking not in THINKING_LEVELS:
+            raise ValueError(f"unknown thinking level {typed_thinking!r}")
+        self._wanted_thinking = typed_thinking
+        self._wanted_checked = False
         # What both views show; every event goes through it.
         self._host = HostModel()
         #: Animation of the user view (spinner, pulse, voice meter); off for stable tests.
@@ -309,6 +327,10 @@ class JarvisApp(App[None]):
             return
         self._host.set_daemon_status(status, detail)
         self._refresh_views()
+        if status is ConnectionStatus.CONNECTED:
+            # Read-only: the developer view shows the model's thinking level, and the
+            # reply tells whether a wanted model must be applied.
+            self._client.models_list()
 
     def _on_backend_status(self, status: ConnectionStatus, detail: str) -> None:
         if self._closing:
@@ -325,6 +347,10 @@ class JarvisApp(App[None]):
     def _on_event(self, event: Event) -> None:
         self._host.apply_daemon(event)
         self._refresh_views()
+        if isinstance(event, Ready):
+            self._wanted_checked = False  # a new connection checks the wanted model again
+        elif isinstance(event, ModelsEvent):
+            self._apply_wanted_model(event)
         # What the views do not hold is said once, in a notification.
         if isinstance(event, AskEvent):
             # The desktop app owns this dialog; the window only says it is waiting.
@@ -336,6 +362,23 @@ class JarvisApp(App[None]):
             self.notify(event.message, severity=TOAST_SEVERITY.get(event.level, "information"))  # type: ignore[arg-type]
         elif isinstance(event, ErrorEvent):
             self.notify(event.message, severity="error")
+
+    def _apply_wanted_model(self, event: ModelsEvent) -> None:
+        """Once per connection: ``model_set`` only when the running model differs."""
+
+        if self._wanted_checked or (self._wanted_model is None and self._wanted_thinking is None):
+            return
+        current = event.current
+        if current is None:
+            return
+        self._wanted_checked = True
+        provider, model_id = self._wanted_model or (current.provider, current.id)
+        thinking = self._wanted_thinking
+        same_model = (provider, model_id) == (current.provider, current.id)
+        if same_model and (thinking is None or thinking == current.thinking):
+            return
+        logger.info("switching typed model to %s/%s thinking %s", provider, model_id, thinking)
+        self._client.model_set(provider, model_id, thinking)
 
     # Actions
 
@@ -350,6 +393,8 @@ class JarvisApp(App[None]):
         event.input.value = ""
         if not self._client.send(text):
             self.notify("Gentle Dot is not connected: the message was not sent.", severity="error")
+            return
+        self._host.note_sent()
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -392,12 +437,41 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--model",
+        default=os.environ.get(MODEL_ENV) or None,
+        metavar="PROVIDER/ID",
+        help=(
+            f"model wanted for typed prompts, e.g. openai/gpt-5.4-mini (default: {MODEL_ENV}, "
+            "else the daemon's own). Sent as model_set on connect only when the daemon "
+            "runs another one; the daemon saves it as its default"
+        ),
+    )
+    parser.add_argument(
+        "--thinking",
+        default=os.environ.get(THINKING_ENV) or None,
+        metavar="LEVEL",
+        help=(
+            f"thinking level wanted for typed prompts: {', '.join(THINKING_LEVELS)} "
+            f"(default: {THINKING_ENV}, else the daemon's own); same rule as --model"
+        ),
+    )
+    parser.add_argument(
         "--log-level",
         default="critical",
         choices=["critical", "error", "warning", "info", "debug"],
         help="log to stderr (default: %(default)s)",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.model is not None:
+        try:
+            parse_model_spec(args.model)
+        except ValueError as error:
+            parser.error(f"--model / {MODEL_ENV}: {error}")
+    if args.thinking is not None and args.thinking not in THINKING_LEVELS:
+        parser.error(
+            f"--thinking / {THINKING_ENV}: {args.thinking!r} is not one of {', '.join(THINKING_LEVELS)}"
+        )
+    return args
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -415,6 +489,8 @@ def main(argv: list[str] | None = None) -> int:
         backend_url=args.backend_url,
         backend_token=args.backend_token,
         theme_name=args.theme,
+        typed_model=args.model,
+        typed_thinking=args.thinking,
     ).run()
     return 0
 

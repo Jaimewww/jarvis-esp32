@@ -588,15 +588,20 @@ def rail_rows(model: HostModel, g: Grid, n: int) -> list[list[Seg]]:
     glyph, cls = state_glyph(agent)
     state = agent.replace("_", " ").upper() or "UNKNOWN"
     queue = [S(f"{model.queue_total} queued", "t1")] if model.queue_total else [S("empty", "mu")]
+    room = max(1, g.right + 1 - xv)
+    name = model.agent_model
+    if name and model.agent_thinking:
+        name = f"{name} · {model.agent_thinking}"
+    timing = model.last_timing  # the last typed reply, timed on this host
     body = [
         kv("state", [S(glyph[0] + " ", glyph[1]), S(state, cls)]),
-        kv("model", [S(model.agent_model, "t1")] if model.agent_model else [S("—", "mu")]),
+        kv("model", [S(clip(name, room), "t1")] if name else [S("—", "mu")]),
+        kv("reply", [S(clip(timing.summary(), room), "t1")] if timing else [S("—", "mu")]),
         kv("chat", [S(model.chat_title, "t1")] if model.chat_title else [S("—", "mu")]),
         kv("queue", queue),
     ]
     if model.agent_notice:
         # The daemon's own message (e.g. no AI account), whole, wrapped to the card.
-        room = max(1, g.right + 1 - xv)
         for i, line in enumerate(textwrap.wrap(model.agent_notice, room) or [""]):
             body.append(kv("needs" if i == 0 else "", [S(line, "er")]))
     body.append(inside([]))
