@@ -71,6 +71,46 @@ jobs:
       - name: Test the Gentle Dot unit and its install script
         run: bash host/systemd/test_install.sh
 
+  host-input:
+    name: host · jarvis-input unittest
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      # Stdlib only. The helper runs in-process on a temporary XDG_RUNTIME_DIR with fake
+      # wtype/grim/niri on PATH; nothing touches a display. Without libxkbcommon the keysym
+      # test skips itself.
+      - name: Test the jarvis-input helper
+        run: python3 -m unittest discover -s host/input/tests
+
+  gentle-dot-extension:
+    name: host · gentle-dot extension (node --test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      # Node 24 strips TypeScript types natively; the tests import only node: built-ins and
+      # pc-control-core.ts, so there is nothing to npm install.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+      - name: Test the pc-control extension
+        run: node --test host/gentle-dot/tests/*.test.ts
+
+  jarvis-stop:
+    name: host · jarvis-stop
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      # Temporary sandbox with stub pkill/notify-send, a fake control socket and a fake daemon;
+      # jarvis-stop itself runs /usr/bin/python3 (system Python on the runner).
+      - name: Test the emergency stop script
+        run: bash host/bin/test_jarvis_stop.sh
+
   typecheck:
     name: pyright
     runs-on: ubuntu-latest
