@@ -6,8 +6,11 @@
 
 The window shows the conversation, the agent's state and what the agent did on the
 computer, all from the Gentle Dot daemon. It sends what the user types and can stop a
-run; it never answers an ``ask`` approval, because those belong to the desktop app
-that owns the private channel to the daemon (S4).
+run. Confirmations come from the ``jarvis-input`` helper (``confirm`` events, S13) and
+from the daemon's ``ask`` method ``confirm`` (other extensions): one card above the
+input, ``y`` allows, ``n`` or Esc denies, nothing else answers, and no answer by the
+asker's timeout (or a lost connection) is a denial. The daemon's other methods are
+pointed to Gentle Dot.
 
 A second, read-only connection to the Jarvis backend (contract C2) adds the state of
 the ESP32 and the progress of each voice turn. The two connections are independent:
@@ -26,6 +29,15 @@ straight to the daemon and are never logged, stored or drawn.
 f4 is push-to-talk (``jarvis.voice``): press it to record the microphone, press it again
 to transcribe with the local whisper-server and send the text like a typed prompt,
 shown as said. Esc drops the recording. It never records while ``/login`` is open.
+
+PC control (S13, ``jarvis.control``): the ``jarvis-input`` helper holds the permission;
+this window asks it over ``$XDG_RUNTIME_DIR/jarvis-control/control.sock``. ``/control on``
+(or f5) grants 30 minutes, ``/control off`` (or f5 again) revokes, ``/control status`` says
+the time left. None of it goes to the agent. While it is on, both views show
+``◉ control on · 29:12 left · /control off``, counted down from the helper's
+``expires_at``; the helper's ``state`` events are the truth (the stop key, a restart). A
+helper that cannot be reached shows ``◌ control unavailable``. The window revokes when it
+closes, so control never outlives the window that granted it.
 """
 
 from __future__ import annotations
@@ -38,7 +50,9 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 
 from rich.text import Text
@@ -62,7 +76,9 @@ from .client import (
     DEFAULT_PORT,
     DEFAULT_TOKEN_PATH,
     THINKING_LEVELS,
+    Ask,
     AskEvent,
+    AskResolvedEvent,
     AuthDoneEvent,
     AuthFlowEvent,
     AuthPromptEvent,
@@ -77,6 +93,23 @@ from .client import (
     ToastEvent,
     parse_model_spec,
 )
+from .control import (
+    BACKOFF,
+    CONFIRM_TIMEOUT_S,
+    OFF,
+    USAGE,
+    ConfirmRequest,
+    ControlError,
+    ControlLink,
+    ControlState,
+    ControlUnavailable,
+    parse_control,
+    remaining_label,
+)
+from .control import grant as control_grant
+from .control import revoke as control_revoke
+from .control import status as control_status
+from .controlview import ConfirmCard, ControlBar, PendingConfirm
 from .devview import DeveloperView, footer_row, place
 from .loginview import LoginPanel
 from .model import LOGIN_CANCELLED, HostModel, Login, LoginStage, VoiceInput
@@ -107,10 +140,14 @@ def is_login(text: str) -> bool:
     return text.strip().lower() == "/login"
 
 
-def footer_keys(login: Login | None, voice: VoiceInput | None = None) -> tuple[tuple[str, str], ...]:
+def footer_keys(
+    login: Login | None, voice: VoiceInput | None = None, confirming: bool = False
+) -> tuple[tuple[str, str], ...]:
     """The keys of the footer; the panel's own keys while ``/login`` is open."""
 
     shared = (("ctrl+q", "quit"), ("f2", "view"), ("f3", "mode"))
+    if confirming:
+        return (("y", "allow"), ("n", "deny"), ("esc", "deny")) + shared
     if voice is not None and voice.recording:
         return (("f4", "send"), ("esc", "cancel")) + shared
     if voice is not None and voice.transcribing:
@@ -184,12 +221,16 @@ class KeysFooter(Widget):
         self.developer = False
         self.login: Login | None = None
         self.voice: VoiceInput | None = None
+        self.confirming = False
 
     def render(self) -> Text:
         # Short hints, the same in both views, so the legend keeps its room.
-        keys = footer_keys(self.login, self.voice)
-        # f4 talk gives way to the developer legend; while recording it is the main key.
-        optional = ("f4",) if self.voice is None or not self.voice.active else ()
+        keys = footer_keys(self.login, self.voice, self.confirming)
+        if ("f4", "talk") in keys:
+            at = keys.index(("f4", "talk")) + 1
+            keys = keys[:at] + (("f5", "control"),) + keys[at:]
+        # f4 talk and f5 control give way to the developer legend; while recording f4 is the main key.
+        optional = ("f4", "f5") if self.voice is None or not self.voice.active else ()
         return to_text([footer_row(self.size.width, keys, self.developer, optional)], self.palette)
 
 
@@ -283,6 +324,10 @@ class JarvisApp(App[None]):
         Binding("escape", "login_escape", "Close sign-in", show=False, priority=True),
         Binding("ctrl+y", "login_copy", "Copy sign-in link", show=False, priority=True),
         Binding("f4", "voice", "Talk", priority=True),
+        Binding("f5", "control_toggle", "PC control", priority=True),
+        # Only while a confirmation card is up (``check_action``); otherwise they type.
+        Binding("y", "confirm_allow", "Allow", show=False, priority=True),
+        Binding("n", "confirm_deny", "Deny", show=False, priority=True),
     )
     USER_VIEW = "user"
     DEVELOPER_VIEW = "developer"
@@ -303,8 +348,35 @@ class JarvisApp(App[None]):
         recorder_factory: Callable[[Path], Recorder] | None = None,
         transcriber: Transcriber | None = None,
         max_recording_s: float = MAX_RECORDING_S,
+        control_clock: Callable[[], datetime] | None = None,
+        confirm_arm_s: float = 0.4,
+        control_backoff: tuple[float, float] = BACKOFF,
     ) -> None:
         super().__init__()
+        # PC control (/control, f5): what jarvis-input reports, and the countdown to it.
+        self._control_clock: Callable[[], datetime] = control_clock or (lambda: datetime.now(UTC))
+        self._control_state: ControlState = OFF
+        #: The helper could not be reached after the person asked, or the link dropped.
+        self._control_unavailable = False
+        #: A ``revoke`` of ours is on its way: its ``state`` event is no surprise.
+        self._control_expect_off = False
+        self._control_tasks: set[asyncio.Task[None]] = set()
+        self._control_link = ControlLink(
+            on_state=self._on_control_state,
+            on_confirm=self._on_helper_confirm,
+            on_connection=self._on_control_link,
+            backoff=control_backoff,
+        )
+        self._control_link_task: asyncio.Task[None] | None = None
+        self._control_link_up = False
+        self._control_bar = ControlBar(self._control_clock, id="control")
+        self._control_bar.display = False
+        # Confirmations (helper ``confirm``, daemon ``ask`` ``confirm``), oldest first; one card at a time.
+        self._confirm_arm_s = confirm_arm_s
+        self._confirm_card = ConfirmCard(time.monotonic, id="confirm")
+        self._confirm_card.display = False
+        self._confirms: list[PendingConfirm] = self._confirm_card.pending
+        self._shown_confirm = False
         #: The model and thinking level wanted for typed prompts, applied on connect
         #: only when the daemon runs something else; ``None``: leave the daemon's choice.
         self._wanted_model = parse_model_spec(typed_model) if typed_model else None
@@ -370,7 +442,9 @@ class JarvisApp(App[None]):
             yield self._user
             yield self._developer
         yield self._login
+        yield self._confirm_card
         yield self._voice_bar
+        yield self._control_bar
         with Horizontal(id="input-row"):
             yield Static("▸", id="prompt-mark")
             yield PromptInput(placeholder=PLACEHOLDER, id="prompt", compact=True)
@@ -390,7 +464,31 @@ class JarvisApp(App[None]):
             view.refresh()
         self._voice_bar.display = self._host.voice.active
         self._voice_bar.refresh()
+        self._control_bar.state = self._control_state
+        self._control_bar.unavailable = self._control_unavailable
+        self._control_bar.display = self._control_bar.shown
+        self._control_bar.refresh()
         self._sync_login()
+        self._sync_confirm()
+
+    def _sync_confirm(self) -> None:
+        """One modal at a time: while a card waits, the input and ``/login`` panel step aside."""
+
+        confirming = bool(self._confirms)
+        self._footer.confirming = confirming
+        self._confirm_card.display = confirming
+        self._confirm_card.refresh(layout=True)
+        if confirming:
+            self._login.display = False
+        try:
+            prompt = self.query_one("#prompt", Input)
+        except Exception:  # noqa: BLE001 - not composed yet
+            return
+        # Off while a card waits: what is typed goes nowhere, never into a message.
+        prompt.disabled = confirming
+        if self._shown_confirm and not confirming and not self._closing:
+            prompt.focus()
+        self._shown_confirm = confirming
 
     def _sync_login(self) -> None:
         """Show or hide the ``/login`` panel and fit the input to what it asks."""
@@ -433,7 +531,8 @@ class JarvisApp(App[None]):
     def _apply_theme(self, name: str) -> None:
         self._theme_name = name
         self.theme = f"jarvis-{name}"
-        for view in (self._user, self._developer, self._footer, self._login, self._voice_bar):
+        for view in (self._user, self._developer, self._footer, self._login, self._voice_bar,
+                     self._control_bar, self._confirm_card):
             view.palette = THEMES[name]
             view.refresh()
 
@@ -445,10 +544,18 @@ class JarvisApp(App[None]):
         self._client_task.add_done_callback(self._client_finished)
         self._backend_task = asyncio.create_task(self._backend.run(), name="jarvis-backend")
         self._backend_task.add_done_callback(self._backend_finished)
+        # The helper's link: its state at connect time (a grant still in force is shown as
+        # it is), then its events.
+        self._control_link_task = asyncio.create_task(self._control_link.run(), name="jarvis-control")
+        self.set_interval(1.0, self._control_tick, name="control-clock")
+        self.set_interval(0.25, self._confirm_tick, name="confirm-clock")
+        self._refresh_views()
 
     async def on_unmount(self) -> None:
         # The clients report "not connected" while closing; the widgets are gone by then.
         self._closing = True
+        # Control never outlives the window that grants it.
+        await self._revoke_on_exit()
         self._user.stop_animation()
         self._cancel_voice()
         for voice_task in list(self._voice_tasks):
@@ -486,6 +593,9 @@ class JarvisApp(App[None]):
         if self._closing:
             return
         self._host.set_daemon_status(status, detail)
+        if status is not ConnectionStatus.CONNECTED and self._drop_confirms("daemon"):
+            # No answer can reach the asker now; its own timeout denies it.
+            self.notify("Gentle Dot disconnected: the confirmation was denied.", severity="warning")
         self._refresh_views()
         if status is ConnectionStatus.CONNECTED:
             # Read-only: the developer view shows the model's thinking level, and the
@@ -542,11 +652,14 @@ class JarvisApp(App[None]):
             return
         # What the views do not hold is said once, in a notification.
         if isinstance(event, AskEvent):
-            # The desktop app owns this dialog; the window only says it is waiting.
-            self.notify(
-                f"Gentle Dot is asking: {event.ask.title}. Answer it in the desktop app.",
-                severity="warning",
-            )
+            self._on_ask(event.ask)
+        elif isinstance(event, AskResolvedEvent):
+            # Answered elsewhere, or the asker stopped waiting.
+            before = len(self._confirms)
+            self._confirms[:] = [p for p in self._confirms
+                                 if p.source != "daemon" or p.ask.request_id != event.request_id]
+            if len(self._confirms) != before:
+                self._refresh_views()
         elif isinstance(event, ToastEvent):
             self.notify(event.message, severity=TOAST_SEVERITY.get(event.level, "information"))  # type: ignore[arg-type]
         elif isinstance(event, ErrorEvent):
@@ -576,6 +689,8 @@ class JarvisApp(App[None]):
             self.notify("Nothing to stop: Gentle Dot is not connected.", severity="warning")
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
+        if self._confirms:
+            return  # the input is off while a card waits; nothing typed is an answer
         login = self._host.login
         asked = login.prompt if login.open and login.running else None
         if event.input.password and (asked is None or asked.kind != "secret"):
@@ -594,6 +709,10 @@ class JarvisApp(App[None]):
         if not text:
             return
         event.input.value = ""
+        command = parse_control(text)
+        if command is not None:
+            self._control_command(command)  # never sent to the agent
+            return
         if is_login(text):
             self._open_login()
             return
@@ -680,8 +799,10 @@ class JarvisApp(App[None]):
         # Esc and ctrl+y belong to the panel only; otherwise the keys go where they went.
         if action == "login_copy" and self._prompt_hidden():
             return False  # nothing is copied while a secret is being typed
+        if action in ("confirm_allow", "confirm_deny"):
+            return bool(self._confirms)
         if action == "login_escape":
-            return self._host.login.open or self._host.voice.active
+            return bool(self._confirms) or self._host.login.open or self._host.voice.active
         if action == "login_copy":
             return self._host.login.open
         return True
@@ -693,6 +814,9 @@ class JarvisApp(App[None]):
             return False
 
     def action_login_escape(self) -> None:
+        if self._confirms:
+            self._answer_confirm(False)  # esc denies; it never allows
+            return
         if self._host.voice.active:
             what = "Recording" if self._host.voice.recording else "Transcription"
             self._cancel_voice()
@@ -736,6 +860,9 @@ class JarvisApp(App[None]):
         """f4: start recording, or stop it and send what was said."""
 
         voice = self._host.voice
+        if self._confirms:
+            self.notify("Answer the confirmation first: y allows, n denies.", severity="warning")
+            return
         if self._host.login.open:
             self.notify("Close the sign-in panel first: f4 does not record while signing in.", severity="warning")
             return
@@ -753,7 +880,7 @@ class JarvisApp(App[None]):
             shutil.rmtree(directory, ignore_errors=True)
             self.notify(str(error), severity="error")
             return
-        if self._host.voice.active or self._host.login.open:  # something else began meanwhile
+        if self._host.voice.active or self._host.login.open or self._confirms:  # something else began meanwhile
             self._track(self._discard(recorder, directory))
             return
         self._voice_gen += 1
@@ -847,6 +974,196 @@ class JarvisApp(App[None]):
             shutil.rmtree(directory, ignore_errors=True)
 
 
+    # PC control (/control, f5): asked of jarvis-input
+
+    def action_control_toggle(self) -> None:
+        self._control_command("off" if self._control_on() else "on")
+
+    def _control_on(self) -> bool:
+        return self._control_state.remaining_s(self._control_clock()) > 0
+
+    def _control_command(self, command: str) -> None:
+        if command == "usage":
+            self.notify(f"Usage: {USAGE}", severity="information")
+            return
+        task = asyncio.create_task(self._control_request(command), name=f"control-{command}")
+        self._control_tasks.add(task)
+        task.add_done_callback(self._control_tasks.discard)
+
+    async def _control_request(self, command: str) -> None:
+        try:
+            if command == "on":
+                self._control_expect_off = False
+                state = await control_grant()
+                self._control_unavailable = False
+                self._control_state = state
+                self.notify(
+                    "Control on for 30 min: Jarvis may type, press keys and take screenshots. "
+                    "/control off or Alt+Shift+Esc stops it.",
+                    severity="warning",
+                )
+            elif command == "off":
+                self._control_expect_off = True
+                await control_revoke()
+                self._control_unavailable = False
+                self._control_state = OFF
+                self.notify("Control off.", severity="information")
+            else:
+                state = await control_status()
+                self._control_unavailable = False
+                self._control_state = state
+                now = self._control_clock()
+                if state.remaining_s(now) <= 0:
+                    self.notify("Control is off. /control on grants it for 30 min.", severity="information")
+                else:
+                    self.notify(f"Control on · {remaining_label(state.remaining_s(now))} left · /control off",
+                                severity="information")
+        except ControlUnavailable as error:
+            if self._closing:
+                return
+            self._control_unavailable = True
+            self._control_state = OFF
+            self.notify(str(error), severity="error")
+        except ControlError as error:
+            if not self._closing:
+                self.notify(str(error), severity="error")
+        if not self._closing:
+            self._refresh_views()
+
+    def _on_control_state(self, state: ControlState) -> None:
+        """A ``state`` event (or the state at connect time): the helper is the truth."""
+
+        if self._closing:
+            return
+        was_on = self._control_on()
+        self._control_state = state
+        now_on = self._control_on()
+        if now_on:
+            self._control_expect_off = False
+        elif was_on:
+            if not self._control_expect_off:
+                self.notify("Control off: jarvis-input revoked it (stop key or /control off elsewhere).",
+                            severity="warning")
+            self._control_expect_off = False
+        self._refresh_views()
+
+    def _on_control_link(self, up: bool, detail: str) -> None:
+        if self._closing:
+            return
+        if up:
+            self._control_link_up = True
+            self._control_unavailable = False
+        else:
+            # Reported only after a link that was up dropped, or after the person asked.
+            if self._control_link_up:
+                self._control_unavailable = True
+            self._control_link_up = False
+            if self._control_on():
+                self.notify("Control off: jarvis-input stopped, and a restart revokes control.",
+                            severity="warning")
+            self._control_state = OFF
+            if self._drop_confirms("helper"):
+                self.notify("jarvis-input disconnected: the confirmation was denied.", severity="warning")
+            logger.info("control link down: %s", detail)
+        self._refresh_views()
+
+    def _control_tick(self) -> None:
+        """Every second while on: count down the helper's ``expires_at``; nothing is revoked here."""
+
+        state = self._control_state
+        if not state.enabled:
+            return
+        if state.remaining_s(self._control_clock()) <= 0:
+            self._control_state = OFF
+            self.notify("control expired · /control on grants 30 min more", severity="warning")
+        self._refresh_views()
+
+    async def _revoke_on_exit(self) -> None:
+        for task in list(self._control_tasks):
+            task.cancel()
+        await self._control_link.close()
+        if self._control_link_task is not None:
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                await asyncio.wait_for(self._control_link_task, 1.0)
+        with contextlib.suppress(Exception, asyncio.CancelledError):
+            await asyncio.wait_for(control_revoke(), 1.0)
+        self._control_state = OFF
+
+    # Confirmations (helper ``confirm`` events, daemon ``ask`` ``confirm``)
+
+    def _on_ask(self, ask: Ask) -> None:
+        if ask.method != "confirm" or not ask.request_id:
+            # Not one this window may answer: say where it waits, and never hang on it.
+            self.notify(
+                f"Gentle Dot is asking: {ask.title or 'a question'}. Answer this in Gentle Dot.",
+                severity="warning",
+            )
+            return
+        timeout_s = ask.timeout_ms / 1000 if ask.timeout_ms else CONFIRM_TIMEOUT_S
+        self._add_confirm(ask, timeout_s, "daemon", ask.request_id)
+
+    def _on_helper_confirm(self, request: ConfirmRequest) -> None:
+        if self._closing:
+            return
+        ask = Ask(str(request.id), "confirm", request.title, request.message or None,
+                  int(request.timeout_s * 1000))
+        self._add_confirm(ask, request.timeout_s, "helper", request.id)
+
+    def _add_confirm(self, ask: Ask, timeout_s: float, source: str, reply_id: object) -> None:
+        if any(p.source == source and p.reply_id == reply_id for p in self._confirms):
+            return
+        if self._cancel_voice():
+            self.notify("Recording dropped: answer the confirmation first.", severity="warning")
+        now = time.monotonic()
+        self._confirms.append(PendingConfirm(ask, now + timeout_s, now + self._confirm_arm_s, source, reply_id))
+        self.bell()
+        self._refresh_views()
+
+    def _drop_confirms(self, source: str) -> bool:
+        """Clear the cards of one asker whose link is gone; ``True`` if any was up."""
+
+        before = len(self._confirms)
+        self._confirms[:] = [p for p in self._confirms if p.source != source]
+        return len(self._confirms) != before
+
+    def _reply(self, pending: PendingConfirm, allowed: bool) -> bool:
+        if pending.source == "helper":
+            return self._control_link.answer(pending.reply_id, allowed)  # type: ignore[arg-type]
+        return self._client.ui_response(pending.ask.request_id, confirmed=allowed)
+
+    def action_confirm_allow(self) -> None:
+        self._answer_confirm(True)
+
+    def action_confirm_deny(self) -> None:
+        self._answer_confirm(False)
+
+    def _answer_confirm(self, allowed: bool) -> None:
+        if not self._confirms:
+            return
+        pending = self._confirms[0]
+        if time.monotonic() < pending.armed_at:
+            return  # typed as the card appeared: not an answer
+        self._confirms.pop(0)
+        if not self._reply(pending, allowed):
+            who = "jarvis-input" if pending.source == "helper" else "Gentle Dot"
+            self.notify(f"{who} is not connected: the action stays denied.", severity="warning")
+        elif allowed:
+            self.notify(f"Allowed: {pending.ask.title}", severity="information")
+        else:
+            self.notify(f"Denied: {pending.ask.title}", severity="information")
+        self._refresh_views()
+
+    def _confirm_tick(self) -> None:
+        if not self._confirms:
+            return
+        now = time.monotonic()
+        for pending in [p for p in self._confirms if now >= p.deadline]:
+            self._confirms.remove(pending)
+            self._reply(pending, False)
+            self.notify(f"Confirmation timed out: denied ({pending.ask.title}).", severity="warning")
+        self._refresh_views()
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="python -m jarvis.tui",
@@ -854,8 +1171,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Host TUI for the Gentle Dot daemon (protocol v1) and the Jarvis backend "
             "(ESP32 state and voice turns). Keys: f2 switches the user and developer "
             "views, f3 switches dark and light mode, f4 records what you say and sends it "
-            "(needs a local whisper-server, see JARVIS_STT_URL). Type /login to sign in to an AI account "
-            "without leaving the window."
+            "(needs a local whisper-server, see JARVIS_STT_URL), f5 turns PC control on or off. "
+            "Type /login to sign in to an AI account without leaving the window, and "
+            "/control on|off|status to let the agent use the PC for 30 minutes (y/n answer its "
+            "confirmations)."
         ),
     )
     parser.add_argument("--host", default=DEFAULT_HOST, help="daemon host (default: %(default)s)")

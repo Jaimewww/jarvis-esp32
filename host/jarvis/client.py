@@ -129,12 +129,18 @@ class ActivityEvent:
 
 @dataclass(slots=True)
 class Ask:
-    """A question the desktop app asks; this client only shows that it happened."""
+    """A question an extension asks through the daemon (``ctx.ui.*``).
+
+    This window answers ``confirm`` (``ui_response`` with ``confirmed``); the other
+    methods are only pointed to Gentle Dot.
+    """
 
     request_id: str
     method: str
     title: str
     message: str | None = None
+    #: How long the asker waits; past it, no answer counts as denied.
+    timeout_ms: int | None = None
 
 
 @dataclass(slots=True)
@@ -602,12 +608,17 @@ def parse_event(payload: dict[str, Any]) -> Event | None:
         raw = payload.get("ask")
         if not isinstance(raw, dict):
             return None
+        timeout = raw.get("timeoutMs")
         return AskEvent(
             Ask(
-                request_id=_text(raw.get("requestId")),
-                method=_text(raw.get("method"), "confirm"),
+                request_id=_text(raw.get("requestId")) or _text(raw.get("id")),
+                # No method is not a confirmation this window may answer.
+                method=_text(raw.get("method"), "unknown"),
                 title=_text(raw.get("title")),
                 message=_optional_text(raw.get("message")),
+                timeout_ms=int(timeout)
+                if isinstance(timeout, (int, float)) and not isinstance(timeout, bool) and timeout > 0
+                else None,
             )
         )
     if kind == "ask_resolved":
@@ -745,6 +756,11 @@ class JarvisClient:
         """Stop the answer that is running."""
 
         return self._queue({"type": "abort"})
+
+    def ui_response(self, request_id: str, *, confirmed: bool) -> bool:
+        """Answer a ``confirm`` ask: ``True`` only for an explicit allow."""
+
+        return self._queue({"type": "ui_response", "requestId": request_id, "confirmed": confirmed is True})
 
     def steer(self, text: str) -> bool:
         """Add a message the assistant reads after its current step."""
