@@ -17,6 +17,11 @@ Both feed one ``HostModel``, read by two views in the same window: the user view
 (``userview``, the default) and the developer view (``devview``), switched with f2.
 Both use one colour theme (``jarvis.theme``): f3 switches between the dark and the
 light theme, ``--theme`` starts in any of the six.
+
+Typing ``/login`` opens the sign-in panel (``jarvis.loginview``) above the input, in
+both views: the person picks an account and a way to sign in, and answers the daemon's
+prompts in the same input, hidden for a ``secret``. Esc cancels. The answers go
+straight to the daemon and are never logged, stored or drawn.
 """
 
 from __future__ import annotations
@@ -44,10 +49,16 @@ from .backend import (
     BackendEvent,
 )
 from .client import (
+    AUTH_ERRORS,
     DEFAULT_HOST,
     DEFAULT_PORT,
     DEFAULT_TOKEN_PATH,
     AskEvent,
+    AuthDoneEvent,
+    AuthFlowEvent,
+    AuthPromptEvent,
+    AuthProvider,
+    AuthProvidersEvent,
     ConnectionStatus,
     ErrorEvent,
     Event,
@@ -55,13 +66,47 @@ from .client import (
     ToastEvent,
 )
 from .devview import DeveloperView, footer_row
-from .model import HostModel
+from .loginview import LoginPanel
+from .model import HostModel, Login, LoginStage
 from .theme import DEFAULT_DARK, LIGHT, THEMES, Theme, to_text
 from .userview import UserView
 
 logger = logging.getLogger(__name__)
 
 TOAST_SEVERITY = {"info": "information", "warning": "warning", "error": "error"}
+#: What the input asks for, by place in the ``/login`` panel.
+PLACEHOLDER = "Message Jarvis"
+LOGIN_PLACEHOLDERS = {
+    LoginStage.PROVIDERS: "Number of the account",
+    LoginStage.METHOD: "Number of the way to sign in",
+    LoginStage.RUNNING: "Waiting for Gentle Dot…",
+}
+PROMPT_PLACEHOLDERS = {
+    "select": "Number of the option",
+    "secret": "Hidden as you type",
+    "manual_code": "Paste the code or the full address here",
+}
+
+
+def is_login(text: str) -> bool:
+    """``/login`` as the daemon itself reads it (upstream ``bridge.ts``)."""
+
+    return text.strip().lower() == "/login"
+
+
+def footer_keys(login: Login | None) -> tuple[tuple[str, str], ...]:
+    """The keys of the footer; the panel's own keys while ``/login`` is open."""
+
+    shared = (("ctrl+q", "quit"), ("f2", "view"), ("f3", "mode"))
+    if login is None or not login.open:
+        return (("enter", "send"), ("ctrl+a", "stop")) + shared
+    if login.running:
+        keys: tuple[tuple[str, str], ...] = (("enter", "send"), ("esc", "cancel"))
+        if login.link:
+            keys += (("ctrl+y", "copy link"),)
+        return keys + shared
+    back = "back" if login.stage is LoginStage.METHOD else "close"
+    return (("enter", "choose"), ("esc", back)) + shared
 
 #: Theme tokens exposed to the stylesheet as ``$jarvis-<token>``.
 TOKEN_FIELDS = (
@@ -116,16 +161,11 @@ class KeysFooter(Widget):
         super().__init__(**kwargs)  # type: ignore[arg-type]
         self.palette: Theme = THEMES[DEFAULT_DARK]
         self.developer = False
+        self.login: Login | None = None
 
     def render(self) -> Text:
-        keys = (
-            ("enter", "send"),
-            ("ctrl+a", "stop"),
-            ("ctrl+q", "quit"),
-            # Short hints, the same in both views, so the legend keeps its room.
-            ("f2", "view"),
-            ("f3", "mode"),
-        )
+        # Short hints, the same in both views, so the legend keeps its room.
+        keys = footer_keys(self.login)
         return to_text([footer_row(self.size.width, keys, self.developer)], self.palette)
 
 
@@ -171,6 +211,8 @@ class JarvisApp(App[None]):
         Binding("ctrl+q", "quit", "Quit"),
         Binding("f2", "toggle_view", "Developer view"),
         Binding("f3", "toggle_mode", "Dark / light"),
+        Binding("escape", "login_escape", "Close sign-in", show=False, priority=True),
+        Binding("ctrl+y", "login_copy", "Copy sign-in link", show=False, priority=True),
     )
     USER_VIEW = "user"
     DEVELOPER_VIEW = "developer"
@@ -194,7 +236,9 @@ class JarvisApp(App[None]):
         self.animate = animate
         self._user = UserView(self._host, animate=animate, id=self.USER_VIEW)
         self._developer = DeveloperView(self._host, id=self.DEVELOPER_VIEW)
+        self._login = LoginPanel(self._host, id="login")
         self._footer = KeysFooter(id="keys")
+        self._footer.login = self._host.login
         # f3 pairs the starting theme with one of the other mode.
         start = THEMES[theme_name]
         self._dark_name = theme_name if start.dark else DEFAULT_DARK
@@ -227,9 +271,10 @@ class JarvisApp(App[None]):
         with ContentSwitcher(id="views", initial=self.USER_VIEW):
             yield self._user
             yield self._developer
+        yield self._login
         with Horizontal(id="input-row"):
             yield Static("▸", id="prompt-mark")
-            yield Input(placeholder="Message Jarvis", id="prompt", compact=True)
+            yield Input(placeholder=PLACEHOLDER, id="prompt", compact=True)
         yield self._footer
 
     def action_toggle_view(self) -> None:
@@ -244,6 +289,27 @@ class JarvisApp(App[None]):
     def _refresh_views(self) -> None:
         for view in (self._user, self._developer, self._footer):
             view.refresh()
+        self._sync_login()
+
+    def _sync_login(self) -> None:
+        """Show or hide the ``/login`` panel and fit the input to what it asks."""
+
+        login = self._host.login
+        self._login.display = login.open
+        self._login.refresh(layout=True)
+        try:
+            prompt = self.query_one("#prompt", Input)
+        except Exception:  # noqa: BLE001 - not composed yet
+            return
+        asked = login.prompt if login.open and login.running else None
+        # Hidden while a secret is asked, and only then.
+        prompt.password = asked is not None and asked.kind == "secret"
+        if not login.open:
+            prompt.placeholder = PLACEHOLDER
+        elif asked is not None:
+            prompt.placeholder = asked.placeholder or PROMPT_PLACEHOLDERS.get(asked.kind, "")
+        else:
+            prompt.placeholder = LOGIN_PLACEHOLDERS[login.stage]
 
     # Theme
 
@@ -259,7 +325,7 @@ class JarvisApp(App[None]):
     def _apply_theme(self, name: str) -> None:
         self._theme_name = name
         self.theme = f"jarvis-{name}"
-        for view in (self._user, self._developer, self._footer):
+        for view in (self._user, self._developer, self._footer, self._login):
             view.palette = THEMES[name]
             view.refresh()
 
@@ -323,8 +389,28 @@ class JarvisApp(App[None]):
         self._refresh_views()
 
     def _on_event(self, event: Event) -> None:
+        login = self._host.login
+        was_open = login.open
         self._host.apply_daemon(event)
+        if (
+            isinstance(event, (AuthPromptEvent, AuthFlowEvent))
+            and login.cancel_pending
+            and login.flow_id is not None
+        ):
+            # Esc came before the daemon named the flow: cancel it now.
+            self._client.auth_reply(login.flow_id, cancelled=True)
+            login.cancel_pending = False
+            login.cancelling = True
+            login.prompt = None
+        if isinstance(event, AuthDoneEvent):
+            self._client.auth_list()  # the accounts changed: refresh connected / not connected
+            if event.ok and not login.open:
+                self.notify(login.result[1] if login.result else "Signed in.", severity="information")
         self._refresh_views()
+        if isinstance(event, ErrorEvent) and event.code in AUTH_ERRORS and was_open:
+            return  # the panel shows the daemon's refusal
+        if isinstance(event, AuthProvidersEvent | AuthPromptEvent | AuthFlowEvent | AuthDoneEvent):
+            return
         # What the views do not hold is said once, in a notification.
         if isinstance(event, AskEvent):
             # The desktop app owns this dialog; the window only says it is waiting.
@@ -344,12 +430,124 @@ class JarvisApp(App[None]):
             self.notify("Nothing to stop: Gentle Dot is not connected.", severity="warning")
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
+        login = self._host.login
+        if login.open:
+            value = event.value
+            # Cleared at once: what was typed (maybe a secret) does not stay in the input.
+            event.input.value = ""
+            self._login_answer(value)
+            self._refresh_views()
+            return
         text = event.value.strip()
         if not text:
             return
         event.input.value = ""
+        if is_login(text):
+            self._open_login()
+            return
         if not self._client.send(text):
             self.notify("Gentle Dot is not connected: the message was not sent.", severity="error")
+
+    # Sign-in (/login)
+
+    def _open_login(self) -> None:
+        if not self._client.auth_list():
+            self.notify("Gentle Dot is not connected: /login needs it.", severity="error")
+            return
+        self._host.login.show()
+        self._refresh_views()
+
+    @staticmethod
+    def _pick(text: str, count: int) -> int | None:
+        """The 0-based choice typed as ``1``..``count``, or ``None``."""
+
+        text = text.strip()
+        if text.isdigit() and 1 <= int(text) <= count:
+            return int(text) - 1
+        return None
+
+    def _login_answer(self, value: str) -> None:
+        """One enter in the panel. ``value`` may be a secret: it is sent, never kept."""
+
+        login = self._host.login
+        if login.stage is LoginStage.PROVIDERS:
+            choice = self._pick(value, len(login.providers))
+            if choice is None:
+                login.hint = f"Type a number from 1 to {len(login.providers)}." if login.providers else None
+                return
+            provider = login.providers[choice]
+            if len(provider.methods) == 1:
+                self._start_login(provider.methods[0], provider)
+            elif provider.methods:
+                login.provider = provider
+                login.stage = LoginStage.METHOD
+                login.result = None
+                login.hint = None
+            return
+        if login.stage is LoginStage.METHOD:
+            provider = login.provider
+            methods = provider.methods if provider else ()
+            choice = self._pick(value, len(methods))
+            if provider is None or choice is None:
+                login.hint = f"Type a number from 1 to {len(methods)}."
+                return
+            self._start_login(methods[choice], provider)
+            return
+        prompt = login.prompt
+        if prompt is None or login.flow_id is None:
+            return  # nothing asked yet
+        if prompt.kind == "select":
+            choice = self._pick(value, len(prompt.options))
+            if choice is None:
+                login.hint = f"Type a number from 1 to {len(prompt.options)}."
+                return
+            answer = prompt.options[choice].id
+        else:
+            answer = value if prompt.kind == "secret" else value.strip()
+            if not answer.strip() and not prompt.optional:
+                login.hint = "Type an answer, or press esc to cancel."
+                return
+        if self._client.auth_reply(login.flow_id, answer):
+            self._host.answered_login_prompt()
+        else:
+            login.hint = "Gentle Dot is not connected: the answer was not sent."
+
+    def _start_login(self, method: str, provider: AuthProvider) -> None:
+        login = self._host.login
+        if not self._client.auth_login(provider.id, method):
+            login.hint = "Gentle Dot is not connected: the sign-in did not start."
+            return
+        login.start(provider, method)
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        # Esc and ctrl+y belong to the panel only; otherwise the keys go where they went.
+        if action in ("login_escape", "login_copy"):
+            return self._host.login.open
+        return True
+
+    def action_login_escape(self) -> None:
+        login = self._host.login
+        if not login.open:
+            return
+        if login.running:
+            if login.flow_id is not None:
+                self._client.auth_reply(login.flow_id, cancelled=True)
+                login.cancelling = True
+            else:
+                login.cancel_pending = True
+            login.prompt = None
+        elif login.stage is LoginStage.METHOD:
+            login.show()
+        else:
+            login.close()
+        self._refresh_views()
+
+    def action_login_copy(self) -> None:
+        link = self._host.login.link if self._host.login.open else None
+        if link is None:
+            return
+        self.copy_to_clipboard(link)
+        self.notify("Sign-in link copied.", severity="information")
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -358,7 +556,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description=(
             "Host TUI for the Gentle Dot daemon (protocol v1) and the Jarvis backend "
             "(ESP32 state and voice turns). Keys: f2 switches the user and developer "
-            "views, f3 switches dark and light mode."
+            "views, f3 switches dark and light mode. Type /login to sign in to an AI account "
+            "without leaving the window."
         ),
     )
     parser.add_argument("--host", default=DEFAULT_HOST, help="daemon host (default: %(default)s)")

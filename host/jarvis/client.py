@@ -50,6 +50,11 @@ HELLO_DEADLINE_SECONDS: Final = 5.0
 BACKOFF_SECONDS: Final = (0.5, 1.0, 2.0, 5.0)
 MAX_FRAME_BYTES: Final = 2 * 1024 * 1024
 
+#: The websockets library logs every frame at debug level, and an ``auth_reply`` frame
+#: can hold an API key: its logger never goes below info, whatever ``--log-level`` is.
+_WIRE_LOGGER: Final = logging.getLogger(f"{__name__}.wire")
+_WIRE_LOGGER.setLevel(logging.INFO)
+
 
 class ConnectionStatus(StrEnum):
     """What the status indicator shows."""
@@ -195,6 +200,92 @@ class ErrorEvent:
     message: str
 
 
+# Sign-in (``/login``). The answers a person types never come back from the daemon, so
+# none of these events can carry a secret.
+
+#: Sign-in methods of protocol v1.
+AUTH_METHODS: Final = ("oauth", "api_key")
+#: Kinds of ``auth_prompt``: ``secret`` is typed hidden, ``select`` picks an option.
+AUTH_PROMPT_KINDS: Final = ("text", "secret", "select", "manual_code")
+#: Kinds of ``auth_event``.
+AUTH_EVENT_KINDS: Final = ("info", "auth_url", "device_code", "progress")
+#: ``error`` codes the daemon answers an ``auth_login`` or ``auth_logout`` with.
+AUTH_ERRORS: Final = frozenset({"auth_busy", "auth_unsupported", "unknown_provider"})
+
+
+@dataclass(slots=True)
+class AuthProvider:
+    """An AI account Gentle Dot can sign in to."""
+
+    id: str
+    name: str
+    methods: tuple[str, ...]
+    configured: bool = False
+    #: Name of the subscription sign-in, for example "Claude Pro/Max".
+    oauth_name: str | None = None
+    #: Where the working credential comes from, for example "stored" or "environment".
+    source: str | None = None
+
+
+@dataclass(slots=True)
+class AuthProvidersEvent:
+    providers: tuple[AuthProvider, ...]
+    #: The daemon asks the window to show its sign-in screen.
+    open: bool = False
+
+
+@dataclass(slots=True)
+class AuthOption:
+    id: str
+    label: str
+    description: str | None = None
+
+
+@dataclass(slots=True)
+class AuthPrompt:
+    flow_id: str
+    kind: str
+    message: str
+    placeholder: str | None = None
+    options: tuple[AuthOption, ...] = ()
+    #: The answer may be left empty.
+    optional: bool = False
+
+
+@dataclass(slots=True)
+class AuthPromptEvent:
+    prompt: AuthPrompt
+
+
+@dataclass(slots=True)
+class AuthLink:
+    url: str
+    label: str | None = None
+
+
+@dataclass(slots=True)
+class AuthFlowEvent:
+    """One step of a sign-in (``auth_event``); the fields of its ``kind`` are set."""
+
+    flow_id: str
+    kind: str
+    message: str = ""
+    links: tuple[AuthLink, ...] = ()
+    url: str = ""
+    instructions: str | None = None
+    user_code: str = ""
+    verification_uri: str = ""
+    expires_in_seconds: int | None = None
+
+
+@dataclass(slots=True)
+class AuthDoneEvent:
+    flow_id: str
+    provider_id: str
+    ok: bool
+    message: str | None = None
+
+
 Event = (
     Ready
     | AgentStateEvent
@@ -210,6 +301,10 @@ Event = (
     | ConversationsEvent
     | QueueEvent
     | ErrorEvent
+    | AuthProvidersEvent
+    | AuthPromptEvent
+    | AuthFlowEvent
+    | AuthDoneEvent
 )
 
 EventCallback = Callable[[Event], None]
@@ -283,6 +378,86 @@ def _parse_history_messages(value: Any) -> tuple[HistoryMessage, ...]:
             )
         )
     return tuple(messages)
+
+
+def _parse_providers(value: Any) -> tuple[AuthProvider, ...]:
+    providers: list[AuthProvider] = []
+    for raw in _records(value):
+        provider_id = _text(raw.get("id"))
+        if not provider_id:
+            continue
+        providers.append(
+            AuthProvider(
+                id=provider_id,
+                name=_text(raw.get("name")) or provider_id,
+                methods=tuple(m for m in _strings(raw.get("methods")) if m in AUTH_METHODS),
+                configured=raw.get("configured") is True,
+                oauth_name=_optional_text(raw.get("oauthName")),
+                source=_optional_text(raw.get("source")),
+            )
+        )
+    return tuple(providers)
+
+
+def _parse_prompt(raw: Any) -> AuthPrompt | None:
+    if not isinstance(raw, dict) or raw.get("kind") not in AUTH_PROMPT_KINDS:
+        return None
+    options = tuple(
+        AuthOption(
+            id=_text(option.get("id")),
+            label=_text(option.get("label")) or _text(option.get("id")),
+            description=_optional_text(option.get("description")),
+        )
+        for option in _records(raw.get("options"))
+        if _text(option.get("id"))
+    )
+    return AuthPrompt(
+        flow_id=_text(raw.get("flowId")),
+        kind=raw["kind"],
+        message=_text(raw.get("message")),
+        placeholder=_optional_text(raw.get("placeholder")),
+        options=options,
+        optional=raw.get("optional") is True,
+    )
+
+
+def _parse_flow_event(flow_id: str, raw: Any) -> AuthFlowEvent | None:
+    if not isinstance(raw, dict) or raw.get("kind") not in AUTH_EVENT_KINDS:
+        return None
+    expires = raw.get("expiresInSeconds")
+    return AuthFlowEvent(
+        flow_id=flow_id,
+        kind=raw["kind"],
+        message=_text(raw.get("message")),
+        links=tuple(
+            AuthLink(_text(link.get("url")), _optional_text(link.get("label")))
+            for link in _records(raw.get("links"))
+            if _text(link.get("url"))
+        ),
+        url=_text(raw.get("url")),
+        instructions=_optional_text(raw.get("instructions")),
+        user_code=_text(raw.get("userCode")),
+        verification_uri=_text(raw.get("verificationUri")),
+        expires_in_seconds=expires if isinstance(expires, int) and not isinstance(expires, bool) else None,
+    )
+
+
+def _parse_auth(kind: str, payload: dict[str, Any]) -> Event | None:
+    if kind == "auth_providers":
+        return AuthProvidersEvent(_parse_providers(payload.get("providers")), open=payload.get("open") is True)
+    if kind == "auth_prompt":
+        prompt = _parse_prompt(payload.get("prompt"))
+        return None if prompt is None else AuthPromptEvent(prompt)
+    if kind == "auth_event":
+        return _parse_flow_event(_text(payload.get("flowId")), payload.get("event"))
+    if kind == "auth_done":
+        return AuthDoneEvent(
+            flow_id=_text(payload.get("flowId")),
+            provider_id=_text(payload.get("providerId")),
+            ok=payload.get("ok") is True,
+            message=_optional_text(payload.get("message")),
+        )
+    return None
 
 
 def parse_event(payload: dict[str, Any]) -> Event | None:
@@ -360,6 +535,8 @@ def parse_event(payload: dict[str, Any]) -> Event | None:
         )
     if kind == "error":
         return ErrorEvent(_text(payload.get("code"), "error"), _text(payload.get("message")))
+    if isinstance(kind, str) and kind.startswith("auth_"):
+        return _parse_auth(kind, payload)
     return None
 
 
@@ -463,6 +640,31 @@ class JarvisClient:
         """Add a message the assistant reads after its current step."""
 
         return self._queue({"type": "steer", "text": text})
+
+    # Sign-in. ``auth_reply`` may carry a secret: frames are never logged (see
+    # ``_WIRE_LOGGER``) and nothing here keeps the value once it is queued.
+
+    def auth_list(self) -> bool:
+        """Ask for the accounts; the daemon answers ``auth_providers``."""
+
+        return self._queue({"type": "auth_list"})
+
+    def auth_login(self, provider_id: str, method: str) -> bool:
+        """Start a sign-in (``oauth`` or ``api_key``)."""
+
+        return self._queue({"type": "auth_login", "providerId": provider_id, "method": method})
+
+    def auth_reply(self, flow_id: str, value: str | None = None, *, cancelled: bool = False) -> bool:
+        """Answer the prompt of a sign-in, or cancel the sign-in."""
+
+        if cancelled:
+            return self._queue({"type": "auth_reply", "flowId": flow_id, "cancelled": True})
+        return self._queue({"type": "auth_reply", "flowId": flow_id, "value": value or ""})
+
+    def auth_logout(self, provider_id: str) -> bool:
+        """Sign out of one account."""
+
+        return self._queue({"type": "auth_logout", "providerId": provider_id})
 
     # Lifetime
 
@@ -572,6 +774,7 @@ class JarvisClient:
                     ping_interval=20,
                     ping_timeout=20,
                     max_size=MAX_FRAME_BYTES,
+                    logger=_WIRE_LOGGER,
                 ),
                 HELLO_DEADLINE_SECONDS,
             )
