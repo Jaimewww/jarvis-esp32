@@ -19,6 +19,12 @@ Documentation=https://github.com/Gentleman-Programming/gentle-dot
 # At most 10 starts in 10 minutes; then the unit stays failed until `reset-failed`.
 StartLimitIntervalSec=10min
 StartLimitBurst=10
+# Start with the graphical session instead of with the user manager at boot: by then the
+# compositor has put WAYLAND_DISPLAY and DISPLAY into the user manager, and the apps the
+# agent opens need them ("Missing X server or $DISPLAY" otherwise). Stops with the
+# session. `install.sh --headless` drops these two lines and installs into default.target.
+After=graphical-session.target
+PartOf=graphical-session.target
 
 [Service]
 Type=simple
@@ -53,4 +59,4 @@ LockPersonality=yes
 RestrictRealtime=yes
 
 [Install]
-WantedBy=default.target
+WantedBy=graphical-session.target

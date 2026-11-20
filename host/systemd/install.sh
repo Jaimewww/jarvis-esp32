@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install, check or remove the Gentle Dot daemon as a systemd *user* service.
 #
-#   host/systemd/install.sh --gentle-dot-dir DIR [--node PATH] [--dry-run] [--enable]
+#   host/systemd/install.sh --gentle-dot-dir DIR [--node PATH] [--headless] [--dry-run] [--enable]
 #   host/systemd/install.sh --gentle-dot-dir DIR [--node PATH] --check
 #   host/systemd/install.sh --uninstall [--dry-run]
 #
@@ -27,6 +27,8 @@ Uso: install.sh [opciones]
   --gentle-dot-dir DIR  checkout de Gentle Dot (también por GENTLE_DOT_DIR)
   --node PATH           binario de Node 24+ (por defecto: `command -v node`)
   --enable              además habilita y arranca el servicio (enable --now)
+  --headless            sin sesión gráfica: arranca con default.target en vez de
+                        graphical-session.target (el agente no podrá abrir ventanas)
   --check               solo verifica los requisitos; no escribe ni llama a systemctl
   --dry-run             imprime lo que haría, sin escribir ni llamar a systemctl
   --uninstall           detiene, deshabilita y borra la unidad
@@ -43,7 +45,7 @@ EOF
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 say() { printf '%s\n' "$*"; }
 
-DRY_RUN=0 ENABLE=0 CHECK=0 UNINSTALL=0 ALLOW_UNPINNED=0 ALLOW_DIRTY=0
+DRY_RUN=0 ENABLE=0 CHECK=0 UNINSTALL=0 ALLOW_UNPINNED=0 ALLOW_DIRTY=0 HEADLESS=0
 GD_DIR="${GENTLE_DOT_DIR:-}" NODE_BIN=""
 
 while (($#)); do
@@ -56,6 +58,7 @@ while (($#)); do
 	--uninstall) UNINSTALL=1; shift ;;
 	--allow-unpinned) ALLOW_UNPINNED=1; shift ;;
 	--allow-dirty) ALLOW_DIRTY=1; shift ;;
+	--headless) HEADLESS=1; shift ;;
 	-h | --help) usage; exit 0 ;;
 	*) usage >&2; die "opción desconocida: $1" ;;
 	esac
@@ -169,6 +172,19 @@ node_major="${node_major%%.*}"
 [[ -f "${TEMPLATE}" ]] || die "falta la plantilla ${TEMPLATE}"
 unit_text="$(sed -e "s|@NODE@|${NODE_BIN}|g" -e "s|@GENTLE_DOT_DIR@|${GD_DIR}|g" "${TEMPLATE}")"
 ! grep -q '@[A-Z_]*@' <<<"${unit_text}" || die "la plantilla dejó variables sin reemplazar"
+# The template starts with the graphical session; --headless installs into default.target.
+WANTED_TARGET="graphical-session.target" OTHER_TARGET="default.target"
+if ((HEADLESS)); then
+	WANTED_TARGET="default.target" OTHER_TARGET="graphical-session.target"
+	unit_text="$(sed -E -e '/^(After|PartOf)=graphical-session\.target$/d' \
+		-e 's/^WantedBy=graphical-session\.target$/WantedBy=default.target/' <<<"${unit_text}")"
+fi
+grep -qxF "WantedBy=${WANTED_TARGET}" <<<"${unit_text}" || die "la plantilla no tiene WantedBy=${WANTED_TARGET}"
+# A link left by an earlier install under the other target (e.g. default.target before the
+# unit moved to the graphical session) keeps starting the service there: reenable drops it.
+STALE_LINK="${UNIT_DIR}/${OTHER_TARGET}.wants/${UNIT_NAME}"
+stale=0
+[[ -L "${STALE_LINK}" ]] && stale=1
 
 if ((CHECK)); then
 	say "OK: Gentle Dot en ${GD_DIR}, node ${node_version} (${NODE_BIN}); la unidad iría a ${UNIT_PATH}"
@@ -220,8 +236,20 @@ fi
 if ((ENABLE)); then
 	# A running service picks up a changed unit; then enable at login and start it.
 	((changed)) && run systemctl --user try-restart "${UNIT_NAME}"
-	run systemctl --user enable --now "${UNIT_NAME}"
+	if ((stale)); then
+		# reenable = disable (removes every link to the unit) + enable (the current [Install]).
+		say "La unidad seguía habilitada en ${OTHER_TARGET}; se vuelve a habilitar en ${WANTED_TARGET}."
+		run systemctl --user reenable "${UNIT_NAME}"
+		run systemctl --user start "${UNIT_NAME}"
+	else
+		run systemctl --user enable --now "${UNIT_NAME}"
+	fi
 else
+	((stale)) && say "aviso: la unidad sigue habilitada en ${OTHER_TARGET}; para pasarla a ${WANTED_TARGET}: systemctl --user reenable ${UNIT_NAME} (o este script con --enable)."
 	say "No se habilitó ni arrancó. Para hacerlo: systemctl --user enable --now ${UNIT_NAME} (o este script con --enable)."
 fi
-say "Para que arranque sin iniciar sesión (opcional, no lo hace este script): loginctl enable-linger \"\$USER\""
+if ((HEADLESS)); then
+	say "Para que arranque sin iniciar sesión (opcional, no lo hace este script): loginctl enable-linger \"\$USER\""
+else
+	say "Arranca con la sesión gráfica (graphical-session.target) y se detiene al cerrarla."
+fi

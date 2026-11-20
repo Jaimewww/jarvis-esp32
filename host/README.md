@@ -71,7 +71,8 @@ systemd:
 * `systemd/gentle-dot.service.in` — plantilla de la unidad. Arranca
   `node packages/daemon/src/cli.ts` (lo mismo que `pnpm start` del proyecto original),
   antes corre su `--self-check`, se reinicia ante fallos con espera creciente (2 s a
-  1 min, como mucho 10 arranques en 10 minutos) y escribe en el journal. Sin secretos.
+  1 min, como mucho 10 arranques en 10 minutos) y escribe en el journal. Arranca con la
+  sesión gráfica (`graphical-session.target`) y se detiene al cerrarla. Sin secretos.
 * `systemd/install.sh` — instala, verifica o quita la unidad. Solo escribe
   `~/.config/systemd/user/gentle-dot.service` (o bajo `$XDG_CONFIG_HOME`) y solo llama a
   `systemctl --user`. Se niega a correr como root.
@@ -96,9 +97,18 @@ systemd:
 
   El script rechaza un checkout en otro commit (salvo `--allow-unpinned`) o sin
   `node_modules`.
-* Para que arranque **sin iniciar sesión** (al encender la PC), opcional y fuera del
-  script: `loginctl enable-linger "$USER"`. Sin eso arranca al iniciar sesión, que es lo
-  que pide P3.
+* Una sesión gráfica que active `graphical-session.target` (niri, GNOME, KDE y los
+  compositores que usan `uwsm` o `systemd --user` lo hacen; comprobar con
+  `systemctl --user is-active graphical-session.target`). La unidad arranca **con la
+  sesión** y no con el administrador de usuario al encender la PC: así hereda
+  `WAYLAND_DISPLAY` y `DISPLAY`, que el agente necesita para abrir aplicaciones (etapa a
+  de [D20](../docs/decisiones.md#d20--control-de-la-pc-por-el-agente-pista-s2-por-etapas)).
+  Si arrancara antes que el compositor, las aplicaciones fallan con
+  `Missing X server or $DISPLAY`.
+* Sin sesión gráfica (un servidor, o para que arranque **sin iniciar sesión**):
+  `--headless` instala la unidad en `default.target` y sin atarla a la sesión; el agente
+  no podrá abrir ventanas. Para arrancar al encender la PC, opcional y fuera del script:
+  `loginctl enable-linger "$USER"`.
 
 ### Instalar
 
@@ -121,7 +131,14 @@ host/systemd/install.sh --gentle-dot-dir ~/ruta/gentle-dot \
 Sin `--enable` solo escribe la unidad y hace `systemctl --user daemon-reload`; con
 `--enable` además corre `systemctl --user enable --now gentle-dot.service` (y
 `try-restart` si la unidad cambió). Repetirlo es seguro: si la unidad ya está al día no
-hace nada.
+hace nada. Correrlo **dentro de la sesión gráfica**, para que `try-restart` y `start`
+dejen el daemon con `WAYLAND_DISPLAY`.
+
+- Al actualizar desde una unidad anterior habilitada en `default.target` (o al pasar de
+  `--headless` a la sesión, o al revés), `--enable` detecta el enlace viejo en
+  `~/.config/systemd/user/default.target.wants/` y corre `systemctl --user reenable` +
+  `start` en vez de `enable --now`, para no dejar el servicio arrancando también al
+  encender la PC. Sin `--enable` solo avisa.
 
 - `--allow-dirty`: acepta un checkout de Gentle Dot con cambios sin commitear o archivos sin seguimiento (desaconsejado). Sin ella, el instalador se niega y no escribe nada si `git -C <checkout> status --porcelain` no está vacío; `--check` también lo comprueba.
 - Backup: antes de reemplazar una unidad distinta, el instalador guarda la anterior en `~/.config/systemd/user/gentle-dot.service.bak` e imprime la ruta. `--uninstall` la conserva.
@@ -190,7 +207,9 @@ Detiene y deshabilita el servicio, borra la unidad y recarga systemd. No toca
 | `/login` con Anthropic muestra `Signing in with a Claude subscription is not supported. …` | El daemon solo acepta Anthropic con API key: elegir `API key` |
 | `/login` muestra `Another sign-in is in progress. …` | Otra ventana (o la app de escritorio) tiene un inicio de sesión abierto: terminarlo o cancelarlo allí |
 | El agente no puede usar `sudo` | Efecto buscado de `NoNewPrivileges=yes`; se puede quitar con un override |
-| El servicio se detiene al cerrar sesión | Normal sin linger; ver Requisitos |
+| El servicio se detiene al cerrar sesión | Normal: la unidad es `PartOf=graphical-session.target`; ver Requisitos (`--headless` si se quiere sin sesión) |
+| La app no abre / `Missing X server or $DISPLAY` en el journal | El servicio arrancó antes de la sesión gráfica y no tiene `WAYLAND_DISPLAY` ni `DISPLAY`; con esta unidad arranca con la sesión (volver a correr `install.sh --enable` si la instalada es anterior). Mientras tanto: `systemctl --user restart gentle-dot` dentro de la sesión |
+| El servicio no arranca al iniciar sesión | El compositor no activa `graphical-session.target` (`systemctl --user is-active graphical-session.target`): usar `--headless` o arrancarlo desde el compositor |
 
 Sin la aplicación de escritorio, el proyecto original carga la configuración tal cual y
 deja bloqueados los conectores que usan token (su README, «started without the app»);
@@ -204,8 +223,10 @@ bash host/systemd/test_install.sh
 
 Corre en un `HOME` y `XDG_CONFIG_HOME` temporales con `systemctl`, `node` e `id` falsos:
 salida de `--dry-run` al instalar y desinstalar, idempotencia, negativa como root, con
-Node viejo, con un checkout en otro commit o sin dependencias, y que no se escribe nada
-fuera del directorio de unidades. Si `systemd-analyze` está instalado, además valida la
+Node viejo, con un checkout en otro commit o sin dependencias, que la unidad va con la
+sesión gráfica (y `--headless` con `default.target`), que `--enable` vuelve a habilitar
+una unidad que quedó en el otro target, y que no se escribe nada fuera del directorio de
+unidades. Si `systemd-analyze` está instalado, además valida la
 unidad con `systemd-analyze --user verify`. Corre en CI en el paso
 `host · systemd unit`.
 
