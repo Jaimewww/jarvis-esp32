@@ -76,9 +76,9 @@ All agent requests share a rate limit of **10 per second** (sliding window).
 * `key`: up to 20 space-separated combos `mod+mod+key`; modifiers `ctrl|control`, `shift`,
   `alt`, `altgr`, `super|logo|win|meta|mod`; aliases `enter|return`, `esc`, `tab`, `space`,
   `backspace`, `delete|del`, `insert`, `home`, `end`, `pageup`, `pagedown`, arrows, `f1`–`f24`;
-  otherwise an xkb keysym name. Runs `wtype -M mod … -k key … -m mod …`. With `shift`, a
-  lowercase letter is sent as its capital keysym (`shift+g` → `-k G`): wtype's keymap has one
-  level per key, so the app would otherwise see `g`.
+  otherwise an xkb keysym name. Runs `wtype -M mod … -k key … -m mod …`. A plain
+  `shift+letter` is sent as the capital as a text argument (`shift+g` → `G`): wtype resolves `-k`
+  names case-insensitively, so `-k G` or `-M shift -k g` would type `g`.
 * `screenshot`: optional `scale` in `[0.05, 1]`; runs `grim [-s <scale>] -`.
 * `apps`: **reads files only, never runs anything.** Data dirs by precedence:
   `$XDG_DATA_HOME` (or `~/.local/share`), `$XDG_DATA_DIRS` (or `/usr/local/share:/usr/share`;

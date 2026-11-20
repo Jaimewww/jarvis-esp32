@@ -309,3 +309,9 @@ propia solicitud desde `main`; worktree `jarvis-esp32-worktrees/pi-next`.
   palabra de riesgo. Luego: "no funciona el lo del alt shiuft esc si funciona bien".
   Arreglo: shift+letra envía la mayúscula; palabras de riesgo `vaci`, `clear`, `wipe`; AGENTS.md
   pide "borrar" en la intención y explica Vim en VS Code.
+- L24 (usuario y evidencia, 2026-11-20): con confirmación ya visible, "sigue escribiendo ggg".
+  Prueba manual `wtype -k Shift_L -s 250 -k Escape -s 300 -k g -k g -k d -M shift -k G -m shift`
+  → "aparece ggdg" (ni Escape ni G). `wtype -k Escape` solo sí pasa a modo normal y
+  `wtype -- ggdG` vacía el documento ("eliminó todo"). Causas: wtype resuelve `-k` sin distinguir
+  mayúsculas; y numera las teclas en orden de uso, así que tras el Shift del preludio Escape no
+  queda en el keycode real que VS Code usa para atajos. Arreglo 1: shift+letra se envía como texto.

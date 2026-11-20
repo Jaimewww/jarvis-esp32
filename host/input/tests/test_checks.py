@@ -23,7 +23,7 @@ class ParseKeysTest(unittest.TestCase):
         self.assertEqual(checks.parse_keys("ctrl+l"), ["-M", "ctrl", "-k", "l", "-m", "ctrl"])
         self.assertEqual(
             checks.parse_keys("ctrl+shift+t"),
-            ["-M", "ctrl", "-M", "shift", "-k", "T", "-m", "shift", "-m", "ctrl"],
+            ["-M", "ctrl", "-M", "shift", "-k", "t", "-m", "shift", "-m", "ctrl"],
         )
         self.assertEqual(checks.parse_keys("super+1"), ["-M", "logo", "-k", "1", "-m", "logo"])
         self.assertEqual(
@@ -34,12 +34,13 @@ class ParseKeysTest(unittest.TestCase):
         self.assertEqual(checks.parse_keys("esc"), ["-k", "Escape"])
 
     def test_shift_letter_sends_the_capital(self) -> None:
-        # wtype's keymap has one level per key, so shift+g reached VS Code (Vim) as "g" and
-        # "g g d shift+g" did not clear the document (L23). Shift+letter sends the capital keysym.
-        self.assertEqual(checks.parse_keys("shift+g"), ["-M", "shift", "-k", "G", "-m", "shift"])
+        # wtype resolves -k names case-insensitively, so "-k G" and "-M shift -k g" both reached
+        # VS Code (Vim) as "g" (L23, L24). Plain shift+letter is sent as the capital as text, which
+        # wtype types with its own keysym; shortcuts with other modifiers keep the key.
+        self.assertEqual(checks.parse_keys("shift+g"), ["G"])
         self.assertEqual(
             checks.parse_keys("Escape g g d shift+g"),
-            ["-k", "Escape", "-k", "g", "-k", "g", "-k", "d", "-M", "shift", "-k", "G", "-m", "shift"],
+            ["-k", "Escape", "-k", "g", "-k", "g", "-k", "d", "G"],
         )
         self.assertEqual(checks.parse_keys("shift+Tab"), ["-M", "shift", "-k", "Tab", "-m", "shift"])
         self.assertEqual(checks.parse_keys("g"), ["-k", "g"])  # no shift: unchanged
