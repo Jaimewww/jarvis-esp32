@@ -278,4 +278,6 @@ propia solicitud desde `main`; worktree `jarvis-esp32-worktrees/pi-next`.
 - L19 (usuario y evidencia, 2026-11-20): Jarvis abrió VS Code, enfocó, `ctrl+n` y escribió, pero
   no apareció nada. Prueba del usuario `sleep 4; wtype hola` en VS Code: "solo pone la". Causa:
   apps Chromium/Electron pierden las primeras teclas mientras aplican el keymap que `wtype`
-  sube en cada corrida. Arreglo en el ayudante: `wtype -s 250` antes y `-d 8` entre teclas.
+  sube en cada corrida. `wtype -s 250` antes no alcanzó (Jarvis escribió "la mundo"): el keymap
+  viaja con la primera tecla. Arreglo final: `wtype -k Shift_L -s 250 -d 8 …` (un Shift inocuo
+  lleva el keymap, pausa, y recién el texto). Prueba del usuario: "ahora si aparece hola completo".

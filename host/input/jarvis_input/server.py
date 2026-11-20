@@ -51,8 +51,10 @@ class StartupError(Exception):
 
 # wtype uploads a fresh keymap on every run; Chromium/Electron apps (Brave, VS Code) drop
 # the first keystrokes that arrive before they apply it ("wtype hola" typed only "la" in
-# VS Code, L19). A short sleep first and a small delay between keys avoid that.
-WTYPE_PRELUDE = ("-s", "250")
+# VS Code, L19). A sleep alone did not help ("la mundo"): wtype sends the keymap with the
+# first key. So the first key is a harmless Shift tap that carries the keymap, then a sleep
+# while the app applies it, then the real keys with a small delay between them.
+WTYPE_PRELUDE = ("-k", "Shift_L", "-s", "250")
 WTYPE_KEY_DELAY_MS = "8"
 
 
