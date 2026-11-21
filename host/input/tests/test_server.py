@@ -22,7 +22,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from jarvis_input import server  # noqa: E402
+from jarvis_input import server, slots  # noqa: E402
 
 FAKE = f"""#!{sys.executable}
 import json, os, sys, time
@@ -486,29 +486,22 @@ class TypeTest(Base):
         res = await self.agent({"op": "type", "text": "-hola mundo", "intent": "escribir nota"})
         self.assertEqual(res, {"ok": True})
         [c] = self.calls("wtype")
-        # Every character is registered first (a release only), so wtype's keymap does not change
-        # while typing; VS Code dropped keys after each change ("este es un texto" → "ee es uno", L27).
-        reg = [x for cp in "-hola mund" for x in ("-p", hex(ord(cp)))]
-        self.assertEqual(c["argv"], [*reg, "-k", "Shift_L", "-s", "250", "-d", "8", "--", "-hola mundo"])
+        # The keycode slot plan (slots.py, exact argv in test_slots): every key is released once
+        # up front, then the Shift tap, then each character as -k <keysym>; no raw text in argv.
+        self.assertEqual(c["argv"], slots.type_argvs("-hola mundo")[0][1:])
+        self.assertNotIn("--", c["argv"])
+        k = c["argv"].index("-k")
+        self.assertEqual(c["argv"][k:k + 6], ["-k", "Shift_L", "-s", "250", "-d", "8"])
+        self.assertEqual(c["argv"][k + 6:k + 10], ["-k", "0x2d", "-k", "0x68"])
 
-    async def test_type_registers_each_character_once(self) -> None:
-        res = await self.agent({"op": "type", "text": "añ\nañ€", "intent": "escribir nota"})
+    async def test_type_many_distinct_characters_in_several_runs(self) -> None:
+        text = "".join(chr(c) for c in range(0x21, 0x7F)) + "áéíóúñ"
+        res = await self.agent({"op": "type", "text": text, "intent": "escribir nota"})
         self.assertEqual(res, {"ok": True})
-        [c] = self.calls("wtype")
-        euro = "0x20ac" if server._xkb_utf32_to_keysym else "0x10020ac"  # wtype types EuroSign
-        self.assertEqual(c["argv"], ["-p", "0x61", "-p", "0xf1", "-p", "0xff0d", "-p", euro,
-                                     "-k", "Shift_L", "-s", "250", "-d", "8", "--", "añ\nañ€"])
-        niri = self.calls("niri")
-        self.assertEqual(len(niri), 2)  # check + re-check right before wtype
-        self.assertEqual(niri[0]["argv"], ["msg", "-j", "focused-window"])
-
-    def test_keysyms_match_libxkbcommon(self) -> None:
-        # wtype maps characters with xkb_utf32_to_keysym, which picks legacy keysyms for many
-        # characters agents write (’ — … €); registering 0x1000000+cp left them mid-text (L28).
-        if not server._xkb_utf32_to_keysym:
-            self.skipTest("libxkbcommon not available")
-        self.assertEqual(server.register_chars("’—…€"),
-                         ["-p", "0xad1", "-p", "0xaa9", "-p", "0xaae", "-p", "0x20ac"])
+        calls = self.calls("wtype")
+        self.assertEqual([c["argv"] for c in calls], [a[1:] for a in slots.type_argvs(text)])
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(self.calls("niri")), 3)  # check + a re-check before each wtype
 
     async def test_intent_optional(self) -> None:
         self.assertTrue((await self.agent({"op": "type", "text": "hola"}))["ok"])
@@ -587,19 +580,20 @@ class KeyTest(Base):
         [c] = self.calls("wtype")
         # Keys: Escape is registered first (release only) so it keeps the real Escape keycode
         # VS Code matches shortcuts on (L24-L25); the Shift tap still carries the keymap.
-        self.assertEqual(c["argv"], ["-p", "Escape", "-k", "Shift_L", "-s", "250",
-                                     "-M", "ctrl", "-k", "l", "-m", "ctrl"])
+        self.assertEqual(c["argv"], slots.key_argv(["-M", "ctrl", "-k", "l", "-m", "ctrl"])[1:])
+        self.assertEqual(c["argv"][-10:], ["-k", "Shift_L", "-s", "250", "-M", "ctrl", "-k", "l", "-m", "ctrl"])
 
     async def test_key_pauses_after_escape(self) -> None:
         # VS Code Vim needs a moment to leave insert mode before the next keys (L25).
         res = await self.agent({"op": "key", "keys": "Escape g g d shift+g", "intent": "modo vim"})
         self.assertTrue(res["ok"])
         [c] = self.calls("wtype")
-        self.assertEqual(c["argv"], ["-p", "Escape", "-k", "Shift_L", "-s", "250", "-k", "Escape", "-s", "300",
-                                     "-k", "g", "-k", "g", "-k", "d", "G"])
+        tail = ["-k", "Escape", "-s", "300", "-k", "g", "-k", "g", "-k", "d", "-k", "0x47"]
+        self.assertEqual(c["argv"][-len(tail):], tail)
+        self.assertEqual(c["argv"][:2], ["-p", "0xff1b"])  # Escape keeps keycode 1 (L24-L25)
 
     async def test_no_pause_inside_modifier_or_at_end(self) -> None:
-        pre = ["-p", "Escape", "-k", "Shift_L", "-s", "250"]
+        pre = ["-k", "Shift_L", "-s", "250"]
         for keys, tail in [
             ("ctrl+Escape g", ["-M", "ctrl", "-k", "Escape", "-m", "ctrl", "-k", "g"]),
             ("g Escape", ["-k", "g", "-k", "Escape"]),
@@ -608,7 +602,7 @@ class KeyTest(Base):
             (self.fake / "calls.jsonl").unlink(missing_ok=True)
             self.assertTrue((await self.agent({"op": "key", "keys": keys, "intent": "modo vim"}))["ok"], keys)
             [c] = self.calls("wtype")
-            self.assertEqual(c["argv"], pre + tail, keys)
+            self.assertEqual(c["argv"][c["argv"].index("-k"):], pre + tail, keys)
 
     async def test_bad_keys(self) -> None:
         for req in [{"op": "key"}, {"op": "key", "keys": ""}, {"op": "key", "keys": "-P x"},
@@ -962,8 +956,7 @@ class TypeIntoWindowTest(Base):
         self.assertEqual(res, {"ok": True, "window_id": 11})
         self.assertEqual(self.order(), ["focus 11", "wtype", "focus 3"])
         [c] = self.calls("wtype")
-        self.assertEqual(c["argv"], ["-p", "0x68", "-p", "0x6f", "-p", "0x6c", "-p", "0x61",
-                                     "-k", "Shift_L", "-s", "250", "-d", "8", "--", "hola"])
+        self.assertEqual(c["argv"], slots.type_argvs("hola")[0][1:])
 
     async def test_key_focuses_types_and_restores(self) -> None:
         self.focus(GHOSTTY, NOTEPAD)
