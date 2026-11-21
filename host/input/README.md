@@ -311,6 +311,10 @@ focus is back on it afterwards):
 | vscode+vim: key `Escape g g d shift+g` | buffer empty, NORMAL mode (L23-L25) |
 | vscode+vim: key `i`, type the sentence | buffer exactly the sentence (L27) |
 | vscode+vim: key `Escape g g d shift+g` again | buffer empty, NORMAL mode |
+| vscode+vim: key `a`, then type ` Cada nuevo proyecto` right away | buffer exactly the text, INSERT mode (desktop-e2e L5-L7) |
+| vscode+vim: key `Escape g g d shift+g` a third time | buffer empty, NORMAL mode |
+| vscode+vim: key `a` needing a confirmation answered with a held `y`, then the text | buffer exactly the text, INSERT mode (desktop-e2e L8) |
+| vscode+vim: key `Escape g g d shift+g` a fourth time | buffer empty, NORMAL mode |
 
 Output: `PASS|FAIL|SKIP: <case> (<s>) — <detail>` per case, then
 `summary: N passed, N failed, N skipped in Ns`. Exit **0** all ran cases passed, **1** a case

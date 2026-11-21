@@ -19,6 +19,7 @@ import os
 import re
 import shutil
 import signal
+import subprocess
 import socket
 import sys
 import tempfile
@@ -43,6 +44,9 @@ TARGET_TITLE, OTHER_TITLE = "jarvis-e2e-target", "jarvis-e2e-other"
 HOLA = "hola mundo"
 SENTENCE = "Hola mundo, este es un texto de prueba. ’ — …"  # L27 + legacy keysyms (ad4cf60)
 VIM_CLEAR = "Escape g g d shift+g"
+BACK_TO_BACK = " Cada nuevo proyecto"  # leading space and capital: Vim commands in NORMAL
+# the production intent (L5): "borrar" is a risk word, so the key needs a confirmation
+CONFIRM_INTENT = "Entrar en modo inserción al final del texto en VS Code sin borrar contenido."
 MARK_CSS, MARK_RGB = "rgb(255, 0, 255)", (255, 0, 255)  # the target page colour in the screenshot case
 SELECT_DELETE = "ctrl+a Delete"
 # More distinct characters than one wtype keymap has safe keycodes for (several wtype runs).
@@ -257,6 +261,38 @@ class Run:
     def key_into(self, wid: int, keys: str) -> None:
         self.helper.agent({"op": "key", "keys": keys, "intent": "prueba e2e", "window_id": wid})
 
+    def key_confirmed_with_y(self, wid: int, keys: str, intent: str) -> None:
+        """Send a key that needs a confirmation and answer it like the user does in the TUI: a
+        human `y` press in the focused (user's) window, the answer, then the key release."""
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sub:
+            sub.settimeout(30)
+            sub.connect(str(self.helper.helper.control_path))
+            sub.sendall(b'{"op":"subscribe"}\n')
+            events = sub.makefile("rb")
+            first = json.loads(events.readline())
+            assert first.get("ok"), f"subscribe refused: {first}"
+            answered: list[str] = []
+
+            def answer() -> None:
+                for line in events:
+                    ev = json.loads(line)
+                    if ev.get("event") != "confirm":
+                        continue
+                    # one wtype process holds `y` for ~100 ms, as a human key press does; the
+                    # answer goes out while it is still down (the TUI answers on key press)
+                    human = subprocess.Popen(["wtype", "-P", "y", "-s", "100", "-p", "y"])
+                    time.sleep(0.03)
+                    self.helper.control({"op": "answer", "id": ev["id"], "allow": True})
+                    answered.append(ev["id"])
+                    human.wait(5)
+                    return
+
+            t = threading.Thread(target=answer, daemon=True)
+            t.start()
+            self.helper.agent({"op": "key", "keys": keys, "intent": intent, "window_id": wid})
+            t.join(5)
+            assert answered, "the helper did not ask for a confirmation"
+
 
 def connect_page(port: int, title: str, timeout: float = 20) -> cdp.Cdp:
     deadline = time.monotonic() + timeout
@@ -428,10 +464,45 @@ def vscode_cases(run: Run, ws: cdp.Cdp, wid: int, other: int) -> None:
         run.check_focus_back(other)
         return f"cleared {len(before)} chars, NORMAL mode, focus restored"
 
+    def back_to_back() -> str:
+        # The agent sends the mode key and the text as two calls with nothing in between: the
+        # helper restores focus after the key and takes it again for the text. If VS Code has not
+        # handled the 'a' yet, Vim stays in NORMAL and eats the first characters as commands
+        # (' ' moves right, 'C' changes to the end of the line): " Cada" became "ada".
+        assert text() == "", f"buffer not empty before typing: {text()!r}"
+        assert mode() == "NORMAL", f"vim mode before 'a' is {mode()}"
+        run.focus_other(other)
+        run.key_into(wid, "a")
+        run.type_into(wid, BACK_TO_BACK)
+        time.sleep(0.3)
+        got, got_mode = text(), mode()
+        assert got == BACK_TO_BACK, f"buffer has {got!r}, expected {BACK_TO_BACK!r}; vim mode {got_mode}"
+        assert got_mode == "INSERT", f"vim mode after 'a' and the text is {got_mode}"
+        run.check_focus_back(other)
+        return "mode key then text back to back: text complete, focus restored"
+
+    def confirmed_back_to_back() -> str:
+        # Production (L5-L7): the 'a' needed a TUI confirmation answered with `y`, then the text.
+        assert text() == "", f"buffer not empty before typing: {text()!r}"
+        assert mode() == "NORMAL", f"vim mode before 'a' is {mode()}"
+        run.focus_other(other)
+        run.key_confirmed_with_y(wid, "a", CONFIRM_INTENT)
+        run.type_into(wid, BACK_TO_BACK)
+        time.sleep(0.3)
+        got, got_mode = text(), mode()
+        assert got == BACK_TO_BACK, f"buffer has {got!r}, expected {BACK_TO_BACK!r}; vim mode {got_mode}"
+        assert got_mode == "INSERT", f"vim mode after 'a' and the text is {got_mode}"
+        run.check_focus_back(other)
+        return "confirmed mode key then text: text complete, focus restored"
+
     run.case(f"vscode+vim: key 'i' then type {HOLA!r}", typed(HOLA))
     run.case(f"vscode+vim: key {VIM_CLEAR!r} empties the buffer", clear)
     run.case(f"vscode+vim: key 'i' then type {SENTENCE!r}", typed(SENTENCE))
     run.case(f"vscode+vim: key {VIM_CLEAR!r} empties it again", clear)
+    run.case(f"vscode+vim: key 'a' then type {BACK_TO_BACK!r}, back to back", back_to_back)
+    run.case(f"vscode+vim: key {VIM_CLEAR!r} empties it a third time", clear)
+    run.case(f"vscode+vim: key 'a' confirmed with y, then type {BACK_TO_BACK!r}", confirmed_back_to_back)
+    run.case(f"vscode+vim: key {VIM_CLEAR!r} empties it a fourth time", clear)
 
 
 def execute(root: Path, args: argparse.Namespace) -> list[Result]:
