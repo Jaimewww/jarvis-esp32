@@ -26,7 +26,7 @@ focus and screenshots are checked by a script instead of the user. Branch `feat/
 - [x] T1 (S1-S3): explore options, build the runner and cases, document. Route: worker. Commit: f021ec8
   (runner `host/e2e/run.sh` = `python3 -m jarvis_e2e`; on top of cherry-picked ad4cf60 as 4e315c8).
   Open: the VS Code `hola mundo` case FAILS against the current helper (L2).
-- [ ] T2 (S1, L2): fix the helper so the runner passes: plan wtype keycode slots (special keysyms on their real keycodes, text characters never on keycodes Chromium treats as special). Route: worker. Commit: —
+- [x] T2 (S1, L2): fix the helper so the runner passes: plan wtype keycode slots (special keysyms on their real keycodes, text characters never on keycodes Chromium treats as special). Route: worker. Commit: ad9d9bc (runner cases 79eaabc). Text is now typed as `-k <keysym>`, not after `--` (L3).
 
 ## Log
 
@@ -47,3 +47,17 @@ focus and screenshots are checked by a script instead of the user. Branch `feat/
   here (not trivial): typing must keep text keysyms off keycodes VS Code binds (Escape, BackSpace,
   Tab, Return, modifiers, arrows…).
 - L2 (runner, 2026-11-20): 6/7 pass; `hola mundo` in VS Code+Vim fails: register_chars puts characters on the keycodes VS Code reads as BackSpace/Tab (space acts as Tab). Likely also the cause of s2-round2 L27.
+- L3 (worker, 2026-11-20): wtype 0.4 main.c: one keymap built while parsing argv; each new keysym
+  is the next entry in order of first use, entry i = evdev i+1 (xkb i+9); `-k`/`-p`/`-P` share
+  the entries and match by keysym, text matches by character only (never reuses a `-p` entry,
+  always appended after all options); `-M`/`-m` take no keycode. So text after `--` is one
+  contiguous block after the options and cannot avoid special keycodes once it has > 12
+  distinct characters: text is now `-k 0x…` per character. `jarvis_input/slots.py` releases one
+  keysym per keycode 1..max (specials on their real US keycode, shortcut letters then the rest
+  on their own US key or the next free character key, private-use fillers elsewhere), then
+  `-k Shift_L -s 250` (Shift_L on 42), then the keys/text; > 66 distinct characters = several
+  wtype runs. Runner before (fea3934 + new checks): 2/9 pass (`hola mundo` and the sentence
+  fail on Backspace/Tab/Enter/ControlLeft/ShiftLeft codes in Brave and VS Code; 108 distinct
+  characters lose most text). After (ad9d9bc): 9/9 pass, three runs in a row (~20 s each).
+  Runner fix: the nested niri now runs with `vblank_mode=0`; with the user's monitors off it got
+  one frame callback per second and handled one key per second (`hhoollaa`, timeouts).
