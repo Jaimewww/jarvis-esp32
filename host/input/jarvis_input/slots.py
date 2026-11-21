@@ -102,10 +102,40 @@ def keysym_of_char(ch: str) -> int:
     return 0x1000000 + cp
 
 
+_PUNCT = {"space": " ", "exclam": "!", "quotedbl": '"', "numbersign": "#", "dollar": "$",
+          "percent": "%", "ampersand": "&", "apostrophe": "'", "parenleft": "(", "parenright": ")",
+          "asterisk": "*", "plus": "+", "comma": ",", "minus": "-", "period": ".", "slash": "/",
+          "colon": ":", "semicolon": ";", "less": "<", "equal": "=", "greater": ">",
+          "question": "?", "at": "@", "bracketleft": "[", "backslash": "\\", "bracketright": "]",
+          "asciicircum": "^", "underscore": "_", "grave": "`", "braceleft": "{", "bar": "|",
+          "braceright": "}", "asciitilde": "~"}
+
+# Without libxkbcommon, `-k` names resolve with this table (xkb names, matched case-insensitively
+# like xkb; letters give the lowercase keysym as xkb does): everything parse_keys aliases to,
+# letters, digits, ASCII punctuation, F-keys and the common special keys.
+FALLBACK_NAMES: dict[str, int] = {
+    **{c: ord(c) for c in "abcdefghijklmnopqrstuvwxyz0123456789"},
+    **{name: ord(ch) for name, ch in _PUNCT.items()},
+    **{f"F{i}": 0xFFBE + i - 1 for i in range(1, 25)},
+    "Escape": _ESCAPE, "BackSpace": 0xFF08, "Tab": _TAB, "Return": _RETURN, "KP_Enter": 0xFF8D,
+    "Delete": 0xFFFF, "Insert": 0xFF63, "Home": 0xFF50, "End": 0xFF57, "Page_Up": 0xFF55,
+    "Prior": 0xFF55, "Page_Down": 0xFF56, "Next": 0xFF56, "Up": 0xFF52, "Down": 0xFF54,
+    "Left": 0xFF51, "Right": 0xFF53, "Print": 0xFF61, "Menu": 0xFF67, "Pause": 0xFF13,
+    "Scroll_Lock": 0xFF14, "Num_Lock": 0xFF7F, "Caps_Lock": 0xFFE5, "Shift_L": _SHIFT_L,
+    "Shift_R": 0xFFE2, "Control_L": 0xFFE3, "Control_R": 0xFFE4, "Alt_L": 0xFFE9, "Alt_R": 0xFFEA,
+    "Super_L": 0xFFEB, "Super_R": 0xFFEC,
+}
+_FALLBACK_LOWER = {k.lower(): v for k, v in FALLBACK_NAMES.items()}
+
+
 def keysym_of_name(name: str) -> int:
-    """The keysym wtype resolves `-k name` to (case-insensitive, like wtype). ValueError if none."""
+    """The keysym wtype resolves `-k name` to (case-insensitive, like wtype). ValueError if none.
+    Without libxkbcommon only FALLBACK_NAMES resolve (`type` degrades the same way)."""
     if _xkb_keysym_from_name is None:
-        raise ValueError("falta libxkbcommon para resolver teclas")
+        ks = _FALLBACK_LOWER.get(name.lower())
+        if ks is None:
+            raise ValueError(f"tecla {name} no disponible: falta libxkbcommon para resolverla")
+        return ks
     ks = int(_xkb_keysym_from_name(name.encode(), 1))  # XKB_KEYSYM_CASE_INSENSITIVE
     if not ks:
         raise ValueError(f"tecla desconocida: {name}")
@@ -155,16 +185,19 @@ def type_argvs(text: str) -> list[list[str]]:
     than there are character keycodes (each run uploads its own keymap and needs the prelude)."""
     argvs: list[list[str]] = []
     chunk: list[int] = []
+    distinct: dict[int, None] = {}  # the plan depends only on these, in first-use order
     for ks in [keysym_of_char(ch) for ch in text] + [None]:
-        if ks is not None and plan([_SHIFT_L, *chunk, ks]) is not None:
+        if ks is not None and (ks in distinct or plan([_SHIFT_L, *distinct, ks]) is not None):
             chunk.append(ks)
+            distinct[ks] = None
             continue
         if chunk:
-            slots = plan([_SHIFT_L, *chunk])
+            slots = plan([_SHIFT_L, *distinct])
             assert slots is not None
             argvs.append(["wtype", *_releases(slots), *PRELUDE, "-d", KEY_DELAY_MS,
                           *[x for k in chunk for x in ("-k", hex(k))]])
         chunk = [] if ks is None else [ks]
+        distinct = {} if ks is None else {ks: None}
     return argvs
 
 

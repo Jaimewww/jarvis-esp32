@@ -9,6 +9,7 @@ import tempfile
 import unittest
 import zlib
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -92,6 +93,27 @@ class DesktopTest(unittest.TestCase):
         self.assertEqual(env["NIRI_SOCKET"], "/t/run/niri.s")
         self.assertEqual(env["XDG_RUNTIME_DIR"], "/t/run")
         self.assertEqual(env["HOME"], "/h")
+
+    def test_browser_devtools_not_open_to_other_origins(self) -> None:
+        # The CDP client sends no Origin header, so no --remote-allow-origins is needed: a page
+        # in that browser cannot drive DevTools.
+        with tempfile.TemporaryDirectory() as tmp:
+            d = desktop.Desktop(Path(tmp), {})
+            seen: list[list[str]] = []
+            d.spawn = lambda name, argv, env: seen.append(argv)  # type: ignore[assignment,method-assign,misc,return-value]
+            d.start_browser("/usr/bin/brave", ["file:///x"])
+        [argv] = seen
+        self.assertIn("--remote-debugging-port=0", argv)
+        self.assertFalse(any(a.startswith("--remote-allow-origins") for a in argv), argv)
+
+    def test_cdp_handshake_sends_no_origin(self) -> None:
+        import socket as socketlib
+        a, b = socketlib.socketpair()
+        with a, b:
+            b.sendall(b"HTTP/1.1 101 Switching Protocols\r\n\r\n")
+            with mock.patch.object(cdp.socket, "create_connection", return_value=a):
+                cdp.Cdp("ws://127.0.0.1:9222/devtools/page/x")
+            self.assertNotIn(b"origin:", b.recv(4096).lower())
 
 
 class RunTest(unittest.TestCase):

@@ -173,7 +173,7 @@ class Desktop:
         profile = self.root / "browser-profile"
         profile.mkdir()
         argv = [browser, f"--user-data-dir={profile}", "--remote-debugging-port=0",
-                "--remote-allow-origins=*", "--ozone-platform=wayland", "--no-first-run",
+                "--ozone-platform=wayland", "--no-first-run",
                 "--no-default-browser-check", "--disable-sync", "--password-store=basic",
                 "--disable-features=Translate,MediaRouter", "--disable-background-networking",
                 "--disable-component-update", "--allow-file-access-from-files",

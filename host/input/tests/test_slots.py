@@ -12,12 +12,14 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from jarvis_input import slots  # noqa: E402
 
 PRELUDE = ["-k", "Shift_L", "-s", "250"]
+_XKB_FROM_NAME = slots._xkb_keysym_from_name  # the real one, before NoXkbTest patches it
 SHIFT_L = 0xFFE1
 # Keydown codes Chromium/VS Code must never see for a typed character (evdev numbers).
 NON_CHAR = {1, 14, 15, 28, 29, 42, 54, 56, 58, *range(59, 71), 87, 88, 96, 97, 100,
@@ -120,9 +122,54 @@ class PlanTest(unittest.TestCase):
         self.assertEqual([slots.keysym_of_char(c) for c in "’—…€\n\t"],
                          [0xAD1, 0xAA9, 0xAAE, 0x20AC, 0xFF0D, 0xFF09])
 
+    def test_plans_once_per_new_character(self) -> None:
+        # The plan only changes when a new distinct keysym appears: no O(n²) replanning.
+        with mock.patch.object(slots, "plan", wraps=slots.plan) as spy:
+            [argv] = slots.type_argvs("ab" * 1000)
+        self.assertLessEqual(spy.call_count, 3)
+        self.assertEqual(argv, slots.type_argvs("ab")[0][:-4] + typed("ab" * 1000))
+
     def test_unknown_key(self) -> None:
         with self.assertRaises(ValueError):
             slots.key_argv(["-k", "NoSuchKeysym"])
+
+
+class NoXkbTest(unittest.TestCase):
+    """Without libxkbcommon `key` degrades like `type`: a built-in table of the names parse_keys
+    produces (letters, digits, aliases, F-keys, common specials); anything else is refused."""
+
+    def setUp(self) -> None:
+        for name in ("_xkb_keysym_from_name", "_xkb_utf32_to_keysym"):
+            p = mock.patch.object(slots, name, None)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_known_names(self) -> None:
+        from jarvis_input import checks
+        cases = {"a": 0x61, "Z": 0x7A, "7": 0x37, "Escape": 0xFF1B, "escape": 0xFF1B,
+                 "Return": 0xFF0D, "KP_Enter": 0xFF8D, "Tab": 0xFF09, "BackSpace": 0xFF08,
+                 "Delete": 0xFFFF, "Insert": 0xFF63, "Home": 0xFF50, "End": 0xFF57,
+                 "Page_Up": 0xFF55, "Page_Down": 0xFF56, "Up": 0xFF52, "Down": 0xFF54,
+                 "Left": 0xFF51, "Right": 0xFF53, "space": 0x20, "F1": 0xFFBE, "F12": 0xFFC9,
+                 "F24": 0xFFD5, "Print": 0xFF61, "Menu": 0xFF67, "minus": 0x2D, "slash": 0x2F}
+        for name, ks in cases.items():
+            self.assertEqual(slots.keysym_of_name(name), ks, name)
+        argv = slots.key_argv(checks.parse_keys("ctrl+a Delete Escape g shift+g F5"))
+        self.assertEqual(argv[0], "wtype")
+        self.assertIn("0xffff", argv)
+
+    def test_unknown_name_refused(self) -> None:
+        with self.assertRaisesRegex(ValueError, "libxkbcommon"):
+            slots.keysym_of_name("XF86AudioMute")
+
+    def test_type_still_works(self) -> None:
+        self.assertEqual(len(slots.type_argvs("hola")), 1)
+
+    @unittest.skipUnless(slots.xkb_available(), "libxkbcommon not available")
+    def test_table_agrees_with_libxkbcommon(self) -> None:
+        for name, ks in slots.FALLBACK_NAMES.items():
+            for variant in (name, name.lower(), name.upper()):
+                self.assertEqual(_XKB_FROM_NAME(variant.encode(), 1), ks, variant)
 
 
 if __name__ == "__main__":

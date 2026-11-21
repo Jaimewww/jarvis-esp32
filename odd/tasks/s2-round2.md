@@ -360,3 +360,15 @@ propia solicitud desde `main`; worktree `jarvis-esp32-worktrees/pi-next`.
   en `host-input` aceptando SKIP (77). Suites: input 189 OK, node 88/88, jarvis-stop 24/24,
   install 201/201, host pytest 224 passed 6 skipped; `host/e2e/run.sh` 10/10 PASS dos veces
   (~24 s, sin procesos sobrantes); sin Wayland sale 77 con `SKIP: requirements`.
+- L31 (worker, 2026-11-20): arreglos de revisión/verificación de la porción 7 (S13, S16, S17),
+  con TDD por el socket: (1) el permiso se re-chequea justo antes de cada `wtype` (cada corrida
+  de un texto largo) y de `grim` en la captura con `window_id`; revocar durante la pausa de foco o
+  entre corridas corta con el error de apagado y devuelve el foco; (2) `_restore_focus` atrapa
+  cualquier `Exception` y solo la registra; (3) `key` rechaza keysyms crudos (`0xff0d`, `U000D`)
+  que xkb resuelve a Return sin pasar por la regla de confirmación (nombres sin distinguir
+  mayúsculas; se suma `3270_Enter`); (4) sin libxkbcommon `key` usa una tabla propia
+  (`FALLBACK_NAMES`, verificada contra xkb) y CI instala `libxkbcommon0`; (5) el navegador del
+  runner E2E ya no usa `--remote-allow-origins=*` (el cliente CDP no manda Origin); (6) `type_argvs`
+  re-planifica solo con caracteres nuevos (2000 → 3 llamadas a `plan`). Suites: input 202 OK,
+  node 88/88, jarvis-stop 24/24, install 201/201, actionlint OK; `host/e2e/run.sh` 10/10 PASS dos
+  veces (~22 s). Sin probar en la sesión real.

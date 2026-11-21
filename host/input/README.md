@@ -75,14 +75,19 @@ All agent requests share a rate limit of **10 per second** (sliding window).
 * `type`: `text` 1–2000 characters, newlines and tabs allowed, other control characters not;
   `intent` optional, ≤ 500 characters. Runs `wtype <slots> -k Shift_L -s 250 -d 8 -k 0x… …`:
   each character as `-k <keysym>` (keysyms from libxkbcommon's `xkb_utf32_to_keysym` like wtype,
-  so ’ — … € get their legacy keysyms; `\n` is Return, `\t` Tab); see
+  so ’ — … € get their legacy keysyms; `\n` is Return, `\t` Tab; without libxkbcommon, the
+  Latin-1 or `0x1000000`+code point keysym); see
   [wtype keycode slots](#wtype-keycode-slots). Text with more distinct characters than there are
   character keycodes (66) is typed in several wtype runs, each with its own slots and prelude,
   with the focus re-checked before each.
 * `key`: up to 20 space-separated combos `mod+mod+key`; modifiers `ctrl|control`, `shift`,
   `alt`, `altgr`, `super|logo|win|meta|mod`; aliases `enter|return`, `esc`, `tab`, `space`,
   `backspace`, `delete|del`, `insert`, `home`, `end`, `pageup`, `pagedown`, arrows, `f1`–`f24`;
-  otherwise an xkb keysym name. Runs `wtype <slots> -k Shift_L -s 250 -M mod … -k key … -m mod …`.
+  otherwise an xkb keysym name, except raw keysym numbers (`0xff0d`, `U000D`), which are refused
+  so every way to press Return/KP_Enter is seen by the confirmation rule (names match
+  case-insensitively, as in wtype). Without libxkbcommon only a built-in table resolves
+  (`slots.FALLBACK_NAMES`: letters, digits, ASCII punctuation names, the aliases, F1–F24,
+  modifiers and common special keys); other names are refused. Runs `wtype <slots> -k Shift_L -s 250 -M mod … -k key … -m mod …`.
   A plain `shift+letter` is sent as the capital's keysym (`shift+g` → `-k 0x47`): wtype resolves
   `-k` names case-insensitively, so `-k G` or `-M shift -k g` would type `g`. A bare `Escape`
   followed by more keys is followed by a 300 ms pause (VS Code Vim leaving insert mode, L25).
@@ -168,7 +173,10 @@ everything else as `-k`: key names, or `0x…` keysyms for text, so argv has no 
   A new grant replaces the old one. The permission is checked on every agent request and a
   timer also expires it on time.
 * `revoke` (and expiry): clears the permission, **kills running `wtype`/`grim` children**
-  (that request answers with an error) and denies every pending confirmation.
+  (that request answers with an error) and denies every pending confirmation. The permission is
+  also re-checked right before every `wtype` run (each run of a long text) and before `grim`, so
+  a revoke during the focus settle or between runs stops the action with the "apagado" error;
+  focus still goes back to the user's window (best effort: a failure there is only logged).
 * Events (to every subscriber):
   `{"event":"state","enabled":…,"expires_at":…}` on subscribe, grant, revoke and expiry;
   `{"event":"confirm","id":"…","title":"…","message":"…","timeout_s":30}`.
