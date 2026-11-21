@@ -73,16 +73,46 @@ All agent requests share a rate limit of **10 per second** (sliding window).
   within 5 s is an error, a process still running after 5 s counts as launched (and is reaped
   in the background).
 * `type`: `text` 1–2000 characters, newlines and tabs allowed, other control characters not;
-  `intent` optional, ≤ 500 characters. Runs `wtype -- <text>`.
+  `intent` optional, ≤ 500 characters. Runs `wtype <slots> -k Shift_L -s 250 -d 8 -k 0x… …`:
+  each character as `-k <keysym>` (keysyms from libxkbcommon's `xkb_utf32_to_keysym` like wtype,
+  so ’ — … € get their legacy keysyms; `\n` is Return, `\t` Tab); see
+  [wtype keycode slots](#wtype-keycode-slots). Text with more distinct characters than there are
+  character keycodes (66) is typed in several wtype runs, each with its own slots and prelude,
+  with the focus re-checked before each.
 * `key`: up to 20 space-separated combos `mod+mod+key`; modifiers `ctrl|control`, `shift`,
   `alt`, `altgr`, `super|logo|win|meta|mod`; aliases `enter|return`, `esc`, `tab`, `space`,
   `backspace`, `delete|del`, `insert`, `home`, `end`, `pageup`, `pagedown`, arrows, `f1`–`f24`;
-  otherwise an xkb keysym name. Runs `wtype -M mod … -k key … -m mod …`. A plain
-  `shift+letter` is sent as the capital as a text argument (`shift+g` → `G`): wtype resolves `-k`
-  names case-insensitively, so `-k G` or `-M shift -k g` would type `g`. Key actions start with
-  `-p Escape -k Shift_L -s 250` (the Escape release keeps Escape on its real keycode, which VS
-  Code matches shortcuts on; the Shift tap carries wtype's keymap) and pause 300 ms after a bare
-  `Escape` followed by more keys; text first releases each distinct character once (`-p 0x65 …`, keysyms from libxkbcommon's `xkb_utf32_to_keysym` like wtype, so ’ — … € get their legacy keysyms; so wtype's keymap is complete before typing and does not change mid-text) and then `-k Shift_L -s 250`.
+  otherwise an xkb keysym name. Runs `wtype <slots> -k Shift_L -s 250 -M mod … -k key … -m mod …`.
+  A plain `shift+letter` is sent as the capital's keysym (`shift+g` → `-k 0x47`): wtype resolves
+  `-k` names case-insensitively, so `-k G` or `-M shift -k g` would type `g`. A bare `Escape`
+  followed by more keys is followed by a 300 ms pause (VS Code Vim leaving insert mode, L25).
+
+### wtype keycode slots
+
+wtype 0.4 (`main.c`) parses all its argv before sending anything and uploads one keymap. Each new
+keysym gets the next entry in order of first use, and entry *i* is evdev keycode *i*+1 (xkb
+*i*+9). `-k`, `-p` and `-P` share those entries and match them by keysym; text (after `--` or a
+bare argument) matches by character only, so it never reuses a `-p` entry and always lands after
+them. `-M`/`-m` only send modifier state and take no keycode. Chromium/Electron derive
+`KeyboardEvent.code` from the keycode and VS Code dispatches shortcuts on it, so a space on
+keycode 15 acted as Tab and an `a` on 14 as Backspace (desktop-e2e L2).
+
+`jarvis_input/slots.py` therefore starts every `type` and `key` argv with one `-p <keysym>`
+release (apps act on presses) per keycode from 1 up to the highest keycode used:
+
+* special keys on their real US keycode: Escape 1, BackSpace 14, Tab 15, Return 28, the
+  modifiers (Control/Shift/Alt/Super L and R, AltGr), Home/End/Prior/Next/arrows/Insert/Delete,
+  F1–F24, KP_Enter, Menu, Print, Pause, Caps/Num/Scroll_Lock;
+* keys pressed with a modifier (`ctrl+l`), then every other keysym in first-use order, on their
+  own US key when free (`l` on KeyL, `,` on Comma, `H` on KeyH); the rest (`’ — …`, a second
+  case of a letter) on the next free character key: the main block, Space, IntlBackslash, then
+  the numpad (never NumpadEnter);
+* every other keycode up to the highest one gets an inert private-use filler (`U+E000`+keycode).
+
+Then the prelude `-k Shift_L -s 250` (Shift_L on its own keycode 42; the tap carries the keymap
+and the sleep lets Chromium/Electron apply it, else the first keys are dropped, L19/L25) and
+everything else as `-k`: key names, or `0x…` keysyms for text, so argv has no raw text and no
+`--`. argv is bounded: ≤ 2 × 194 slot arguments + 2 per character (≤ 4.4k arguments for 2000).
 * `screenshot`: optional `scale` in `[0.05, 1]`; runs `grim [-s <scale>] -`.
 * `screenshot` with `window_id` (S17), under the action lock: the target gets the `focus`
   checks with the screenshot rules (listed, not blocklisted; terminals allowed); the focused
@@ -220,3 +250,68 @@ The tests run the helper in-process on a temp `XDG_RUNTIME_DIR` with fake `wtype
 `niri` and `xdg-mime` scripts first on `PATH` that record their argv; `open` tests use a fake
 `$HOME` and a fake fixed `PATH` with fake apps. `test_launch.py` checks the `open` rules on temp
 dirs without running anything. No real Wayland tool or app runs. `test_main.py` starts `python3 -m jarvis_input` with `PATH=/nonexistent`.
+`test_e2e.py` covers the pure parts of the desktop E2E runner below (it starts nothing).
+
+## Desktop E2E (real wtype, browser and VS Code + Vim)
+
+Automates the manual checks of `odd/tasks/s2-round2.md` L19-L27 (`odd/tasks/desktop-e2e.md`):
+
+```sh
+host/e2e/run.sh                 # = cd host/input && python3 -m jarvis_e2e
+host/e2e/run.sh --no-vscode     # browser cases only (~6 s)
+host/e2e/run.sh --keep -v       # keep the temp dir (client logs) and print tracebacks
+```
+
+How it works (`jarvis_e2e/`):
+
+* `desktop.py` starts a **nested niri** (`niri -c <temp config>`: no autostart, no Xwayland, US
+  layout) with its own `XDG_RUNTIME_DIR` under a temp dir, so it has its own Wayland and IPC
+  sockets. niri 26.04 has no headless backend: the nested niri is one window on your desktop
+  (it may take the focus while the run lasts, ~20 s). It runs with `vblank_mode=0`: when its
+  window is not shown (monitors off, another workspace) the outer niri sends frame callbacks
+  once a second and a vsynced nested niri then handled one key per second (keys repeated). Clients get the nested
+  `WAYLAND_DISPLAY`/`NIRI_SOCKET` and no `DISPLAY`; they can never receive input from your
+  session and your windows never receive input from them.
+* Clients: Brave (or Chromium/Chrome) with a temp `--user-data-dir` showing two local pages
+  (a textarea with a keydown logger, and an "other" window that plays the user's window), and
+  VS Code (`/usr/share/code/code`) with a temp `--user-data-dir` and `--extensions-dir` holding a
+  copy of `~/.vscode/extensions/vscodevim.vim-*`, editing a temp `doc.txt`.
+* `run.py` runs the **real helper** (`jarvis_input.server.Helper`) in-process on the nested
+  runtime dir, grants it through `control.sock`, and sends `focus`/`type`/`key` requests with
+  `window_id` through `agent.sock`, like the agent. So the wtype argv (`slots.type_argvs`,
+  `slots.key_argv`, `parse_keys`, the Escape pause), the focus switch, the
+  400 ms settle and the focus restore are the production code, run with the real `wtype` and
+  `niri msg`. Before the helper starts, the runner refuses to go on unless `WAYLAND_DISPLAY`,
+  `NIRI_SOCKET` and `XDG_RUNTIME_DIR` all point inside the temp dir and `DISPLAY` is unset.
+* Results are read back over the Chrome DevTools Protocol (`--remote-debugging-port=0`, a
+  stdlib WebSocket client in `cdp.py`): the textarea value and keydown log; in VS Code the
+  rendered editor lines (`.view-line`, by position), the Vim mode from the status bar
+  (`-- NORMAL --`/`-- INSERT --`) and, on failure, a capture-phase keydown log (key/code).
+
+Cases (each starts with the "other" window focused through the helper's `focus`, and checks that
+focus is back on it afterwards):
+
+| Case | Checks |
+| --- | --- |
+| browser: type `hola mundo` | complete right after the window gets focus (L19-L22); every keydown on a character `code` |
+| browser: type the L27 sentence + `’ — …` | complete text, legacy keysyms included, character codes only |
+| browser: type ~100 distinct characters | complete text over several wtype runs, character codes only |
+| browser: key `Escape g g d shift+g` | keydowns `Escape g g d G`, Escape with `code` `Escape` (L24-L25), letters on character codes; textarea `ggdG` |
+| browser: key `ctrl+a Delete` | keydowns `a`/`KeyA` and `Delete`/`Delete`; textarea emptied |
+| vscode+vim: key `i`, type `hola mundo` | INSERT mode, buffer exactly `hola mundo`, character codes only (desktop-e2e L2) |
+| vscode+vim: key `Escape g g d shift+g` | buffer empty, NORMAL mode (L23-L25) |
+| vscode+vim: key `i`, type the sentence | buffer exactly the sentence (L27) |
+| vscode+vim: key `Escape g g d shift+g` again | buffer empty, NORMAL mode |
+
+Output: `PASS|FAIL|SKIP: <case> (<s>) — <detail>` per case, then
+`summary: N passed, N failed, N skipped in Ns`. Exit **0** all ran cases passed, **1** a case
+failed (or the desktop could not start: `FAIL: setup`, with the tails of the client logs), **77**
+skipped (automake's SKIP code): no `WAYLAND_DISPLAY`, no `niri`/`wtype` on `PATH`, or no
+Chromium-based browser; the reason is printed as `SKIP: requirements — …`. Missing VS Code or
+vscodevim only skips the VS Code cases. Teardown (also on failure, Ctrl-C, SIGTERM or SIGHUP):
+clients and the nested niri are killed by process group, the helper's sockets closed, and the
+temp dir removed (unless `--keep`). Requirements: niri (as the running session), wtype, Brave or
+Chromium, optionally VS Code at `/usr/share/code/code` with vscodevim; Python 3.11+, stdlib only.
+CI (`.github/workflows/ci.yml`, job `host-input`) runs it too and accepts exit 0 or 77: GitHub
+runners have no Wayland session, so there it prints `SKIP: requirements — no WAYLAND_DISPLAY…`.
+Run it by hand on the niri desktop after changing `type`/`key`/focus code.

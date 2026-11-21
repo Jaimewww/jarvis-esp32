@@ -81,10 +81,17 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       # Stdlib only. The helper runs in-process on a temporary XDG_RUNTIME_DIR with fake
-      # wtype/grim/niri on PATH; nothing touches a display. Without libxkbcommon the keysym
-      # test skips itself.
+      # wtype/grim/niri on PATH; nothing touches a display. Without libxkbcommon the keycode
+      # slot tests that need it skip themselves.
       - name: Test the jarvis-input helper
         run: python3 -m unittest discover -s host/input/tests
+      # The desktop E2E runner needs a Wayland (niri) session, wtype and a Chromium browser;
+      # on the runner it prints "SKIP: requirements …" and exits 77. Any other code fails.
+      - name: Desktop E2E (skips without a Wayland session)
+        run: |
+          code=0
+          host/e2e/run.sh || code=$?
+          [ "$code" -eq 0 ] || [ "$code" -eq 77 ]
 
   gentle-dot-extension:
     name: host · gentle-dot extension (node --test)

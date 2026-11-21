@@ -23,7 +23,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from . import checks, launch
+from . import checks, launch, slots
 
 log = logging.getLogger("jarvis_input")
 
@@ -53,64 +53,8 @@ class StartupError(Exception):
     """The helper refuses to start (unsafe or unusable runtime directory or socket)."""
 
 
-# wtype uploads a fresh keymap on every run; Chromium/Electron apps (Brave, VS Code) drop
-# the first keystrokes that arrive before they apply it ("wtype hola" typed only "la" in
-# VS Code, L19). A sleep alone did not help ("la mundo"): wtype sends the keymap with the
-# first key. So the first key is a harmless Shift tap that carries the keymap, then a sleep
-# while the app applies it, then the real keys with a small delay between them.
-WTYPE_PRELUDE = ("-k", "Shift_L", "-s", "250")
-# wtype numbers keysyms in order of first use and VS Code matches shortcuts on the keycode, so
-# for keys Escape is registered first (a release only, which apps ignore) to keep the real
-# Escape keycode; after the Shift tap it would land on "1" and Vim never saw it (L24-L25).
-# Text keeps the plain prelude: with the Escape release first VS Code dropped "ho" again (L25).
-WTYPE_KEY_PRELUDE = ("-p", "Escape", *WTYPE_PRELUDE)
+# The wtype argv (keycode slots, the Shift-tap prelude, keys and text) comes from slots.py.
 ESCAPE_PAUSE_MS = "300"  # VS Code Vim needs a moment to leave insert mode (L25)
-
-
-def _load_xkb_utf32_to_keysym():  # type: ignore[no-untyped-def]
-    """libxkbcommon's xkb_utf32_to_keysym, the mapping wtype uses, or None when unavailable."""
-    import ctypes
-    import ctypes.util
-
-    name = ctypes.util.find_library("xkbcommon")
-    try:
-        lib = ctypes.CDLL(name or "libxkbcommon.so.0")
-        fn = lib.xkb_utf32_to_keysym
-    except (OSError, AttributeError):
-        return None
-    fn.argtypes, fn.restype = [ctypes.c_uint32], ctypes.c_uint32
-    return fn
-
-
-_xkb_utf32_to_keysym = _load_xkb_utf32_to_keysym()
-
-
-def _keysym(ch: str) -> int:
-    """The keysym wtype types for one character: its own remaps, then xkb_utf32_to_keysym
-    (legacy keysyms for ’ — … € and many more, L28); without libxkbcommon, the Unicode keysym."""
-    cp = ord(ch)
-    if ch == "\n":
-        return 0xFF0D  # Return
-    if ch == "\t":
-        return 0xFF09  # Tab
-    if _xkb_utf32_to_keysym is not None:
-        ks = _xkb_utf32_to_keysym(cp)
-        if ks:
-            return int(ks)
-    if 0x20 <= cp <= 0x7E or 0xA0 <= cp <= 0xFF:
-        return cp  # Latin-1 keysyms equal the code point
-    return 0x1000000 + cp
-
-
-def register_chars(text: str) -> list[str]:
-    """wtype adds each new keysym to its keymap and uploads it again while typing; VS Code drops
-    the keys around every upload ("este es un texto" typed "ee es uno", L27). Releasing every
-    character once up front (apps act on press) builds the whole keymap before the Shift tap."""
-    seen: dict[int, None] = {}
-    for ch in text:
-        seen.setdefault(_keysym(ch), None)
-    return [x for ks in seen for x in ("-p", hex(ks))]
-WTYPE_KEY_DELAY_MS = "8"
 
 
 class Deny(Exception):
@@ -706,7 +650,7 @@ class Helper:
         except Deny as e:
             log.warning("no pude devolver el foco a %d: %s", prev_id, e)
 
-    async def _input(self, *, req: dict[str, Any], argv: list[str], intent: str, risky: list[str],
+    async def _input(self, *, req: dict[str, Any], argvs: list[list[str]], intent: str, risky: list[str],
                      presses_return: bool, what: str, shown: str) -> dict[str, Any]:
         # S16: with window_id the checks and the confirmation are about the target window; it is
         # focused only after the confirmation (answered in the TUI), and focus goes back afterwards.
@@ -733,15 +677,17 @@ class Helper:
                     log.info("enfocando %d (%s) para escribir", target.id, target.app_id[:60])
                     await self._focus_and_confirm(target.id)
                     await asyncio.sleep(FOCUS_SETTLE_S)
-            again = await self._focus()  # re-check right before wtype (against the target, if any)
-            if again is None or again.id != window.id:
-                raise Deny("El foco cambió antes de escribir; no se hizo nada.")
-            reason = checks.blocked_reason(again, screenshot=False)
-            if reason:
-                raise Deny(reason)
-            code, _ = await self._run(argv, timeout=WTYPE_TIMEOUT_S, capture=False, track=True)
-            if code != 0:
-                raise Deny(f"wtype terminó con código {code}")
+            for argv in argvs:  # more than one only for text with very many distinct characters
+                again = await self._focus()  # re-check right before wtype (against the target, if any)
+                if again is None or again.id != window.id:
+                    raise Deny("El foco cambió antes de escribir; no se hizo nada." if argv is argvs[0]
+                               else "El foco cambió mientras escribía; se cortó el texto.")
+                reason = checks.blocked_reason(again, screenshot=False)
+                if reason:
+                    raise Deny(reason)
+                code, _ = await self._run(argv, timeout=WTYPE_TIMEOUT_S, capture=False, track=True)
+                if code != 0:
+                    raise Deny(f"wtype terminó con código {code}")
         finally:
             if target is not None:
                 await self._restore_focus(prev_id, target.id)
@@ -758,7 +704,7 @@ class Helper:
         look = checks.lookalike_stems(text, intent)
         if look:
             raise Deny("Texto con letras que imitan palabras de riesgo (" + ", ".join(look) + "); no se escribe.")
-        return await self._input(req=req, argv=["wtype", *register_chars(text), *WTYPE_PRELUDE, "-d", WTYPE_KEY_DELAY_MS, "--", text], intent=intent,
+        return await self._input(req=req, argvs=slots.type_argvs(text), intent=intent,
                                  risky=checks.risky_stems(text, intent), presses_return="\n" in text,
                                  what="escriba", shown=f"Texto: {text[:300]}")
 
@@ -780,7 +726,11 @@ class Helper:
             # a bare Escape followed by more keys (not one held with modifiers)
             if a == "Escape" and i > 0 and args[i - 1] == "-k" and i < len(args) - 1 and args[i + 1] != "-m":
                 paced += ["-s", ESCAPE_PAUSE_MS]
-        return await self._input(req=req, argv=["wtype", *WTYPE_KEY_PRELUDE, *paced], intent=intent, risky=checks.risky_stems(intent),
+        try:
+            argv = slots.key_argv(paced)
+        except ValueError as e:
+            raise Deny(str(e)) from None
+        return await self._input(req=req, argvs=[argv], intent=intent, risky=checks.risky_stems(intent),
                                  presses_return=checks.presses_return(args), what=f"pulse {keys[:60]}",
                                  shown="")
 
