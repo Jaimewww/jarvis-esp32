@@ -2,8 +2,8 @@
 
 The helper (`jarvis_input.server.Helper`) runs in this process on a temp runtime dir whose
 environment points at a nested niri; the cases talk to its agent.sock exactly like the agent
-does (`type`/`key` with `window_id`), so the wtype argv, the focus switch, the settle pause and
-the focus restore are the production code. Results are read back over CDP.
+does (`type`/`key`/`screenshot` with `window_id`), so the wtype argv, the focus switch, the
+settle pause and the focus restore are the production code. Results are read back over CDP.
 
 Exit codes: 0 all cases passed, 1 some case failed, 77 skipped (requirements missing).
 """
@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import contextlib
 import json
 import os
@@ -24,6 +25,7 @@ import tempfile
 import threading
 import time
 import traceback
+import zlib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,6 +43,7 @@ TARGET_TITLE, OTHER_TITLE = "jarvis-e2e-target", "jarvis-e2e-other"
 HOLA = "hola mundo"
 SENTENCE = "Hola mundo, este es un texto de prueba. ’ — …"  # L27 + legacy keysyms (ad4cf60)
 VIM_CLEAR = "Escape g g d shift+g"
+MARK_CSS, MARK_RGB = "rgb(255, 0, 255)", (255, 0, 255)  # the target page colour in the screenshot case
 SELECT_DELETE = "ctrl+a Delete"
 # More distinct characters than one wtype keymap has safe keycodes for (several wtype runs).
 WIDE = ("abcdefghijklmnopqrstuvwxyz ABCDEFGHIJKLMNOPQRSTUVWXYZ 0123456789 "
@@ -78,6 +81,50 @@ def summarize(results: list[Result]) -> tuple[str, int]:
     if not counts["PASS"]:
         return line, EXIT_SKIP
     return line, EXIT_PASS
+
+
+def png_pixels(data: bytes) -> tuple[int, int, list[tuple[int, int, int]]]:
+    """(width, height, RGB pixels) of an 8-bit, non-interlaced RGB/RGBA PNG (what grim writes)."""
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        raise ValueError("not a PNG")
+    pos, idat, ihdr = 8, b"", b""
+    while pos < len(data):
+        n = int.from_bytes(data[pos:pos + 4], "big")
+        kind, body = data[pos + 4:pos + 8], data[pos + 8:pos + 8 + n]
+        if kind == b"IHDR":
+            ihdr = body
+        elif kind == b"IDAT":
+            idat += body
+        pos += 12 + n
+    if len(ihdr) != 13:
+        raise ValueError("PNG without IHDR")
+    w, h = int.from_bytes(ihdr[0:4], "big"), int.from_bytes(ihdr[4:8], "big")
+    depth, ctype, interlace = ihdr[8], ihdr[9], ihdr[12]
+    if depth != 8 or ctype not in (2, 6) or interlace:
+        raise ValueError(f"unsupported PNG (depth {depth}, color type {ctype}, interlace {interlace})")
+    bpp = 3 if ctype == 2 else 4
+    raw, stride = zlib.decompress(idat), w * bpp
+    prev, pixels = bytearray(stride), []
+    for y in range(h):
+        f, line = raw[y * (stride + 1)], bytearray(raw[y * (stride + 1) + 1:(y + 1) * (stride + 1)])
+        for i in range(stride):
+            a = line[i - bpp] if i >= bpp else 0
+            b, c = prev[i], prev[i - bpp] if i >= bpp else 0
+            if f == 1:
+                line[i] = (line[i] + a) & 0xFF
+            elif f == 2:
+                line[i] = (line[i] + b) & 0xFF
+            elif f == 3:
+                line[i] = (line[i] + (a + b) // 2) & 0xFF
+            elif f == 4:
+                p = a + b - c
+                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                line[i] = (line[i] + (a if pa <= pb and pa <= pc else b if pb <= pc else c)) & 0xFF
+            elif f != 0:
+                raise ValueError(f"bad PNG filter {f}")
+        pixels += [(line[x], line[x + 1], line[x + 2]) for x in range(0, stride, bpp)]
+        prev = line
+    return w, h, pixels
 
 
 def keydowns(events: list[dict[str, str]]) -> list[tuple[str, str]]:
@@ -304,6 +351,29 @@ def browser_cases(run: Run, target: cdp.Cdp, wid: int, other: int) -> None:
         return "keydowns a(KeyA) Delete(Delete), textarea empty, focus restored"
 
     run.case(f"browser: key {SELECT_DELETE!r} empties a textarea", select_delete)
+
+    def screenshot() -> str:
+        # T26/S17: the target page is painted magenta; the capture of its window must show it
+        # (it is the nested niri's output, never the user's monitors), and focus goes back.
+        target.evaluate(f"document.body.style.background = '{MARK_CSS}'; true")
+        try:
+            time.sleep(0.2)
+            run.focus_other(other)
+            res = run.helper.agent({"op": "screenshot", "window_id": wid, "scale": 0.25})
+            assert res.get("window_id") == wid, f"window_id echoed {res.get('window_id')!r}, expected {wid}"
+            w, h, pixels = png_pixels(base64.b64decode(res["png_base64"]))
+            marked = sum(p == MARK_RGB for p in pixels)
+            assert marked * 20 >= len(pixels), (
+                f"{w}x{h} capture has {marked} magenta pixels of {len(pixels)}: not the target window")
+            run.check_focus_back(other)
+            return f"{w}x{h} PNG, {100 * marked // len(pixels)}% target colour, focus restored"
+        finally:
+            target.evaluate("document.body.style.background = ''; true")
+
+    if shutil.which("grim") is None:
+        run.skip("browser: screenshot with window_id", "grim not found on PATH")
+    else:
+        run.case("browser: screenshot with window_id", screenshot)
 
 
 VIEW_LINES_JS = """(() => {

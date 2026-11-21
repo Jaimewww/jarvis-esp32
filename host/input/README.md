@@ -277,7 +277,7 @@ How it works (`jarvis_e2e/`):
   VS Code (`/usr/share/code/code`) with a temp `--user-data-dir` and `--extensions-dir` holding a
   copy of `~/.vscode/extensions/vscodevim.vim-*`, editing a temp `doc.txt`.
 * `run.py` runs the **real helper** (`jarvis_input.server.Helper`) in-process on the nested
-  runtime dir, grants it through `control.sock`, and sends `focus`/`type`/`key` requests with
+  runtime dir, grants it through `control.sock`, and sends `focus`/`type`/`key`/`screenshot` requests with
   `window_id` through `agent.sock`, like the agent. So the wtype argv (`slots.type_argvs`,
   `slots.key_argv`, `parse_keys`, the Escape pause), the focus switch, the
   400 ms settle and the focus restore are the production code, run with the real `wtype` and
@@ -298,6 +298,7 @@ focus is back on it afterwards):
 | browser: type ~100 distinct characters | complete text over several wtype runs, character codes only |
 | browser: key `Escape g g d shift+g` | keydowns `Escape g g d G`, Escape with `code` `Escape` (L24-L25), letters on character codes; textarea `ggdG` |
 | browser: key `ctrl+a Delete` | keydowns `a`/`KeyA` and `Delete`/`Delete`; textarea emptied |
+| browser: `screenshot` with `window_id` (T26) | the target page painted magenta is ≥ 5% of the PNG (decoded with stdlib `zlib`), `window_id` echoed; skipped without `grim` |
 | vscode+vim: key `i`, type `hola mundo` | INSERT mode, buffer exactly `hola mundo`, character codes only (desktop-e2e L2) |
 | vscode+vim: key `Escape g g d shift+g` | buffer empty, NORMAL mode (L23-L25) |
 | vscode+vim: key `i`, type the sentence | buffer exactly the sentence (L27) |

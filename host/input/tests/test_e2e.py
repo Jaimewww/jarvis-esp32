@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zlib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -147,6 +148,43 @@ class RunTest(unittest.TestCase):
                            text=True, timeout=30, check=False)
         self.assertEqual(p.returncode, run.EXIT_SKIP, p.stdout + p.stderr)
         self.assertIn("SKIP: requirements", p.stdout)
+
+
+def _png(w: int, h: int, pixels: list[tuple[int, ...]], bpp: int) -> bytes:
+    """A PNG whose row y uses filter y % 5 (all five PNG filters), as libpng may write."""
+    def chunk(kind: bytes, body: bytes) -> bytes:
+        return len(body).to_bytes(4, "big") + kind + body + zlib.crc32(kind + body).to_bytes(4, "big")
+
+    stride, raw, prev = w * bpp, b"", bytes(w * bpp)
+    for y in range(h):
+        line = bytes(v for p in pixels[y * w:(y + 1) * w] for v in p)
+        f, out = y % 5, bytearray()
+        for i in range(stride):
+            a = line[i - bpp] if i >= bpp else 0
+            b, c = prev[i], prev[i - bpp] if i >= bpp else 0
+            p = a + b - c
+            pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+            pred = [0, a, b, (a + b) // 2, a if pa <= pb and pa <= pc else b if pb <= pc else c][f]
+            out.append((line[i] - pred) & 0xFF)
+        raw += bytes([f]) + out
+        prev = line
+    ihdr = w.to_bytes(4, "big") + h.to_bytes(4, "big") + bytes([8, 2 if bpp == 3 else 6, 0, 0, 0])
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw))
+            + chunk(b"IEND", b""))
+
+
+class PngTest(unittest.TestCase):
+    def test_decodes_every_filter_rgb_and_rgba(self) -> None:
+        w, h = 7, 10
+        rgb = [((x * 37 + y * 11) % 256, (x * y * 5) % 256, (255 - x * 9 - y) % 256)
+               for y in range(h) for x in range(w)]
+        self.assertEqual(run.png_pixels(_png(w, h, rgb, 3)), (w, h, rgb))
+        rgba = [(*p, 200) for p in rgb]
+        self.assertEqual(run.png_pixels(_png(w, h, rgba, 4)), (w, h, rgb))
+
+    def test_rejects_other_data(self) -> None:
+        with self.assertRaises(ValueError):
+            run.png_pixels(b"GIF89a")
 
 
 if __name__ == "__main__":
