@@ -7,14 +7,14 @@ elegido pasa a `docs/decisiones.md` (revisa D13, D14 y D17).
 
 - El turno es lento porque **el agente consulta al modelo remoto en cada paso**, no por
   la red local ni por el daemon. Una consulta tarda entre 2,6 y 5,6 s; un pedido como
-  «abrí VS Code y escribí una frase» hizo **7 consultas** y tardó cerca de 45 s.
+  «abrí VS Code y escribí una frase» hizo **7 consultas** y tardó cerca de 48 s.
 - Hoy todo pasa por el agente: el camino rápido de D13 está diseñado pero no existe.
 - Los proyectos parecidos resuelven lo mismo con **capas**: primero un reconocedor sin
   IA para las órdenes conocidas, después un modelo, y la respuesta hablada en
   **tubería** (cada etapa empieza antes de que termine la anterior).
 - Propuesta: cinco cambios ordenados por impacto y costo (P1 a P5). Con P1 y P2 las
-  órdenes del catálogo bajarían de ~4,6 s a menos de 1,5 s, y las tareas de control de
-  la PC de ~45 s a ~10-15 s. **Todos los tiempos previstos son estimaciones a medir**;
+  órdenes del catálogo bajarían de ~4,9 s (STT incluido) a menos de 1,5 s, y las tareas de control de
+  la PC de ~48 s a ~10-15 s. **Todos los tiempos previstos son estimaciones a medir**;
   la sección «Cómo medimos» dice cómo.
 - La IA local queda para una etapa de medición (P5), no se adopta todavía.
 
