@@ -351,3 +351,12 @@ propia solicitud desde `main`; worktree `jarvis-esp32-worktrees/pi-next`.
   extensión (`node --test`, Node 24, sin npm) y `jarvis-stop`; actionlint OK. Suites: input 159 OK,
   node 88/88, jarvis-stop 24/24, install 201/201, host pytest 224 passed 6 skipped. Sin probar en la
   sesión real (no se corrió grim/wtype ni se reinstaló).
+- L30 (worker, 2026-11-20): integración en `fix/pc-control-typing-e2e` (desde `feat/pc-control-chain`
+  + `origin/main` + `feat/desktop-e2e`, merge `cc9b254`): conflictos en `server.py`,
+  `test_server.py`, `README.md` y este Log; queda el plan de keycodes de `slots.py` (T2 de
+  desktop-e2e) para `type`/`key` y se quitan `register_chars`/`_keysym`/`WTYPE_KEY_DELAY_MS` y su
+  test (cubierto por `test_slots`); T25/T26 intactos. El runner suma un caso de captura con
+  `window_id` (`4a1ed46`, página pintada de magenta ≥ 5 % del PNG, foco devuelto) y CI lo corre
+  en `host-input` aceptando SKIP (77). Suites: input 189 OK, node 88/88, jarvis-stop 24/24,
+  install 201/201, host pytest 224 passed 6 skipped; `host/e2e/run.sh` 10/10 PASS dos veces
+  (~24 s, sin procesos sobrantes); sin Wayland sale 77 con `SKIP: requirements`.

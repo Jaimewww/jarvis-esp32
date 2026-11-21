@@ -61,3 +61,9 @@ focus and screenshots are checked by a script instead of the user. Branch `feat/
   characters lose most text). After (ad9d9bc): 9/9 pass, three runs in a row (~20 s each).
   Runner fix: the nested niri now runs with `vblank_mode=0`; with the user's monitors off it got
   one frame callback per second and handled one key per second (`hhoollaa`, timeouts).
+- L4 (worker, 2026-11-20): merged into `fix/pc-control-typing-e2e` with the T25/T26 chain
+  (s2-round2 L30): `slots.py` replaced the chain's `register_chars`; new case `browser:
+  screenshot with window_id` (T26: target page painted magenta, ≥ 5% of the decoded PNG,
+  `window_id` echoed, focus restored; skipped without grim). CI job `host-input` runs
+  `host/e2e/run.sh` and accepts exit 0 or 77 (SKIP on runners without Wayland). Runner on the
+  integrated branch: 10/10 PASS in two runs in a row (~24 s), no leftover processes.
