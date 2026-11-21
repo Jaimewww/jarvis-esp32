@@ -15,6 +15,7 @@ import asyncio
 import contextlib
 import json
 import os
+import re
 import shutil
 import signal
 import socket
@@ -40,6 +41,15 @@ TARGET_TITLE, OTHER_TITLE = "jarvis-e2e-target", "jarvis-e2e-other"
 HOLA = "hola mundo"
 SENTENCE = "Hola mundo, este es un texto de prueba. ’ — …"  # L27 + legacy keysyms (ad4cf60)
 VIM_CLEAR = "Escape g g d shift+g"
+SELECT_DELETE = "ctrl+a Delete"
+# More distinct characters than one wtype keymap has safe keycodes for (several wtype runs).
+WIDE = ("abcdefghijklmnopqrstuvwxyz ABCDEFGHIJKLMNOPQRSTUVWXYZ 0123456789 "
+        ".,;:!?¿¡()[]{}<>@#$%&*+=/_\"'~^| áéíóúñü ÁÉÍÓÚÑÜ")
+# KeyboardEvent.code values of character keys: a typed character on any other code (Backspace,
+# Tab, Enter, Escape, F-keys, arrows, modifiers…) is what VS Code dispatches shortcuts on (L2).
+CHAR_CODE = re.compile(r"Key[A-Z]|Digit[0-9]|Minus|Equal|BracketLeft|BracketRight|Semicolon|Quote|"
+                       r"Backquote|Backslash|Comma|Period|Slash|Space|IntlBackslash|Numpad[0-9]|"
+                       r"Numpad(Decimal|Add|Subtract|Multiply|Divide|Equal|Comma)")
 
 PAGE = """<!doctype html><meta charset="utf-8"><title>{title}</title>
 <textarea id="t" rows="6" cols="60" autofocus></textarea>
@@ -79,6 +89,11 @@ def keydowns(events: list[dict[str, str]]) -> list[tuple[str, str]]:
 def editor_text(lines: list[tuple[float, str]]) -> str:
     """Monaco `.view-line`s as (top px, text): sorted by position, nbsp -> space, joined."""
     return "\n".join(t.replace("\u00a0", " ") for _, t in sorted(lines)).rstrip("\n")
+
+
+def non_char_codes(downs: list[tuple[str, str]]) -> list[str]:
+    """The keydowns (key/code) of typed characters that arrived on a non-character code."""
+    return [f"{k}/{c}" for k, c in downs if not CHAR_CODE.fullmatch(c)]
 
 
 def vim_mode(status_texts: list[str]) -> str | None:
@@ -242,15 +257,19 @@ def browser_cases(run: Run, target: cdp.Cdp, wid: int, other: int) -> None:
             run.type_into(wid, text)
             time.sleep(0.2)
             value = target.evaluate("document.getElementById('t').value")
+            downs = keydowns(target.evaluate("window.__keys"))
             if value != text:
-                codes = " ".join(f"{k}/{c}" for k, c in keydowns(target.evaluate("window.__keys")))
+                codes = " ".join(f"{k}/{c}" for k, c in downs)
                 raise AssertionError(f"textarea has {value!r}, expected {text!r}; keydowns key/code: {codes}")
+            bad = non_char_codes(downs)
+            assert not bad, f"characters typed on non-character keycodes (key/code): {' '.join(bad)}"
             run.check_focus_back(other)
-            return "text complete, focus restored"
+            return "text complete on character keycodes, focus restored"
         return fn
 
     run.case(f"browser: type {HOLA!r} right after focus", typed(HOLA))
     run.case(f"browser: type {SENTENCE!r}", typed(SENTENCE))
+    run.case(f"browser: type {len(set(WIDE))} distinct characters", typed(WIDE))
 
     def keys() -> str:
         reset()
@@ -262,12 +281,29 @@ def browser_cases(run: Run, target: cdp.Cdp, wid: int, other: int) -> None:
         keys_only = [k for k, _ in downs]
         assert keys_only == ["Escape", "g", "g", "d", "G"], f"keydowns {downs}"
         assert downs[0][1] == "Escape", f"Escape arrived with code {downs[0][1]!r}, not 'Escape'"
+        bad = non_char_codes(downs[1:])
+        assert not bad, f"letter keys on non-character keycodes (key/code): {' '.join(bad)}"
         value = target.evaluate("document.getElementById('t').value")
         assert value == "ggdG", f"textarea has {value!r}, expected 'ggdG'"
         run.check_focus_back(other)
         return "keydowns Escape(code Escape) g g d G, focus restored"
 
     run.case(f"browser: key {VIM_CLEAR!r} keydowns", keys)
+
+    def select_delete() -> str:
+        reset()
+        target.evaluate("document.getElementById('t').value = 'texto a quitar'; window.__keys = []; true")
+        run.focus_other(other)
+        run.key_into(wid, SELECT_DELETE)
+        time.sleep(0.2)
+        downs = keydowns(target.evaluate("window.__keys"))
+        value = target.evaluate("document.getElementById('t').value")
+        assert downs == [("a", "KeyA"), ("Delete", "Delete")], f"keydowns key/code {downs}"
+        assert value == "", f"textarea has {value!r}, expected empty"
+        run.check_focus_back(other)
+        return "keydowns a(KeyA) Delete(Delete), textarea empty, focus restored"
+
+    run.case(f"browser: key {SELECT_DELETE!r} empties a textarea", select_delete)
 
 
 VIEW_LINES_JS = """(() => {
@@ -301,9 +337,12 @@ def vscode_cases(run: Run, ws: cdp.Cdp, wid: int, other: int) -> None:
             run.type_into(wid, s)
             time.sleep(0.3)
             got = text()
+            downs = keydowns(ws.evaluate("window.__keys"))
             if got != s:
-                codes = " ".join(f"{k}/{c}" for k, c in keydowns(ws.evaluate("window.__keys")))
+                codes = " ".join(f"{k}/{c}" for k, c in downs)
                 raise AssertionError(f"buffer has {got!r}, expected {s!r}; keydowns key/code: {codes}")
+            bad = non_char_codes(downs[1:])  # downs[0] is the 'i' key
+            assert not bad, f"characters typed on non-character keycodes (key/code): {' '.join(bad)}"
             run.check_focus_back(other)
             return "text complete in insert mode, focus restored"
         return fn

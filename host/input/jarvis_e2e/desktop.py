@@ -119,6 +119,10 @@ class Desktop:
         env = {k: v for k, v in self.base_env.items() if k not in DROP_ENV}
         env["WAYLAND_DISPLAY"] = outer_wayland(self.base_env)
         env["XDG_RUNTIME_DIR"] = str(self.runtime_dir)
+        # No vsync for the nested niri: when its window is not shown (monitors off, another
+        # workspace) the outer niri sends frame callbacks once a second, and a vsynced swap then
+        # stalls the nested event loop ~1 s per key: keys repeat ("hhoollaa") and runs time out.
+        env["vblank_mode"] = "0"
         proc = self.spawn("niri", ["niri", "-c", str(config)], env)
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:

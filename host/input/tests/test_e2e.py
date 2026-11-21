@@ -113,6 +113,11 @@ class RunTest(unittest.TestCase):
                   {"type": "keydown", "key": "G", "code": "Digit2"}]
         self.assertEqual(run.keydowns(events), [("Escape", "Escape"), ("G", "Digit2")])
 
+    def test_non_char_codes(self) -> None:
+        downs = [("a", "KeyA"), ("1", "Numpad1"), (" ", "Space"), ("a", "Backspace"), (" ", "Tab"),
+                 ("u", "ControlLeft"), ("ñ", ""), ("—", "ShiftLeft")]
+        self.assertEqual(run.non_char_codes(downs), ["a/Backspace", " /Tab", "u/ControlLeft", "ñ/", "—/ShiftLeft"])
+
     def test_editor_text(self) -> None:
         self.assertEqual(run.editor_text([(19.0, "b c"), (0.0, "a")]), "a\nb c")
         self.assertEqual(run.editor_text([(0.0, "")]), "")
