@@ -60,6 +60,15 @@ class ParseKeysTest(unittest.TestCase):
         self.assertTrue(checks.presses_return(checks.parse_keys("KP_Enter")))
         self.assertTrue(checks.presses_return(checks.parse_keys("ctrl+a enter")))
         self.assertFalse(checks.presses_return(checks.parse_keys("ctrl+l Tab")))
+        for keys in ["KP_ENTER", "kp_enter", "ctrl+RETURN", "iso_enter", "LineFeed", "3270_Enter"]:
+            self.assertTrue(checks.presses_return(checks.parse_keys(keys)), keys)
+
+    def test_refuses_raw_keysym_numbers(self) -> None:
+        # xkb resolves "0xff0d" to Return (and "0xff8d" to KP_Enter) behind the name check.
+        for keys in ["0xff0d", "0XFF8D", "ctrl+0xff0d", "a 0x61", "0x0", "U000D", "uff0d"]:
+            with self.assertRaises(ValueError, msg=keys):
+                checks.parse_keys(keys)
+        self.assertEqual(checks.parse_keys("0 9 Up"), ["-k", "0", "-k", "9", "-k", "Up"])
 
 
 class TextTest(unittest.TestCase):

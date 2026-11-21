@@ -220,6 +220,11 @@ class Helper:
             return False
         return True
 
+    def _still_enabled(self) -> None:
+        """Re-check the permission right before running wtype/grim (it may end while waiting)."""
+        if not self._enabled():
+            raise Deny(OFF)
+
     def _state(self) -> dict[str, Any]:
         enabled = self._enabled()
         return {"enabled": enabled, "expires_at": self._expires_at if enabled else None}
@@ -647,7 +652,7 @@ class Helper:
                 log.warning("no pude devolver el foco a %d (código %d)", prev_id, code)
             else:
                 log.info("foco devuelto a %d", prev_id)
-        except Deny as e:
+        except Exception as e:  # noqa: BLE001 - never replace the action's own result
             log.warning("no pude devolver el foco a %d: %s", prev_id, e)
 
     async def _input(self, *, req: dict[str, Any], argvs: list[list[str]], intent: str, risky: list[str],
@@ -666,8 +671,7 @@ class Helper:
                        f"{'; '.join(reasons)}. Intención: {intent[:200] or '—'}. {shown}")
             if not await self._confirm(f"¿Permitir que Jarvis {what}?", message):
                 raise Deny("El usuario no confirmó la acción (denegada, sin respuesta o sin TUI conectada).")
-            if not self._enabled():
-                raise Deny(OFF)
+            self._still_enabled()
         prev_id: int | None = None
         try:
             if target is not None:
@@ -685,6 +689,7 @@ class Helper:
                 reason = checks.blocked_reason(again, screenshot=False)
                 if reason:
                     raise Deny(reason)
+                self._still_enabled()  # revoked during the focus settle or a previous run
                 code, _ = await self._run(argv, timeout=WTYPE_TIMEOUT_S, capture=False, track=True)
                 if code != 0:
                     raise Deny(f"wtype terminó con código {code}")
@@ -794,6 +799,7 @@ class Helper:
             reason = checks.blocked_reason(again, screenshot=True)
             if reason:
                 raise Deny(reason)
+            self._still_enabled()  # revoked during the focus settle
             png = await self._grim([*argv, *(["-o", output] if output else []), "-"])
         finally:
             await self._restore_focus(prev_id, target.id)
