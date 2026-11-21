@@ -23,7 +23,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from . import checks, launch
+from . import checks, launch, slots
 
 log = logging.getLogger("jarvis_input")
 
@@ -39,6 +39,10 @@ WTYPE_TIMEOUT_S = 60.0
 GRIM_TIMEOUT_S = 15.0
 OPEN_WAIT_S = 5.0
 FOCUS_CONFIRM_S, FOCUS_POLL_S = 0.5, 0.05
+RESTORE_DELAY_S = 0.1  # let the target app take the last keys before focus goes back (S16)
+# After focus moves to another window, Electron apps (VS Code) need a moment to give the
+# editor its focus back; keys sent sooner are lost ("hola mundo" typed "la mundo", L21).
+FOCUS_SETTLE_S = 0.4
 SUBSCRIBER_BUFFER_MAX = 1024 * 1024
 
 OFF = "Control de la PC apagado. Pídele al usuario que ejecute /control on en la TUI de Jarvis."
@@ -47,6 +51,10 @@ RATE = f"Límite de {RATE_MAX} acciones por segundo superado; espera un momento.
 
 class StartupError(Exception):
     """The helper refuses to start (unsafe or unusable runtime directory or socket)."""
+
+
+# The wtype argv (keycode slots, the Shift-tap prelude, keys and text) comes from slots.py.
+ESCAPE_PAUSE_MS = "300"  # VS Code Vim needs a moment to leave insert mode (L25)
 
 
 class Deny(Exception):
@@ -211,6 +219,11 @@ class Helper:
             self._push_state()
             return False
         return True
+
+    def _still_enabled(self) -> None:
+        """Re-check the permission right before running wtype/grim (it may end while waiting)."""
+        if not self._enabled():
+            raise Deny(OFF)
 
     def _state(self) -> dict[str, Any]:
         enabled = self._enabled()
@@ -520,17 +533,26 @@ class Helper:
             {"id": w.id, "app_id": w.app_id, "title": w.title[:checks.MAX_TITLE_CHARS], "focused": w.focused}
             for w in windows]}
 
-    async def _focus_window(self, req: dict[str, Any]) -> dict[str, Any]:
-        wid = req.get("window_id")
+    async def _target_window(self, wid: object, *, screenshot: bool = False) -> checks.FocusedWindow:
+        """The `focus` checks: a listed window that is neither blocklisted nor (for input) a terminal."""
         if not isinstance(wid, int) or isinstance(wid, bool) or not 0 <= wid < 2**63:
             raise Deny("window_id debe ser un entero (el id de pc_list_windows)")
         window = next((w for w in await self._list_windows() if w.id == wid), None)
         if window is None:
             raise Deny(f"No hay ninguna ventana con id {wid}.")
-        reason = checks.blocked_reason(window.as_focused(), screenshot=False, subject="La ventana")
+        target = window.as_focused()
+        reason = checks.blocked_reason(target, screenshot=screenshot, subject="La ventana")
         if reason:
             raise Deny(reason)
-        log.info("focus %d (%s)", wid, window.app_id[:60])
+        return target
+
+    async def _focus_window(self, req: dict[str, Any]) -> dict[str, Any]:
+        window = await self._target_window(req.get("window_id"))
+        log.info("focus %d (%s)", window.id, window.app_id[:60])
+        await self._focus_and_confirm(window.id)
+        return {"ok": True}
+
+    async def _focus_and_confirm(self, wid: int) -> None:
         code, _ = await self._run(["niri", "msg", "action", "focus-window", "--id", str(wid)],
                                   timeout=NIRI_TIMEOUT_S, capture=False, track=True)
         if code != 0:
@@ -539,7 +561,7 @@ class Helper:
         while True:
             focused = await self._focus()
             if focused is not None and focused.id == wid:
-                return {"ok": True}
+                return
             if time.monotonic() >= deadline:
                 raise Deny("No pude confirmar que la ventana quedó enfocada.")
             await asyncio.sleep(FOCUS_POLL_S)
@@ -615,9 +637,30 @@ class Helper:
             raise Deny(f"intent debe ser texto de hasta {checks.MAX_INTENT_CHARS} caracteres")
         return intent
 
-    async def _input(self, *, argv: list[str], intent: str, risky: list[str], presses_return: bool,
-                     what: str, shown: str) -> dict[str, Any]:
-        window = await self._focused_for_input()
+    async def _restore_focus(self, prev_id: int | None, target_id: int) -> None:
+        """Best effort (S16): give focus back to the user's window if it still exists."""
+        if prev_id is None or prev_id == target_id:
+            return
+        try:
+            await asyncio.sleep(RESTORE_DELAY_S)
+            if not any(w.id == prev_id for w in await self._list_windows()):
+                log.info("foco no devuelto: la ventana %d ya no existe", prev_id)
+                return
+            code, _ = await self._run(["niri", "msg", "action", "focus-window", "--id", str(prev_id)],
+                                      timeout=NIRI_TIMEOUT_S, capture=False, track=False)
+            if code != 0:
+                log.warning("no pude devolver el foco a %d (código %d)", prev_id, code)
+            else:
+                log.info("foco devuelto a %d", prev_id)
+        except Exception as e:  # noqa: BLE001 - never replace the action's own result
+            log.warning("no pude devolver el foco a %d: %s", prev_id, e)
+
+    async def _input(self, *, req: dict[str, Any], argvs: list[list[str]], intent: str, risky: list[str],
+                     presses_return: bool, what: str, shown: str) -> dict[str, Any]:
+        # S16: with window_id the checks and the confirmation are about the target window; it is
+        # focused only after the confirmation (answered in the TUI), and focus goes back afterwards.
+        target = await self._target_window(req["window_id"]) if "window_id" in req else None
+        window = target if target is not None else await self._focused_for_input()
         reasons = []
         if risky:
             reasons.append("palabras de riesgo: " + ", ".join(s + "*" for s in risky))
@@ -628,18 +671,32 @@ class Helper:
                        f"{'; '.join(reasons)}. Intención: {intent[:200] or '—'}. {shown}")
             if not await self._confirm(f"¿Permitir que Jarvis {what}?", message):
                 raise Deny("El usuario no confirmó la acción (denegada, sin respuesta o sin TUI conectada).")
-            if not self._enabled():
-                raise Deny(OFF)
-        again = await self._focus()  # re-check right before wtype
-        if again is None or again.id != window.id:
-            raise Deny("El foco cambió antes de escribir; no se hizo nada.")
-        reason = checks.blocked_reason(again, screenshot=False)
-        if reason:
-            raise Deny(reason)
-        code, _ = await self._run(argv, timeout=WTYPE_TIMEOUT_S, capture=False, track=True)
-        if code != 0:
-            raise Deny(f"wtype terminó con código {code}")
-        return {"ok": True}
+            self._still_enabled()
+        prev_id: int | None = None
+        try:
+            if target is not None:
+                current = await self._focus()
+                prev_id = current.id if current is not None else None
+                if prev_id != target.id:
+                    log.info("enfocando %d (%s) para escribir", target.id, target.app_id[:60])
+                    await self._focus_and_confirm(target.id)
+                    await asyncio.sleep(FOCUS_SETTLE_S)
+            for argv in argvs:  # more than one only for text with very many distinct characters
+                again = await self._focus()  # re-check right before wtype (against the target, if any)
+                if again is None or again.id != window.id:
+                    raise Deny("El foco cambió antes de escribir; no se hizo nada." if argv is argvs[0]
+                               else "El foco cambió mientras escribía; se cortó el texto.")
+                reason = checks.blocked_reason(again, screenshot=False)
+                if reason:
+                    raise Deny(reason)
+                self._still_enabled()  # revoked during the focus settle or a previous run
+                code, _ = await self._run(argv, timeout=WTYPE_TIMEOUT_S, capture=False, track=True)
+                if code != 0:
+                    raise Deny(f"wtype terminó con código {code}")
+        finally:
+            if target is not None:
+                await self._restore_focus(prev_id, target.id)
+        return {"ok": True} if target is None else {"ok": True, "window_id": target.id}
 
     async def _type(self, req: dict[str, Any]) -> dict[str, Any]:
         text = req.get("text")
@@ -652,7 +709,7 @@ class Helper:
         look = checks.lookalike_stems(text, intent)
         if look:
             raise Deny("Texto con letras que imitan palabras de riesgo (" + ", ".join(look) + "); no se escribe.")
-        return await self._input(argv=["wtype", "--", text], intent=intent,
+        return await self._input(req=req, argvs=slots.type_argvs(text), intent=intent,
                                  risky=checks.risky_stems(text, intent), presses_return="\n" in text,
                                  what="escriba", shown=f"Texto: {text[:300]}")
 
@@ -668,7 +725,17 @@ class Helper:
         look = checks.lookalike_stems(intent)
         if look:
             raise Deny("Intención con letras que imitan palabras de riesgo (" + ", ".join(look) + ").")
-        return await self._input(argv=["wtype", *args], intent=intent, risky=checks.risky_stems(intent),
+        paced: list[str] = []
+        for i, a in enumerate(args):
+            paced.append(a)
+            # a bare Escape followed by more keys (not one held with modifiers)
+            if a == "Escape" and i > 0 and args[i - 1] == "-k" and i < len(args) - 1 and args[i + 1] != "-m":
+                paced += ["-s", ESCAPE_PAUSE_MS]
+        try:
+            argv = slots.key_argv(paced)
+        except ValueError as e:
+            raise Deny(str(e)) from None
+        return await self._input(req=req, argvs=[argv], intent=intent, risky=checks.risky_stems(intent),
                                  presses_return=checks.presses_return(args), what=f"pulse {keys[:60]}",
                                  shown="")
 
@@ -679,18 +746,64 @@ class Helper:
             if scale is None or not 0.05 <= scale <= 1:
                 raise Deny("scale debe ser un número entre 0.05 y 1")
             argv += ["-s", f"{scale:g}"]
+        if "window_id" in req:
+            return await self._screenshot_window(req["window_id"], argv)
         argv.append("-")
         window = await self._focus()
         if window is not None:
             reason = checks.blocked_reason(window, screenshot=True)
             if reason:
                 raise Deny(reason)
+        return {"ok": True, "png_base64": await self._grim(argv)}
+
+    async def _grim(self, argv: list[str]) -> str:
         code, png = await self._run(argv, timeout=GRIM_TIMEOUT_S, capture=True, track=True,
                                     max_out=MAX_PNG_BYTES)
         if code != 0 or not png:
             raise Deny(f"grim falló (código {code})")
         log.info("screenshot: %d bytes", len(png))
-        return {"ok": True, "png_base64": base64.b64encode(png).decode("ascii")}
+        return base64.b64encode(png).decode("ascii")
+
+    async def _focused_output(self) -> str | None:
+        """The focused output's name, or None (then grim captures every output)."""
+        try:
+            code, out = await self._run(["niri", "msg", "-j", "focused-output"], timeout=NIRI_TIMEOUT_S,
+                                        capture=True, track=False)
+        except Deny:
+            return None
+        if code != 0:
+            return None
+        try:
+            return checks.parse_output_name(out.decode("utf-8"))
+        except UnicodeDecodeError:
+            return None
+
+    async def _screenshot_window(self, wid: object, argv: list[str]) -> dict[str, Any]:
+        """S17: focus the target (same checks as `focus`, terminals allowed as for screenshots),
+        capture its output while it is focused, and give focus back, as type/key do (S16).
+        niri's screenshot-window also fills the user's clipboard, and its window geometry is not
+        exposed for tiled windows, so the capture is the target's whole output."""
+        target = await self._target_window(wid, screenshot=True)
+        prev_id: int | None = None
+        try:
+            current = await self._focus()
+            prev_id = current.id if current is not None else None
+            if prev_id != target.id:
+                log.info("enfocando %d (%s) para la captura", target.id, target.app_id[:60])
+                await self._focus_and_confirm(target.id)
+                await asyncio.sleep(FOCUS_SETTLE_S)  # let the app and niri repaint it
+            output = await self._focused_output()
+            again = await self._focus()  # re-check right before grim
+            if again is None or again.id != target.id:
+                raise Deny("El foco cambió antes de la captura; no se capturó nada.")
+            reason = checks.blocked_reason(again, screenshot=True)
+            if reason:
+                raise Deny(reason)
+            self._still_enabled()  # revoked during the focus settle
+            png = await self._grim([*argv, *(["-o", output] if output else []), "-"])
+        finally:
+            await self._restore_focus(prev_id, target.id)
+        return {"ok": True, "png_base64": png, "window_id": target.id}
 
 
 async def run(helper: Helper) -> None:

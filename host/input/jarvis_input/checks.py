@@ -39,7 +39,10 @@ _KEY_ALIASES = {
 # An xkb keysym name: never starts with "-", so wtype cannot read it as an option.
 _KEYSYM = re.compile(r"[A-Za-z0-9][A-Za-z0-9_]{0,31}")
 _FKEY = re.compile(r"f([1-9]|1[0-9]|2[0-4])", re.IGNORECASE)
-_RETURN_KEYS = {"return", "kp_enter", "iso_enter", "linefeed"}
+# xkb also resolves raw keysym numbers ("0xff0d" is Return) and Unicode names ("U000D"): refused,
+# so the Return check below sees every name that can press Return.
+_RAW_KEYSYM = re.compile(r"0x[0-9a-f]+|u[0-9a-f]+", re.IGNORECASE)
+_RETURN_KEYS = {"return", "kp_enter", "iso_enter", "linefeed", "3270_enter"}
 
 
 def parse_keys(keys: str) -> list[str]:
@@ -73,8 +76,13 @@ def parse_keys(keys: str) -> list[str]:
         key = _KEY_ALIASES.get(key_part.lower())
         if key is None:
             key = key_part.upper() if _FKEY.fullmatch(key_part) else key_part
-        if not _KEYSYM.fullmatch(key):
+        if not _KEYSYM.fullmatch(key) or _RAW_KEYSYM.fullmatch(key):
             raise ValueError(f"tecla inválida: {key_part}")
+        if mods == ["shift"] and len(key) == 1 and "a" <= key.lower() <= "z":
+            # wtype resolves -k names case-insensitively ("-k G" types "g", L24): send the capital
+            # as a text argument, which wtype types with the capital keysym.
+            args.append(key.upper())
+            continue
         for m in mods:
             args += ["-M", m]
         args += ["-k", key]
@@ -84,7 +92,8 @@ def parse_keys(keys: str) -> list[str]:
 
 
 def presses_return(args: list[str]) -> bool:
-    """Whether wtype key args from parse_keys press Return/Enter (with or without modifiers)."""
+    """Whether wtype key args from parse_keys press Return/Enter (with or without modifiers);
+    names are matched case-insensitively, as wtype resolves them."""
     return any(a == "-k" and b.lower() in _RETURN_KEYS for a, b in zip(args, args[1:]))
 
 
@@ -114,7 +123,8 @@ def preview(text: str) -> str:
 
 # --- risky words ---------------------------------------------------------------------------
 
-RISKY_STEMS = ("envi", "pag", "compr", "elimin", "borr", "submit", "send", "pay", "buy", "delet")
+RISKY_STEMS = ("envi", "pag", "compr", "elimin", "borr", "vaci", "submit", "send", "pay", "buy",
+               "delet", "clear", "wipe")
 
 # Basic confusables: Cyrillic and Greek letters that look like Latin ones (lowercase, after casefold).
 _CONFUSABLES = str.maketrans({
@@ -265,6 +275,20 @@ def parse_windows(stdout: str) -> list[Window]:
                           title=title if isinstance(title, str) else "",
                           focused=item.get("is_focused") is True))
     return out
+
+
+_OUTPUT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+
+
+def parse_output_name(stdout: str) -> str | None:
+    """`niri msg -j focused-output`: the output name (e.g. HDMI-A-1) for `grim -o`, or None when
+    there is none or it does not look like a connector name (S17)."""
+    try:
+        data = json.loads(stdout)
+    except ValueError:
+        return None
+    name = data.get("name") if isinstance(data, dict) else None
+    return name if isinstance(name, str) and _OUTPUT_NAME.fullmatch(name) else None
 
 
 # --- apps: visible .desktop entries (S14) --------------------------------------------------

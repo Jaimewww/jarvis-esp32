@@ -22,7 +22,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from jarvis_input import server  # noqa: E402
+from jarvis_input import server, slots  # noqa: E402
 
 FAKE = f"""#!{sys.executable}
 import json, os, sys, time
@@ -42,8 +42,12 @@ if name == "niri" and "windows" in sys.argv:
     item = json.loads(read("windows.json", '{{"stdout": "[]"}}'))
     sys.stdout.write(item.get("stdout", ""))
     sys.exit(item.get("exit", 0))
+if name == "niri" and "focused-output" in sys.argv:
+    item = json.loads(read("output.json", '{{"stdout": "null"}}'))
+    sys.stdout.write(item.get("stdout", ""))
+    sys.exit(item.get("exit", 0))
 if name == "niri" and "action" in sys.argv:
-    sys.exit(int(read("niri_action_exit", "0")))
+    sys.exit(int(read("niri_action_exit_" + sys.argv[-1], read("niri_action_exit", "0"))))
 if name == "niri":
     path = os.path.join(d, "focus.json")
     with open(path) as f:
@@ -486,10 +490,22 @@ class TypeTest(Base):
         res = await self.agent({"op": "type", "text": "-hola mundo", "intent": "escribir nota"})
         self.assertEqual(res, {"ok": True})
         [c] = self.calls("wtype")
-        self.assertEqual(c["argv"], ["--", "-hola mundo"])
-        niri = self.calls("niri")
-        self.assertEqual(len(niri), 2)  # check + re-check right before wtype
-        self.assertEqual(niri[0]["argv"], ["msg", "-j", "focused-window"])
+        # The keycode slot plan (slots.py, exact argv in test_slots): every key is released once
+        # up front, then the Shift tap, then each character as -k <keysym>; no raw text in argv.
+        self.assertEqual(c["argv"], slots.type_argvs("-hola mundo")[0][1:])
+        self.assertNotIn("--", c["argv"])
+        k = c["argv"].index("-k")
+        self.assertEqual(c["argv"][k:k + 6], ["-k", "Shift_L", "-s", "250", "-d", "8"])
+        self.assertEqual(c["argv"][k + 6:k + 10], ["-k", "0x2d", "-k", "0x68"])
+
+    async def test_type_many_distinct_characters_in_several_runs(self) -> None:
+        text = "".join(chr(c) for c in range(0x21, 0x7F)) + "áéíóúñ"
+        res = await self.agent({"op": "type", "text": text, "intent": "escribir nota"})
+        self.assertEqual(res, {"ok": True})
+        calls = self.calls("wtype")
+        self.assertEqual([c["argv"] for c in calls], [a[1:] for a in slots.type_argvs(text)])
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(self.calls("niri")), 3)  # check + a re-check before each wtype
 
     async def test_intent_optional(self) -> None:
         self.assertTrue((await self.agent({"op": "type", "text": "hola"}))["ok"])
@@ -566,13 +582,45 @@ class KeyTest(Base):
         res = await self.agent({"op": "key", "keys": "ctrl+l", "intent": "barra"})
         self.assertEqual(res, {"ok": True})
         [c] = self.calls("wtype")
-        self.assertEqual(c["argv"], ["-M", "ctrl", "-k", "l", "-m", "ctrl"])
+        # Keys use the keycode slot plan (slots.py): every keysym is released once on its slot,
+        # then the Shift tap carries the keymap, then the combo.
+        self.assertEqual(c["argv"], slots.key_argv(["-M", "ctrl", "-k", "l", "-m", "ctrl"])[1:])
+        self.assertEqual(c["argv"][-10:], ["-k", "Shift_L", "-s", "250", "-M", "ctrl", "-k", "l", "-m", "ctrl"])
+
+    async def test_key_pauses_after_escape(self) -> None:
+        # VS Code Vim needs a moment to leave insert mode before the next keys (L25).
+        res = await self.agent({"op": "key", "keys": "Escape g g d shift+g", "intent": "modo vim"})
+        self.assertTrue(res["ok"])
+        [c] = self.calls("wtype")
+        tail = ["-k", "Escape", "-s", "300", "-k", "g", "-k", "g", "-k", "d", "-k", "0x47"]
+        self.assertEqual(c["argv"][-len(tail):], tail)
+        self.assertEqual(c["argv"][:2], ["-p", "0xff1b"])  # Escape keeps keycode 1 (L24-L25)
+
+    async def test_no_pause_inside_modifier_or_at_end(self) -> None:
+        pre = ["-k", "Shift_L", "-s", "250"]
+        for keys, tail in [
+            ("ctrl+Escape g", ["-M", "ctrl", "-k", "Escape", "-m", "ctrl", "-k", "g"]),
+            ("g Escape", ["-k", "g", "-k", "Escape"]),
+            ("Escape Escape", ["-k", "Escape", "-s", "300", "-k", "Escape"]),
+        ]:
+            (self.fake / "calls.jsonl").unlink(missing_ok=True)
+            self.assertTrue((await self.agent({"op": "key", "keys": keys, "intent": "modo vim"}))["ok"], keys)
+            [c] = self.calls("wtype")
+            self.assertEqual(c["argv"][c["argv"].index("-k"):], pre + tail, keys)
 
     async def test_bad_keys(self) -> None:
         for req in [{"op": "key"}, {"op": "key", "keys": ""}, {"op": "key", "keys": "-P x"},
                     {"op": "key", "keys": ["a"]}, {"op": "key", "keys": "hyper+a"}]:
             self.assertFalse((await self.agent(req))["ok"], req)
         self.assertEqual(self.calls(), [])
+
+    async def test_key_without_libxkbcommon(self) -> None:
+        with mock.patch.object(slots, "_xkb_keysym_from_name", None):
+            self.assertEqual(await self.agent({"op": "key", "keys": "ctrl+a Delete"}), {"ok": True})
+            res = await self.agent({"op": "key", "keys": "XF86AudioMute"})
+        self.assertFalse(res["ok"])
+        self.assertIn("libxkbcommon", res["error"])
+        self.assertEqual(len(self.calls("wtype")), 1)
 
     async def test_return_outside_messaging_needs_no_confirm(self) -> None:
         self.assertTrue((await self.agent({"op": "key", "keys": "Return"}))["ok"])
@@ -694,6 +742,8 @@ class ConfirmTest(Base):
             w.close()
         self.focus({"id": 9, "app_id": "org.mozilla.Thunderbird", "title": "Redactar"})
         self.assertFalse((await self.agent({"op": "key", "keys": "ctrl+Return"}))["ok"])  # no subscriber
+        for keys in ["0xff0d", "ctrl+0xff8d", "kp_ENTER"]:  # no way around the confirmation
+            self.assertFalse((await self.agent({"op": "key", "keys": keys}))["ok"], keys)
         self.assertEqual(self.calls("wtype"), [])
         self.assertTrue((await self.agent({"op": "type", "text": "hola"}))["ok"])  # no Return: fine
 
@@ -895,6 +945,357 @@ class FocusTest(Base):
     async def test_control_socket_does_not_know_them(self) -> None:
         for op in ["apps", "windows", "focus"]:
             self.assertFalse((await self.control({"op": op, "window_id": 11}))["ok"], op)
+        self.assertEqual(self.calls(), [])
+
+
+class TypeIntoWindowTest(Base):
+    """S16: type/key with window_id focus the target, type, and give focus back."""
+    confirm_timeout = 0.6
+
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        await self.grant()
+        self.windows({**GHOSTTY, "focused": True}, NOTEPAD, KEEPASS, BRAVE)
+
+    def actions(self) -> list[list[str]]:
+        return [c["argv"] for c in self.calls("niri") if "action" in c["argv"]]
+
+    def order(self) -> list[str]:
+        return ["wtype" if c["name"] == "wtype" else "focus " + c["argv"][-1]
+                for c in self.calls() if c["name"] == "wtype" or "action" in c["argv"]]
+
+    async def test_type_focuses_types_and_restores(self) -> None:
+        self.focus(GHOSTTY, NOTEPAD)  # user on the TUI; the target is focused after the action
+        res = await self.agent({"op": "type", "text": "hola", "window_id": 11})
+        self.assertEqual(res, {"ok": True, "window_id": 11})
+        self.assertEqual(self.order(), ["focus 11", "wtype", "focus 3"])
+        [c] = self.calls("wtype")
+        self.assertEqual(c["argv"], slots.type_argvs("hola")[0][1:])
+
+    async def test_key_focuses_types_and_restores(self) -> None:
+        self.focus(GHOSTTY, NOTEPAD)
+        res = await self.agent({"op": "key", "keys": "ctrl+n", "window_id": 11})
+        self.assertEqual(res, {"ok": True, "window_id": 11})
+        self.assertEqual(self.order(), ["focus 11", "wtype", "focus 3"])
+
+    async def _sleeps_during(self, req: dict) -> tuple[dict, list[float]]:
+        real, slept = asyncio.sleep, []
+
+        async def spy(delay: float, *a: object, **k: object) -> object:
+            slept.append(delay)
+            return await real(delay, *a, **k)
+
+        with mock.patch.object(server.asyncio, "sleep", spy):
+            res = await self.agent(req)
+        return res, slept
+
+    async def test_settles_after_focus_change_before_typing(self) -> None:
+        # "la mundo" (L21): VS Code drops the first keys right after it gets focus back.
+        self.focus(GHOSTTY, NOTEPAD)
+        res, slept = await self._sleeps_during({"op": "type", "text": "hola", "window_id": 11})
+        self.assertEqual(res, {"ok": True, "window_id": 11})
+        self.assertIn(server.FOCUS_SETTLE_S, slept)
+        self.assertGreaterEqual(server.FOCUS_SETTLE_S, 0.3)
+        self.assertEqual(self.order(), ["focus 11", "wtype", "focus 3"])
+
+    async def test_no_settle_when_target_already_focused(self) -> None:
+        self.focus(NOTEPAD, NOTEPAD, NOTEPAD)
+        res, slept = await self._sleeps_during({"op": "type", "text": "hola", "window_id": 11})
+        self.assertEqual(res, {"ok": True, "window_id": 11})
+        self.assertNotIn(server.FOCUS_SETTLE_S, slept)
+        self.assertEqual(self.order(), ["wtype"])  # no focus changes, nothing to give back
+
+    async def test_focus_confirm_polls(self) -> None:
+        self.focus(GHOSTTY, GHOSTTY, GHOSTTY, NOTEPAD)  # focus lands on the 2nd poll
+        self.assertTrue((await self.agent({"op": "type", "text": "hola", "window_id": 11}))["ok"])
+
+    async def test_refuses_bad_targets(self) -> None:
+        self.focus(GHOSTTY, NOTEPAD)
+        self.helper._limiter = server.checks.RateLimiter(100, server.RATE_WINDOW_S)
+        r, w = await self.connect(self.agent_path)
+        for wid in [3, 5, 99, "11", True, None, 1.5, -1]:
+            res = await self.ask_on(r, w, {"op": "type", "text": "hola", "window_id": wid})
+            self.assertFalse(res["ok"], wid)
+            self.assertFalse((await self.ask_on(r, w, {"op": "key", "keys": "a", "window_id": wid}))["ok"], wid)
+        res = await self.agent({"op": "type", "text": "hola", "window_id": 3})
+        self.assertIn("terminal", res["error"])
+        res = await self.agent({"op": "type", "text": "hola", "window_id": 5})
+        self.assertIn("bloqueo", res["error"])
+        self.assertEqual(self.order(), [])
+
+    async def test_focus_not_confirmed(self) -> None:
+        self.focus(GHOSTTY)
+        res = await self.agent({"op": "type", "text": "hola", "window_id": 11})
+        self.assertFalse(res["ok"])
+        self.assertIn("enfocada", res["error"])
+        self.assertEqual(self.order(), ["focus 11", "focus 3"])  # focus goes back even so
+
+    async def test_without_window_id_unchanged(self) -> None:
+        self.focus(NOTEPAD)
+        self.assertEqual(await self.agent({"op": "type", "text": "hola"}), {"ok": True})
+        self.assertEqual(await self.agent({"op": "key", "keys": "ctrl+n"}), {"ok": True})
+        self.assertEqual(self.order(), ["wtype", "wtype"])  # no focus changes
+        self.focus(GHOSTTY)
+        res = await self.agent({"op": "type", "text": "hola"})
+        self.assertIn("terminal", res["error"])
+        self.assertEqual(self.order(), ["wtype", "wtype"])
+
+    async def test_recheck_compares_target(self) -> None:
+        self.focus(GHOSTTY, NOTEPAD, GHOSTTY)  # confirmed, then the user switched before wtype
+        res = await self.agent({"op": "type", "text": "hola", "window_id": 11})
+        self.assertFalse(res["ok"])
+        self.assertIn("foco", res["error"])
+        self.assertEqual(self.calls("wtype"), [])
+
+    async def test_no_restore_when_previous_is_target_or_gone(self) -> None:
+        self.focus(NOTEPAD)
+        self.assertTrue((await self.agent({"op": "type", "text": "hola", "window_id": 11}))["ok"])
+        self.assertEqual(self.order(), ["wtype"])  # already focused: no focus change at all
+        (self.fake / "calls.jsonl").unlink()
+        self.focus({"id": 42, "app_id": "x", "title": "cerrada"}, NOTEPAD)
+        self.assertTrue((await self.agent({"op": "type", "text": "hola", "window_id": 11}))["ok"])
+        self.assertEqual(self.order(), ["focus 11", "wtype"])
+
+    async def test_no_previous_window(self) -> None:
+        self.focus({"stdout": "null"}, NOTEPAD)
+        self.assertTrue((await self.agent({"op": "type", "text": "hola", "window_id": 11}))["ok"])
+        self.assertEqual(self.order(), ["focus 11", "wtype"])
+
+    async def test_restore_failure_is_not_an_error(self) -> None:
+        (self.fake / "niri_action_exit_3").write_text("1")
+        self.focus(GHOSTTY, NOTEPAD)
+        with self.assertLogs("jarvis_input", level="WARNING"):
+            res = await self.agent({"op": "type", "text": "hola", "window_id": 11})
+        self.assertEqual(res, {"ok": True, "window_id": 11})
+        self.assertEqual(self.order(), ["focus 11", "wtype", "focus 3"])
+
+    async def test_restores_after_wtype_failure(self) -> None:
+        (self.fake / "wtype_exit").write_text("1")
+        self.focus(GHOSTTY, NOTEPAD)
+        self.assertFalse((await self.agent({"op": "type", "text": "hola", "window_id": 11}))["ok"])
+        self.assertEqual(self.order(), ["focus 11", "wtype", "focus 3"])
+
+    async def test_confirmation_names_target_before_focusing(self) -> None:
+        self.focus(NOTEPAD)  # the user is elsewhere; the target is Brave
+        r, w = await self.subscribe()
+        task = asyncio.create_task(self.agent({"op": "key", "keys": "Return", "window_id": 8}))
+        ev = await self.next_event(r)
+        self.assertEqual(ev["event"], "confirm")
+        self.assertIn("brave-browser", ev["message"])
+        self.assertIn("Inbox", ev["message"])
+        self.assertEqual(self.actions(), [])  # nothing focused while asking
+        await self.ask_on(r, w, {"op": "answer", "id": ev["id"], "allow": False})
+        self.assertFalse((await task)["ok"])
+        self.assertEqual(self.order(), [])
+
+    async def test_confirm_allowed_then_typed(self) -> None:
+        self.focus(GHOSTTY, BRAVE)
+        r, w = await self.subscribe()
+        task = asyncio.create_task(self.agent({"op": "type", "text": "hola\n", "window_id": 8}))
+        ev = await self.next_event(r)
+        await self.ask_on(r, w, {"op": "answer", "id": ev["id"], "allow": True})
+        self.assertEqual(await task, {"ok": True, "window_id": 8})
+        self.assertEqual(self.order(), ["focus 8", "wtype", "focus 3"])
+
+    async def test_return_rule_uses_target_not_focused(self) -> None:
+        self.focus(BRAVE, NOTEPAD)  # focused Brave would need a confirmation; the target does not
+        self.assertTrue((await self.agent({"op": "key", "keys": "Return", "window_id": 11}))["ok"])
+
+    async def test_requires_permission(self) -> None:
+        await self.control({"op": "revoke"})
+        res = await self.agent({"op": "type", "text": "hola", "window_id": 11})
+        self.assertIn("/control on", res["error"])
+        self.assertEqual(self.calls(), [])
+
+
+class RevokeWindowTest(Base):
+    """Revoking while an action waits (focus settle, between wtype runs) stops it before the next
+    wtype/grim; focus still goes back to the user's window and the answer is the OFF denial."""
+
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        await self.grant()
+        self.windows({**GHOSTTY, "focused": True}, NOTEPAD, KEEPASS, BRAVE)
+        (self.fake / "output.json").write_text(json.dumps({"stdout": json.dumps({"name": "HDMI-A-1"})}))
+
+    def order(self) -> list[str]:
+        return [c["name"] if c["name"] in ("wtype", "grim") else "focus " + c["argv"][-1]
+                for c in self.calls() if c["name"] in ("wtype", "grim") or "action" in c["argv"]]
+
+    async def _revoke_on_settle(self, req: dict) -> dict:
+        real = asyncio.sleep
+
+        async def spy(delay: float, *a: object, **k: object) -> object:
+            if delay == server.FOCUS_SETTLE_S:
+                self.assertTrue((await self.control({"op": "revoke"}))["ok"])
+            return await real(delay, *a, **k)
+
+        with mock.patch.object(server.asyncio, "sleep", spy):
+            return await self.agent(req)
+
+    async def test_revoke_during_settle_types_nothing(self) -> None:
+        for req in [{"op": "type", "text": "hola", "window_id": 11},
+                    {"op": "key", "keys": "ctrl+n", "window_id": 11}]:
+            (self.fake / "calls.jsonl").unlink(missing_ok=True)
+            await self.grant()
+            self.focus(GHOSTTY, NOTEPAD)
+            res = await self._revoke_on_settle(req)
+            self.assertEqual(res, {"ok": False, "error": server.OFF}, req)
+            self.assertEqual(self.order(), ["focus 11", "focus 3"], req)  # no wtype; focus back
+
+    async def test_revoke_during_settle_captures_nothing(self) -> None:
+        self.focus(GHOSTTY, NOTEPAD)
+        res = await self._revoke_on_settle({"op": "screenshot", "window_id": 11})
+        self.assertEqual(res, {"ok": False, "error": server.OFF})
+        self.assertEqual(self.order(), ["focus 11", "focus 3"])  # no grim; focus back
+
+    async def test_revoke_between_wtype_runs(self) -> None:
+        text = "".join(chr(c) for c in range(0x21, 0x7F)) + "áéíóúñ"
+        self.assertEqual(len(slots.type_argvs(text)), 2)
+        real = self.helper._run
+
+        async def run(argv: list[str], **kw: Any) -> tuple[int, bytes]:
+            out = await real(argv, **kw)
+            if argv[0] == "wtype":
+                self.assertTrue((await self.control({"op": "revoke"}))["ok"])
+            return out
+
+        self.focus(GHOSTTY, NOTEPAD)
+        with mock.patch.object(self.helper, "_run", run):
+            res = await self.agent({"op": "type", "text": text, "window_id": 11})
+        self.assertEqual(res, {"ok": False, "error": server.OFF})
+        self.assertEqual(self.order(), ["focus 11", "wtype", "focus 3"])  # the 2nd run never ran
+
+    async def test_restore_focus_never_replaces_the_result(self) -> None:
+        real, n = self.helper._list_windows, [0]
+
+        async def flaky() -> list:
+            n[0] += 1
+            if n[0] > 1:  # the restore's lookup, after the action
+                raise RuntimeError("boom")
+            return await real()
+
+        self.focus(GHOSTTY, NOTEPAD)
+        with mock.patch.object(self.helper, "_list_windows", flaky), \
+                self.assertLogs("jarvis_input", level="WARNING") as logs:
+            res = await self.agent({"op": "type", "text": "hola", "window_id": 11})
+        self.assertEqual(res, {"ok": True, "window_id": 11})
+        self.assertIn("boom", "\n".join(logs.output))
+        n[0] = 0
+        (self.fake / "grim_exit").write_text("1")
+        self.focus(GHOSTTY, NOTEPAD)
+        with mock.patch.object(self.helper, "_list_windows", flaky), self.assertLogs("jarvis_input"):
+            res = await self.agent({"op": "screenshot", "window_id": 11})
+        self.assertEqual(res, {"ok": False, "error": "grim falló (código 1)"})  # the action's error
+
+
+class ScreenshotWindowTest(Base):
+    """S17: screenshot with window_id focuses the target, captures its output, gives focus back."""
+
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        await self.grant()
+        self.windows({**GHOSTTY, "focused": True}, NOTEPAD, KEEPASS, BRAVE)
+        self.output("HDMI-A-1")
+
+    def output(self, name: str | None = None, *, exit: int = 0, raw: str | None = None) -> None:
+        out = raw if raw is not None else json.dumps(None if name is None else {"name": name, "logical": {}})
+        (self.fake / "output.json").write_text(json.dumps({"stdout": out, "exit": exit}))
+
+    def order(self) -> list[str]:
+        return ["grim" if c["name"] == "grim" else "focus " + c["argv"][-1]
+                for c in self.calls() if c["name"] == "grim" or "action" in c["argv"]]
+
+    async def test_focuses_captures_output_and_restores(self) -> None:
+        self.focus(GHOSTTY, NOTEPAD)  # user on the TUI; the target is focused after the action
+        res = await self.agent({"op": "screenshot", "scale": 0.5, "window_id": 11})
+        self.assertEqual(set(res), {"ok", "png_base64", "window_id"})
+        self.assertEqual(res["window_id"], 11)
+        self.assertEqual(base64.b64decode(res["png_base64"]), PNG)
+        self.assertEqual(self.order(), ["focus 11", "grim", "focus 3"])
+        [g] = self.calls("grim")
+        self.assertEqual(g["argv"], ["-s", "0.5", "-o", "HDMI-A-1", "-"])
+
+    async def test_settles_before_capture(self) -> None:
+        real, slept = asyncio.sleep, []
+
+        async def spy(delay: float, *a: object, **k: object) -> object:
+            slept.append(delay)
+            return await real(delay, *a, **k)
+
+        self.focus(GHOSTTY, NOTEPAD)
+        with mock.patch.object(server.asyncio, "sleep", spy):
+            self.assertTrue((await self.agent({"op": "screenshot", "window_id": 11}))["ok"])
+        self.assertIn(server.FOCUS_SETTLE_S, slept)
+
+    async def test_terminal_target_allowed(self) -> None:
+        # Screenshots skip the terminal rule (the user may want Jarvis to read the TUI).
+        self.focus(NOTEPAD, GHOSTTY)
+        res = await self.agent({"op": "screenshot", "window_id": 3})
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(self.order(), ["focus 3", "grim", "focus 11"])
+
+    async def test_refuses_blocked_missing_and_bad_ids(self) -> None:
+        self.focus(GHOSTTY, NOTEPAD)
+        self.helper._limiter = server.checks.RateLimiter(100, server.RATE_WINDOW_S)
+        r, w = await self.connect(self.agent_path)
+        for wid in [5, 99, "11", True, None, 1.5, -1]:
+            res = await self.ask_on(r, w, {"op": "screenshot", "window_id": wid})
+            self.assertFalse(res["ok"], wid)
+        res = await self.ask_on(r, w, {"op": "screenshot", "window_id": 5})
+        self.assertIn("bloqueo", res["error"])
+        self.assertEqual(self.order(), [])
+
+    async def test_already_focused_no_focus_change(self) -> None:
+        self.focus(NOTEPAD)
+        res = await self.agent({"op": "screenshot", "window_id": 11})
+        self.assertEqual(res["window_id"], 11)
+        self.assertEqual(self.order(), ["grim"])
+
+    async def test_focus_not_confirmed(self) -> None:
+        self.focus(GHOSTTY)
+        res = await self.agent({"op": "screenshot", "window_id": 11})
+        self.assertFalse(res["ok"])
+        self.assertIn("enfocada", res["error"])
+        self.assertEqual(self.order(), ["focus 11", "focus 3"])  # no capture; focus goes back
+
+    async def test_recheck_right_before_capture(self) -> None:
+        self.focus(GHOSTTY, NOTEPAD, GHOSTTY)  # confirmed, then the user switched before grim
+        res = await self.agent({"op": "screenshot", "window_id": 11})
+        self.assertFalse(res["ok"])
+        self.assertIn("foco", res["error"])
+        self.assertEqual(self.calls("grim"), [])
+        self.assertEqual(self.order(), ["focus 11", "focus 3"])
+
+    async def test_unreadable_output_captures_everything(self) -> None:
+        for kwargs in [{"exit": 1}, {"raw": "nope"}, {"raw": "null"}, {"raw": '{"name": "bad name;"}'},
+                       {"raw": '{"name": 3}'}]:
+            (self.fake / "calls.jsonl").unlink(missing_ok=True)
+            self.helper._limiter = server.checks.RateLimiter(100, server.RATE_WINDOW_S)
+            self.output(**kwargs)  # type: ignore[arg-type]
+            self.focus(NOTEPAD)
+            res = await self.agent({"op": "screenshot", "window_id": 11})
+            self.assertTrue(res["ok"], kwargs)
+            self.assertEqual(self.calls("grim")[0]["argv"], ["-"], kwargs)
+
+    async def test_restores_after_grim_failure(self) -> None:
+        (self.fake / "grim_exit").write_text("1")
+        self.focus(GHOSTTY, NOTEPAD)
+        self.assertFalse((await self.agent({"op": "screenshot", "window_id": 11}))["ok"])
+        self.assertEqual(self.order(), ["focus 11", "grim", "focus 3"])
+
+    async def test_without_window_id_unchanged(self) -> None:
+        self.focus(GHOSTTY)
+        res = await self.agent({"op": "screenshot"})
+        self.assertEqual(set(res), {"ok", "png_base64"})
+        self.assertEqual(self.order(), ["grim"])
+        self.assertEqual(self.calls("grim")[0]["argv"], ["-"])
+        self.assertFalse(any("focused-output" in c["argv"] for c in self.calls("niri")))
+
+    async def test_requires_permission(self) -> None:
+        await self.control({"op": "revoke"})
+        res = await self.agent({"op": "screenshot", "window_id": 11})
+        self.assertIn("/control on", res["error"])
         self.assertEqual(self.calls(), [])
 
 

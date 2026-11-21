@@ -2,7 +2,7 @@
 //
 //   node --test host/gentle-dot/tests/*.test.ts   (Node 24+: strips TS types)
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { type Server, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -138,5 +138,58 @@ describe("S14 ops against a fake agent.sock", () => {
 			message: "window 3 is a terminal and is blocked",
 		});
 		assert.deepEqual(received.map((l) => JSON.parse(l)), [{ op: "focus", window_id: 3 }]);
+	});
+});
+
+describe("S16 window_id on pc_type / pc_key", () => {
+	it("forwards window_id as a number when given", () => {
+		assert.deepEqual(buildRequest("pc_type", { text: "hola", intent: "nota", window_id: 11 }), {
+			op: "type",
+			text: "hola",
+			intent: "nota",
+			window_id: 11,
+		});
+		assert.deepEqual(buildRequest("pc_key", { keys: "ctrl+n", intent: "nuevo", window_id: "11" }), {
+			op: "key",
+			keys: "ctrl+n",
+			intent: "nuevo",
+			window_id: 11,
+		});
+	});
+	it("omits window_id when absent (unchanged behaviour)", () => {
+		assert.deepEqual(buildRequest("pc_type", { text: "hola", intent: "nota" }), { op: "type", text: "hola", intent: "nota" });
+		assert.deepEqual(buildRequest("pc_key", { keys: "a", intent: "x", window_id: undefined }), { op: "key", keys: "a", intent: "x" });
+	});
+	it("rejects a bad window_id", () => {
+		for (const window_id of [-1, 1.5, "abc", "", Number.NaN, true]) {
+			assert.throws(() => buildRequest("pc_type", { text: "hola", intent: "x", window_id }), /window_id/);
+			assert.throws(() => buildRequest("pc_key", { keys: "a", intent: "x", window_id }), /window_id/);
+		}
+	});
+	it("S17: pc_screenshot forwards window_id when given, omits it when absent, rejects bad ids", () => {
+		assert.deepEqual(buildRequest("pc_screenshot", { window_id: 11 }), { op: "screenshot", scale: 0.5, window_id: 11 });
+		assert.deepEqual(buildRequest("pc_screenshot", { scale: 1, window_id: "11" }), { op: "screenshot", scale: 1, window_id: 11 });
+		assert.deepEqual(buildRequest("pc_screenshot", { window_id: undefined }), { op: "screenshot", scale: 0.5 });
+		for (const window_id of [-1, 1.5, "abc", "", Number.NaN, true]) {
+			assert.throws(() => buildRequest("pc_screenshot", { window_id }), /window_id/);
+		}
+	});
+	it("S17: pc_screenshot declares an optional window_id", () => {
+		const src = readFileSync(new URL("../extensions/pc-control.ts", import.meta.url), "utf8");
+		const start = src.indexOf('name: "pc_screenshot"');
+		assert.ok(start >= 0);
+		const block = src.slice(start, src.indexOf("pi.on(", start));
+		assert.match(block, /window_id: Type\.Optional\(Type\.Integer\(/);
+		assert.match(block, /focus (returns|goes back)/i);
+	});
+	it("pc_type and pc_key declare an optional window_id and say focus goes back", () => {
+		const src = readFileSync(new URL("../extensions/pc-control.ts", import.meta.url), "utf8");
+		for (const name of ["pc_type", "pc_key"]) {
+			const start = src.indexOf(`name: "${name}"`);
+			assert.ok(start >= 0, name);
+			const block = src.slice(start, src.indexOf("registerTool", start));
+			assert.match(block, /window_id: Type\.Optional\(Type\.Integer\(/, name);
+			assert.match(block, /focus (returns|goes back)/i, name);
+		}
 	});
 });

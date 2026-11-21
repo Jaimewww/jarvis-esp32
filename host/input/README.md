@@ -54,8 +54,11 @@ All agent requests share a rate limit of **10 per second** (sliding window).
 | `{"op":"open","app":"<desktop-id>"}` | no (stage a) | `{"ok":true}` |
 | `{"op":"open","url":"https://…"}` | no (stage a) | `{"ok":true}` |
 | `{"op":"type","text":"…","intent":"…"}` | yes | `{"ok":true}` |
+| `{"op":"type","text":"…","window_id":11}` (S16) | yes | `{"ok":true,"window_id":11}` |
 | `{"op":"key","keys":"ctrl+l","intent":"…"}` | yes | `{"ok":true}` |
+| `{"op":"key","keys":"ctrl+l","window_id":11}` (S16) | yes | `{"ok":true,"window_id":11}` |
 | `{"op":"screenshot","scale":0.5}` | yes | `{"ok":true,"png_base64":"…"}` |
+| `{"op":"screenshot","window_id":11}` (S17) | yes | `{"ok":true,"png_base64":"…","window_id":11}` |
 | `{"op":"apps","query":"notas"}` (S14) | no | `{"ok":true,"apps":[{"id":"<desktop-id>","name":"…"}]}` |
 | `{"op":"windows"}` (S14) | yes | `{"ok":true,"windows":[{"id":11,"app_id":"…","title":"…","focused":false}]}` |
 | `{"op":"focus","window_id":11}` (S14) | yes | `{"ok":true}` |
@@ -70,12 +73,61 @@ All agent requests share a rate limit of **10 per second** (sliding window).
   within 5 s is an error, a process still running after 5 s counts as launched (and is reaped
   in the background).
 * `type`: `text` 1–2000 characters, newlines and tabs allowed, other control characters not;
-  `intent` optional, ≤ 500 characters. Runs `wtype -- <text>`.
+  `intent` optional, ≤ 500 characters. Runs `wtype <slots> -k Shift_L -s 250 -d 8 -k 0x… …`:
+  each character as `-k <keysym>` (keysyms from libxkbcommon's `xkb_utf32_to_keysym` like wtype,
+  so ’ — … € get their legacy keysyms; `\n` is Return, `\t` Tab; without libxkbcommon, the
+  Latin-1 or `0x1000000`+code point keysym); see
+  [wtype keycode slots](#wtype-keycode-slots). Text with more distinct characters than there are
+  character keycodes (66) is typed in several wtype runs, each with its own slots and prelude,
+  with the focus re-checked before each.
 * `key`: up to 20 space-separated combos `mod+mod+key`; modifiers `ctrl|control`, `shift`,
   `alt`, `altgr`, `super|logo|win|meta|mod`; aliases `enter|return`, `esc`, `tab`, `space`,
   `backspace`, `delete|del`, `insert`, `home`, `end`, `pageup`, `pagedown`, arrows, `f1`–`f24`;
-  otherwise an xkb keysym name. Runs `wtype -M mod … -k key … -m mod …`.
+  otherwise an xkb keysym name, except raw keysym numbers (`0xff0d`, `U000D`), which are refused
+  so every way to press Return/KP_Enter is seen by the confirmation rule (names match
+  case-insensitively, as in wtype). Without libxkbcommon only a built-in table resolves
+  (`slots.FALLBACK_NAMES`: letters, digits, ASCII punctuation names, the aliases, F1–F24,
+  modifiers and common special keys); other names are refused. Runs `wtype <slots> -k Shift_L -s 250 -M mod … -k key … -m mod …`.
+  A plain `shift+letter` is sent as the capital's keysym (`shift+g` → `-k 0x47`): wtype resolves
+  `-k` names case-insensitively, so `-k G` or `-M shift -k g` would type `g`. A bare `Escape`
+  followed by more keys is followed by a 300 ms pause (VS Code Vim leaving insert mode, L25).
+
+### wtype keycode slots
+
+wtype 0.4 (`main.c`) parses all its argv before sending anything and uploads one keymap. Each new
+keysym gets the next entry in order of first use, and entry *i* is evdev keycode *i*+1 (xkb
+*i*+9). `-k`, `-p` and `-P` share those entries and match them by keysym; text (after `--` or a
+bare argument) matches by character only, so it never reuses a `-p` entry and always lands after
+them. `-M`/`-m` only send modifier state and take no keycode. Chromium/Electron derive
+`KeyboardEvent.code` from the keycode and VS Code dispatches shortcuts on it, so a space on
+keycode 15 acted as Tab and an `a` on 14 as Backspace (desktop-e2e L2).
+
+`jarvis_input/slots.py` therefore starts every `type` and `key` argv with one `-p <keysym>`
+release (apps act on presses) per keycode from 1 up to the highest keycode used:
+
+* special keys on their real US keycode: Escape 1, BackSpace 14, Tab 15, Return 28, the
+  modifiers (Control/Shift/Alt/Super L and R, AltGr), Home/End/Prior/Next/arrows/Insert/Delete,
+  F1–F24, KP_Enter, Menu, Print, Pause, Caps/Num/Scroll_Lock;
+* keys pressed with a modifier (`ctrl+l`), then every other keysym in first-use order, on their
+  own US key when free (`l` on KeyL, `,` on Comma, `H` on KeyH); the rest (`’ — …`, a second
+  case of a letter) on the next free character key: the main block, Space, IntlBackslash, then
+  the numpad (never NumpadEnter);
+* every other keycode up to the highest one gets an inert private-use filler (`U+E000`+keycode).
+
+Then the prelude `-k Shift_L -s 250` (Shift_L on its own keycode 42; the tap carries the keymap
+and the sleep lets Chromium/Electron apply it, else the first keys are dropped, L19/L25) and
+everything else as `-k`: key names, or `0x…` keysyms for text, so argv has no raw text and no
+`--`. argv is bounded: ≤ 2 × 194 slot arguments + 2 per character (≤ 4.4k arguments for 2000).
 * `screenshot`: optional `scale` in `[0.05, 1]`; runs `grim [-s <scale>] -`.
+* `screenshot` with `window_id` (S17), under the action lock: the target gets the `focus`
+  checks with the screenshot rules (listed, not blocklisted; terminals allowed); the focused
+  window is remembered; if the target is not focused it is focused, confirmed (≤ 500 ms) and
+  given 400 ms to settle; `niri msg -j focused-output` names its monitor; focus is re-checked
+  against the target; then `grim [-s <scale>] -o <output> -` (every output if the name is
+  unreadable or not a connector name), and focus goes back as for `type`/`key`. The capture is
+  the target's whole monitor, not just the window: `niri msg action screenshot-window` also
+  overwrites the user's clipboard, and niri does not expose tiled-window geometry for
+  `grim -g`. The response echoes `window_id`. Without `window_id` nothing changes.
 * `apps`: **reads files only, never runs anything.** Data dirs by precedence:
   `$XDG_DATA_HOME` (or `~/.local/share`), `$XDG_DATA_DIRS` (or `/usr/local/share:/usr/share`;
   relative entries ignored), then `<data home>/flatpak/exports/share` and
@@ -93,8 +145,18 @@ All agent requests share a rate limit of **10 per second** (sliding window).
 * `focus`: `window_id` an integer ≥ 0 that must appear in `niri msg -j windows`; refused when
   the window is on the blocklist or is a terminal (the same rules as `type`, below); then runs
   `niri msg action focus-window --id <id>` and polls `focused-window` for up to 500 ms: ok only
-  once that window is focused, otherwise an error. Agent flow for typing: `apps` + `open` (or
-  `windows`), `focus`, then `type`/`key` (which re-check focus themselves).
+  once that window is focused, otherwise an error.
+* `type`/`key` with `window_id` (S16), all under the action lock: the target gets the `focus`
+  checks (listed, not blocklisted, not a terminal); risky-word and Return-in-browser
+  confirmations name the **target** window and are asked before anything is focused (so the user
+  can answer in the TUI); then the currently focused window id is remembered; if the target is
+  not already focused it is focused, confirmed (≤ 500 ms) and given 400 ms to settle (Electron
+  apps such as VS Code drop keys sent right after they regain focus), focus is re-checked against the target right before `wtype`,
+  `wtype` runs, and finally (also when a later step failed) focus goes back to the remembered
+  window if it still exists and is not the target — best effort, after a 100 ms pause; failures
+  are only logged. The response echoes `window_id`. Without `window_id` nothing changes. Agent
+  flow for typing: `apps` + `open` (or `windows`), then `type`/`key` with `window_id`; `focus`
+  only to bring a window forward for the user.
 * `windows`, `focus`, `type`, `key` and `screenshot` run one at a time (an action lock).
 
 ### `$XDG_RUNTIME_DIR/jarvis-control/control.sock` (TUI and `jarvis-stop` only)
@@ -111,7 +173,10 @@ All agent requests share a rate limit of **10 per second** (sliding window).
   A new grant replaces the old one. The permission is checked on every agent request and a
   timer also expires it on time.
 * `revoke` (and expiry): clears the permission, **kills running `wtype`/`grim` children**
-  (that request answers with an error) and denies every pending confirmation.
+  (that request answers with an error) and denies every pending confirmation. The permission is
+  also re-checked right before every `wtype` run (each run of a long text) and before `grim`, so
+  a revoke during the focus settle or between runs stops the action with the "apagado" error;
+  focus still goes back to the user's window (best effort: a failure there is only logged).
 * Events (to every subscriber):
   `{"event":"state","enabled":…,"expires_at":…}` on subscribe, grant, revoke and expiry;
   `{"event":"confirm","id":"…","title":"…","message":"…","timeout_s":30}`.
@@ -164,18 +229,23 @@ For `type` and `key`, in order:
    WezTerm, GNOME Console/Terminal, Konsole, xterm, …), because typing into a terminal would
    run commands outside the daemon's sandbox and could drive the Jarvis TUI itself (`/control on`).
 5. Confirmation through `control.sock` when the text or intent has a word starting with a
-   risky stem (`envi`, `pag`, `compr`, `elimin`, `borr`, `submit`, `send`, `pay`, `buy`,
-   `delet`; text is NFKC-normalized, zero-width/format characters dropped, accents stripped,
+   risky stem (`envi`, `pag`, `compr`, `elimin`, `borr`, `vaci`, `submit`, `send`, `pay`, `buy`,
+   `delet`, `clear`, `wipe`; text is NFKC-normalized, zero-width/format characters dropped, accents stripped,
    case-folded), or when Return/KP_Enter (any modifiers, or a newline in `text`) goes to a
    browser, mail or messaging app (Brave, Firefox, Chromium/Chrome, Zen, Thunderbird,
    Evolution, Telegram, Signal, Discord, Slack, WhatsApp, Element, Teams, …). No subscriber =
    denied immediately; no answer within 30 s = denied; subscribers all gone = denied.
 6. Focus re-checked right before `wtype`: a different window id or a now-blocked window = denied.
 
+With `window_id` (S16), steps 3–4 apply to the target window from `niri msg -j windows` instead
+of the focused one, and the helper focuses it (after step 5) before step 6, which then compares
+against the target id; focus is restored afterwards (see `type`/`key` with `window_id` above).
+
 For `screenshot`: permission, then focus (unreadable = denied); a focused window on the
 password/settings/security blocklist is refused (terminals are allowed, the TUI usually has the
 focus). This addition is not required by S13: it keeps secrets out of captures in the common
-case, but windows that are visible without focus are still captured.
+case, but windows that are visible without focus are still captured. With `window_id` (S17)
+the target from `niri msg -j windows` is checked instead, and re-checked once focused.
 
 ## Tests
 
@@ -188,3 +258,69 @@ The tests run the helper in-process on a temp `XDG_RUNTIME_DIR` with fake `wtype
 `niri` and `xdg-mime` scripts first on `PATH` that record their argv; `open` tests use a fake
 `$HOME` and a fake fixed `PATH` with fake apps. `test_launch.py` checks the `open` rules on temp
 dirs without running anything. No real Wayland tool or app runs. `test_main.py` starts `python3 -m jarvis_input` with `PATH=/nonexistent`.
+`test_e2e.py` covers the pure parts of the desktop E2E runner below (it starts nothing).
+
+## Desktop E2E (real wtype, browser and VS Code + Vim)
+
+Automates the manual checks of `odd/tasks/s2-round2.md` L19-L27 (`odd/tasks/desktop-e2e.md`):
+
+```sh
+host/e2e/run.sh                 # = cd host/input && python3 -m jarvis_e2e
+host/e2e/run.sh --no-vscode     # browser cases only (~6 s)
+host/e2e/run.sh --keep -v       # keep the temp dir (client logs) and print tracebacks
+```
+
+How it works (`jarvis_e2e/`):
+
+* `desktop.py` starts a **nested niri** (`niri -c <temp config>`: no autostart, no Xwayland, US
+  layout) with its own `XDG_RUNTIME_DIR` under a temp dir, so it has its own Wayland and IPC
+  sockets. niri 26.04 has no headless backend: the nested niri is one window on your desktop
+  (it may take the focus while the run lasts, ~20 s). It runs with `vblank_mode=0`: when its
+  window is not shown (monitors off, another workspace) the outer niri sends frame callbacks
+  once a second and a vsynced nested niri then handled one key per second (keys repeated). Clients get the nested
+  `WAYLAND_DISPLAY`/`NIRI_SOCKET` and no `DISPLAY`; they can never receive input from your
+  session and your windows never receive input from them.
+* Clients: Brave (or Chromium/Chrome) with a temp `--user-data-dir` showing two local pages
+  (a textarea with a keydown logger, and an "other" window that plays the user's window), and
+  VS Code (`/usr/share/code/code`) with a temp `--user-data-dir` and `--extensions-dir` holding a
+  copy of `~/.vscode/extensions/vscodevim.vim-*`, editing a temp `doc.txt`.
+* `run.py` runs the **real helper** (`jarvis_input.server.Helper`) in-process on the nested
+  runtime dir, grants it through `control.sock`, and sends `focus`/`type`/`key`/`screenshot` requests with
+  `window_id` through `agent.sock`, like the agent. So the wtype argv (`slots.type_argvs`,
+  `slots.key_argv`, `parse_keys`, the Escape pause), the focus switch, the
+  400 ms settle and the focus restore are the production code, run with the real `wtype` and
+  `niri msg`. Before the helper starts, the runner refuses to go on unless `WAYLAND_DISPLAY`,
+  `NIRI_SOCKET` and `XDG_RUNTIME_DIR` all point inside the temp dir and `DISPLAY` is unset.
+* Results are read back over the Chrome DevTools Protocol (`--remote-debugging-port=0`, a
+  stdlib WebSocket client in `cdp.py`): the textarea value and keydown log; in VS Code the
+  rendered editor lines (`.view-line`, by position), the Vim mode from the status bar
+  (`-- NORMAL --`/`-- INSERT --`) and, on failure, a capture-phase keydown log (key/code).
+
+Cases (each starts with the "other" window focused through the helper's `focus`, and checks that
+focus is back on it afterwards):
+
+| Case | Checks |
+| --- | --- |
+| browser: type `hola mundo` | complete right after the window gets focus (L19-L22); every keydown on a character `code` |
+| browser: type the L27 sentence + `’ — …` | complete text, legacy keysyms included, character codes only |
+| browser: type ~100 distinct characters | complete text over several wtype runs, character codes only |
+| browser: key `Escape g g d shift+g` | keydowns `Escape g g d G`, Escape with `code` `Escape` (L24-L25), letters on character codes; textarea `ggdG` |
+| browser: key `ctrl+a Delete` | keydowns `a`/`KeyA` and `Delete`/`Delete`; textarea emptied |
+| browser: `screenshot` with `window_id` (T26) | the target page painted magenta is ≥ 5% of the PNG (decoded with stdlib `zlib`), `window_id` echoed; skipped without `grim` |
+| vscode+vim: key `i`, type `hola mundo` | INSERT mode, buffer exactly `hola mundo`, character codes only (desktop-e2e L2) |
+| vscode+vim: key `Escape g g d shift+g` | buffer empty, NORMAL mode (L23-L25) |
+| vscode+vim: key `i`, type the sentence | buffer exactly the sentence (L27) |
+| vscode+vim: key `Escape g g d shift+g` again | buffer empty, NORMAL mode |
+
+Output: `PASS|FAIL|SKIP: <case> (<s>) — <detail>` per case, then
+`summary: N passed, N failed, N skipped in Ns`. Exit **0** all ran cases passed, **1** a case
+failed (or the desktop could not start: `FAIL: setup`, with the tails of the client logs), **77**
+skipped (automake's SKIP code): no `WAYLAND_DISPLAY`, no `niri`/`wtype` on `PATH`, or no
+Chromium-based browser; the reason is printed as `SKIP: requirements — …`. Missing VS Code or
+vscodevim only skips the VS Code cases. Teardown (also on failure, Ctrl-C, SIGTERM or SIGHUP):
+clients and the nested niri are killed by process group, the helper's sockets closed, and the
+temp dir removed (unless `--keep`). Requirements: niri (as the running session), wtype, Brave or
+Chromium, optionally VS Code at `/usr/share/code/code` with vscodevim; Python 3.11+, stdlib only.
+CI (`.github/workflows/ci.yml`, job `host-input`) runs it too and accepts exit 0 or 77: GitHub
+runners have no Wayland session, so there it prints `SKIP: requirements — no WAYLAND_DISPLAY…`.
+Run it by hand on the niri desktop after changing `type`/`key`/focus code.

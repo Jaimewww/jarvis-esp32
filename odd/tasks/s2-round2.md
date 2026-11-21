@@ -110,6 +110,21 @@ propia solicitud desde `main`; worktree `jarvis-esp32-worktrees/pi-next`.
     entorno de Python, y `~/.local/bin/jarvis` apuntando ahí); el daemon no puede modificarla.
   - `jarvis-stop` usa `PATH=/usr/local/bin:/usr/bin` y `/usr/bin/python3`; el atajo de niri
     usa la ruta absoluta.
+- S16 (L20): "oye y no hay como que cuando le pide por ejemplo irse a vscode ese sea el foco?,
+  porque tipo lo abre y me cambio de foco y ya no anda". `type` y `key` aceptan
+  `"window_id": N` opcional: el ayudante, en un solo paso y con el mismo candado, aplica los
+  controles de `focus` a esa ventana, la enfoca, confirma el foco, teclea, y al terminar
+  devuelve el foco a la ventana que lo tenía antes (si sigue existiendo). Sin `window_id`,
+  igual que hoy. La extensión pasa `window_id` desde `pc_type`/`pc_key` y AGENTS.md indica
+  usarlo siempre que sepa la ventana destino.
+- S17 (L27): "la captura muestra otra ventana, no VS Code". `screenshot` acepta
+  `"window_id": N` opcional como `type`/`key` (S16): con el mismo candado aplica los controles de
+  `focus` con las reglas de captura (existe, no está en la lista de bloqueo; las terminales se
+  permiten), recuerda la ventana enfocada, enfoca la destino, confirma el foco, espera
+  `FOCUS_SETTLE_S`, re-chequea el foco justo antes de `grim`, captura el monitor de esa ventana
+  (`grim -o` con `niri msg -j focused-output`; todo si no se lee) y devuelve el foco al final.
+  Sin `window_id`, igual que hoy. `pc_screenshot` pasa `window_id`; AGENTS.md: después de actuar
+  sobre una ventana, verificar con `pc_screenshot` y ese `window_id`.
 
 ## Tasks
 
@@ -161,6 +176,10 @@ propia solicitud desde `main`; worktree `jarvis-esp32-worktrees/pi-next`.
 - [ ] T23 (S15): endurecer `open` (`host/input/`).
 - [ ] T24 (S15): home en solo lectura, carpeta `~/Jarvis`, bus del sistema, entorno de
   `jarvis-input`, instalación de la TUI y `jarvis-stop` (`host/systemd/`, `host/bin/`).
+- [x] T25 (S16): tecleo con `window_id` (enfocar, teclear y devolver el foco) en el ayudante y
+  la extensión. Commit `82b2b41`.
+- [x] T26 (S17): captura de una ventana dada (`window_id` en `screenshot` y `pc_screenshot`).
+  `host/input/`, `host/gentle-dot/`. Commit `06ebc70`; CI de las suites del host en `5f3a7e5`.
 
 ## Log
 
@@ -275,3 +294,81 @@ propia solicitud desde `main`; worktree `jarvis-esp32-worktrees/pi-next`.
   `/tmp` es un tmpfs propio (sin `jiti` ni `org.chromium*`), `/dev/shm` y `/var/tmp` vacíos, y
   el chat responde (4,55 s). Riesgo anotado: un `.git` con hooks en `~/Jarvis` se ejecutaría al
   entrar con un prompt que lea git.
+- L19 (usuario y evidencia, 2026-11-20): Jarvis abrió VS Code, enfocó, `ctrl+n` y escribió, pero
+  no apareció nada. Prueba del usuario `sleep 4; wtype hola` en VS Code: "solo pone la". Causa:
+  apps Chromium/Electron pierden las primeras teclas mientras aplican el keymap que `wtype`
+  sube en cada corrida. `wtype -s 250` antes no alcanzó (Jarvis escribió "la mundo"): el keymap
+  viaja con la primera tecla. Arreglo final: `wtype -k Shift_L -s 250 -d 8 …` (un Shift inocuo
+  lleva el keymap, pausa, y recién el texto). Prueba del usuario: "ahora si aparece hola completo".
+
+- L20 (usuario, 2026-11-20): "ahora si aparece hola completo" (arreglo del keymap confirmado).
+  Luego: "oye y no hay como que cuando le pide por ejemplo irse a vscode ese sea el foco?,
+  porque tipo lo abre y me cambio de foco y ya no anda".
+- L21 (usuario y evidencia, 2026-11-20): con T25 instalado y el foco en otra ventana: "puso "la mundo"
+  de nuevo". El log muestra `key ctrl+n` y luego `type` con `window_id` 69 (VS Code): cada acción
+  enfoca VS Code y devuelve el foco, y wtype corre apenas niri confirma el foco; Electron todavía no
+  devolvió el foco al editor. Arreglo: pausa de 400 ms tras cambiar el foco, y no se re-enfoca si
+  la ventana destino ya tiene el foco.
+- L22 (usuario, 2026-11-20): "ahora ya funciona" (T25 + pausa de 400 ms confirmados en el
+  escritorio real, con el foco en otra ventana).
+- L23 (usuario y evidencia, 2026-11-20): "Jarvis, borra todo lo que escribiste" → "Sí, vacío el
+  documento completo" → "No pude vaciarlo: los atajos no funcionaron … se agregaron caracteres".
+  Log: `key ctrl+a BackSpace` y luego `key Escape g g d shift+g`, con intención "Vaciar…" y sin
+  tarjeta de confirmación. Causas: VS Code usa la extensión Vim (en inserción `ctrl+a` reinserta
+  el último texto); `shift+g` llegaba como `g` (keymap de wtype de un nivel); "vaciar" no era
+  palabra de riesgo. Luego: "no funciona el lo del alt shiuft esc si funciona bien".
+  Arreglo: shift+letra envía la mayúscula; palabras de riesgo `vaci`, `clear`, `wipe`; AGENTS.md
+  pide "borrar" en la intención y explica Vim en VS Code.
+- L24 (usuario y evidencia, 2026-11-20): con confirmación ya visible, "sigue escribiendo ggg".
+  Prueba manual `wtype -k Shift_L -s 250 -k Escape -s 300 -k g -k g -k d -M shift -k G -m shift`
+  → "aparece ggdg" (ni Escape ni G). `wtype -k Escape` solo sí pasa a modo normal y
+  `wtype -- ggdG` vacía el documento ("eliminó todo"). Causas: wtype resuelve `-k` sin distinguir
+  mayúsculas; y numera las teclas en orden de uso, así que tras el Shift del preludio Escape no
+  queda en el keycode real que VS Code usa para atajos. Arreglo 1: shift+letra se envía como texto.
+- L25 (usuario, 2026-11-20): pruebas manuales en VS Code. C `wtype -M shift -m shift -s 250 -k
+  Escape -s 300 -- ggdG` → "si se eliminó el texto"; D `wtype -M shift -m shift -s 250 -d 8 --
+  hola mundo` → "solo llega la mundo"; E `wtype -p Escape -k Shift_L -s 250 -k Escape -s 300 --
+  ggdG` → "si se vació"; F `wtype -p Escape -k Shift_L -s 250 -d 8 -- hola mundo` → "sigue el la
+  mundo". Arreglo 2: las teclas usan el preludio de E y una pausa de 300 ms tras un Escape suelto;
+  el texto conserva `-k Shift_L -s 250`.
+- L26 (usuario, 2026-11-20): "no me parece usable decirle 'quedate en modo insert'. si no supiera
+  vim ni sé qué es". AGENTS.md: Jarvis detecta Vim por captura (barra `-- NORMAL --`/`-- INSERT --`)
+  y elige `Escape g g d shift+g` o `ctrl+a Delete`; nunca pregunta por modos.
+- L27 (usuario y capturas, 2026-11-20): "mira no pone el texto bien, se equivoca": Jarvis dijo
+  escribir «Hola mundo, este es un texto de prueba.» y VS Code mostró "Hola mundo, ee es uno de
+  prueba.". Además, tras borrar, Jarvis dijo que "la captura muestra otra ventana, no VS Code"
+  (la captura es de pantalla completa y el foco ya volvió a la terminal). Arreglo: registrar
+  cada carácter del texto con `-p` antes del preludio. Pendiente: captura de una ventana dada.
+- L28 (verificador, 2026-11-20): e504a07 PASS; 606 caracteres (’ — … € …) usan keysyms heredados en
+  wtype y seguían cambiando el keymap a mitad de texto. Arreglo: `_keysym` usa
+  `xkb_utf32_to_keysym` de libxkbcommon vía ctypes. Entrega bloqueada por el guard RDD
+  pre-delivery: el rango completo (8.4k líneas) requiere revisión nativa con consentimiento.
+- L29 (worker, 2026-11-20): T26/S17 en `06ebc70`: `screenshot` con `window_id` enfoca la ventana,
+  espera 400 ms, re-chequea el foco y captura su monitor (`grim -o` con `niri msg -j
+  focused-output`); `niri msg action screenshot-window` se descartó porque pisa el portapapeles,
+  y `tile_pos_in_workspace_view` viene `null` en ventanas en mosaico (niri 26.04), así que no hay
+  recorte a la ventana. CI (`5f3a7e5`): jobs para `host/input` (unittest, Python 3.14), la
+  extensión (`node --test`, Node 24, sin npm) y `jarvis-stop`; actionlint OK. Suites: input 159 OK,
+  node 88/88, jarvis-stop 24/24, install 201/201, host pytest 224 passed 6 skipped. Sin probar en la
+  sesión real (no se corrió grim/wtype ni se reinstaló).
+- L30 (worker, 2026-11-20): integración en `fix/pc-control-typing-e2e` (desde `feat/pc-control-chain`
+  + `origin/main` + `feat/desktop-e2e`, merge `cc9b254`): conflictos en `server.py`,
+  `test_server.py`, `README.md` y este Log; queda el plan de keycodes de `slots.py` (T2 de
+  desktop-e2e) para `type`/`key` y se quitan `register_chars`/`_keysym`/`WTYPE_KEY_DELAY_MS` y su
+  test (cubierto por `test_slots`); T25/T26 intactos. El runner suma un caso de captura con
+  `window_id` (`4a1ed46`, página pintada de magenta ≥ 5 % del PNG, foco devuelto) y CI lo corre
+  en `host-input` aceptando SKIP (77). Suites: input 189 OK, node 88/88, jarvis-stop 24/24,
+  install 201/201, host pytest 224 passed 6 skipped; `host/e2e/run.sh` 10/10 PASS dos veces
+  (~24 s, sin procesos sobrantes); sin Wayland sale 77 con `SKIP: requirements`.
+- L31 (worker, 2026-11-20): arreglos de revisión/verificación de la porción 7 (S13, S16, S17),
+  con TDD por el socket: (1) el permiso se re-chequea justo antes de cada `wtype` (cada corrida
+  de un texto largo) y de `grim` en la captura con `window_id`; revocar durante la pausa de foco o
+  entre corridas corta con el error de apagado y devuelve el foco; (2) `_restore_focus` atrapa
+  cualquier `Exception` y solo la registra; (3) `key` rechaza keysyms crudos (`0xff0d`, `U000D`)
+  que xkb resuelve a Return sin pasar por la regla de confirmación (nombres sin distinguir
+  mayúsculas; se suma `3270_Enter`); (4) sin libxkbcommon `key` usa una tabla propia
+  (`FALLBACK_NAMES`, verificada contra xkb) y CI instala `libxkbcommon0`; (5) el navegador del
+  runner E2E ya no usa `--remote-allow-origins=*` (el cliente CDP no manda Origin); (6) `type_argvs`
+  re-planifica solo con caracteres nuevos (2000 → 3 llamadas a `plan`). Suites: input 202 OK,
+  node 88/88, jarvis-stop 24/24, install 201/201, actionlint OK; `host/e2e/run.sh` 10/10 PASS dos
+  veces (~22 s). Sin probar en la sesión real.

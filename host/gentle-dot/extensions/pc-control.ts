@@ -51,6 +51,11 @@ function helperNote(res: Record<string, unknown>): string {
 }
 
 const INTENT = Type.String({ description: "One sentence: what you are doing and why, shown to the user." });
+const WINDOW_ID =
+	"Target window id from pc_list_windows. The helper focuses it, types and gives focus back to the user's window; omit only when the target is unknown.";
+
+const SCREENSHOT_WINDOW_ID =
+	"Window id from pc_list_windows to capture; the helper focuses it and focus goes back to the user's window afterwards.";
 
 export default function pcControl(pi: ExtensionAPI) {
 	const home = homedir();
@@ -96,7 +101,7 @@ export default function pcControl(pi: ExtensionAPI) {
 		name: "pc_list_windows",
 		label: "Ventanas abiertas",
 		description:
-			'Lists the open windows on the user\'s desktop as "id · app_id · title", marking the focused one. Use the id with pc_focus_window before pc_type/pc_key. Needs the user\'s /control on permission.',
+			'Lists the open windows on the user\'s desktop as "id · app_id · title", marking the focused one. Pass the id as window_id to pc_type/pc_key (or to pc_focus_window to bring the window forward). Needs the user\'s /control on permission.',
 		promptSnippet: "pc_list_windows: list open windows and their ids",
 		parameters: Type.Object({}),
 		executionMode: "sequential",
@@ -110,8 +115,8 @@ export default function pcControl(pi: ExtensionAPI) {
 		name: "pc_focus_window",
 		label: "Enfocar ventana",
 		description:
-			"Focuses a window by its id from pc_list_windows, so pc_type/pc_key go there. Terminals and blocked windows (password managers, settings, security prompts) are refused. Needs the user's /control on permission.",
-		promptSnippet: "pc_focus_window: focus a window before typing",
+			"Brings a window forward for the user (focuses it) by its id from pc_list_windows. To type into a window, pass window_id to pc_type/pc_key instead. Terminals and blocked windows (password managers, settings, security prompts) are refused. Needs the user's /control on permission.",
+		promptSnippet: "pc_focus_window: bring a window forward for the user",
 		parameters: Type.Object({
 			window_id: Type.Integer({ minimum: 0, description: "Window id from pc_list_windows." }),
 		}),
@@ -139,9 +144,13 @@ export default function pcControl(pi: ExtensionAPI) {
 		name: "pc_type",
 		label: "Escribir en la PC",
 		description:
-			"Types text (max 2000 characters) into the focused window of the user's desktop. Needs the user's /control on permission. Password managers, settings and security prompts are refused; sending, paying, buying or deleting asks the user first.",
-		promptSnippet: "pc_type: type text into the focused desktop window",
-		parameters: Type.Object({ text: Type.String({ description: "Text to type (max 2000 characters)." }), intent: INTENT }),
+			"Types text (max 2000 characters) into a window of the user's desktop. Pass window_id (from pc_list_windows) whenever the target window is known: the helper focuses that window, types, and focus returns to the user's window afterwards, so it does not matter if the user switches focus. Without window_id it types into the focused window. Needs the user's /control on permission. Terminals, password managers, settings and security prompts are refused; sending, paying, buying or deleting asks the user first.",
+		promptSnippet: "pc_type: type text into a desktop window (pass window_id)",
+		parameters: Type.Object({
+			text: Type.String({ description: "Text to type (max 2000 characters)." }),
+			intent: INTENT,
+			window_id: Type.Optional(Type.Integer({ minimum: 0, description: WINDOW_ID })),
+		}),
 		executionMode: "sequential",
 		async execute(_id, params, signal) {
 			const res = await call("pc_type", params, signal);
@@ -153,9 +162,13 @@ export default function pcControl(pi: ExtensionAPI) {
 		name: "pc_key",
 		label: "Teclas en la PC",
 		description:
-			'Presses keys or shortcuts on the user\'s desktop, e.g. "ctrl+l", "super+1", "Return", or a space-separated sequence "ctrl+a Delete". Modifiers: ctrl, shift, alt, altgr, super. Same permission, blocklist and confirmation rules as pc_type.',
-		promptSnippet: "pc_key: press keys or shortcuts on the desktop",
-		parameters: Type.Object({ keys: Type.String({ description: 'Key combo(s), e.g. "ctrl+l" or "Return".' }), intent: INTENT }),
+			'Presses keys or shortcuts on the user\'s desktop, e.g. "ctrl+l", "super+1", "Return", or a space-separated sequence "ctrl+a Delete". Modifiers: ctrl, shift, alt, altgr, super. Pass window_id (from pc_list_windows) whenever the target window is known: the helper focuses it, presses the keys, and focus returns to the user\'s window afterwards. Without window_id the keys go to the focused window. Same permission, blocklist and confirmation rules as pc_type.',
+		promptSnippet: "pc_key: press keys or shortcuts in a desktop window (pass window_id)",
+		parameters: Type.Object({
+			keys: Type.String({ description: 'Key combo(s), e.g. "ctrl+l" or "Return".' }),
+			intent: INTENT,
+			window_id: Type.Optional(Type.Integer({ minimum: 0, description: WINDOW_ID })),
+		}),
 		executionMode: "sequential",
 		async execute(_id, params, signal) {
 			const res = await call("pc_key", params, signal);
@@ -166,10 +179,12 @@ export default function pcControl(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "pc_screenshot",
 		label: "Captura de pantalla",
-		description: "Takes a screenshot of the user's screen and returns it as an image (scale 0.5 by default). Needs the user's /control on permission.",
-		promptSnippet: "pc_screenshot: see the user's screen",
+		description:
+			"Takes a screenshot and returns it as an image (scale 0.5 by default). Pass window_id (from pc_list_windows) to see a given window: the helper focuses it, captures the monitor showing it, and focus returns to the user's window afterwards. Use it to verify after pc_type/pc_key on that window. Without window_id it captures the whole screen as it is now (focus may already be back on the user's window). Needs the user's /control on permission.",
+		promptSnippet: "pc_screenshot: see the user's screen or a given window (pass window_id)",
 		parameters: Type.Object({
 			scale: Type.Optional(Type.Number({ minimum: 0.1, maximum: 1, description: "Scale factor, default 0.5." })),
+			window_id: Type.Optional(Type.Integer({ minimum: 0, description: SCREENSHOT_WINDOW_ID })),
 		}),
 		executionMode: "sequential",
 		async execute(_id, params, signal) {

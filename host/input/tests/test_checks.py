@@ -33,6 +33,19 @@ class ParseKeysTest(unittest.TestCase):
         self.assertEqual(checks.parse_keys("f5"), ["-k", "F5"])
         self.assertEqual(checks.parse_keys("esc"), ["-k", "Escape"])
 
+    def test_shift_letter_sends_the_capital(self) -> None:
+        # wtype resolves -k names case-insensitively, so "-k G" and "-M shift -k g" both reached
+        # VS Code (Vim) as "g" (L23, L24). Plain shift+letter is sent as the capital as text, which
+        # wtype types with its own keysym; shortcuts with other modifiers keep the key.
+        self.assertEqual(checks.parse_keys("shift+g"), ["G"])
+        self.assertEqual(checks.parse_keys("shift+G"), ["G"])
+        self.assertEqual(
+            checks.parse_keys("Escape g g d shift+g"),
+            ["-k", "Escape", "-k", "g", "-k", "g", "-k", "d", "G"],
+        )
+        self.assertEqual(checks.parse_keys("shift+Tab"), ["-M", "shift", "-k", "Tab", "-m", "shift"])
+        self.assertEqual(checks.parse_keys("g"), ["-k", "g"])  # no shift: unchanged
+
     def test_rejects_bad_input(self) -> None:
         for bad in ["", "   ", "ctrl+", "+a", "hyper+a", "ctrl+ctrl+a", "ctrl", "ctrl+shift",
                     "-k", "a;b", "--help", "x" * 40, " ".join(["a"] * 21), "ctrl++"]:
@@ -47,6 +60,15 @@ class ParseKeysTest(unittest.TestCase):
         self.assertTrue(checks.presses_return(checks.parse_keys("KP_Enter")))
         self.assertTrue(checks.presses_return(checks.parse_keys("ctrl+a enter")))
         self.assertFalse(checks.presses_return(checks.parse_keys("ctrl+l Tab")))
+        for keys in ["KP_ENTER", "kp_enter", "ctrl+RETURN", "iso_enter", "LineFeed", "3270_Enter"]:
+            self.assertTrue(checks.presses_return(checks.parse_keys(keys)), keys)
+
+    def test_refuses_raw_keysym_numbers(self) -> None:
+        # xkb resolves "0xff0d" to Return (and "0xff8d" to KP_Enter) behind the name check.
+        for keys in ["0xff0d", "0XFF8D", "ctrl+0xff0d", "a 0x61", "0x0", "U000D", "uff0d"]:
+            with self.assertRaises(ValueError, msg=keys):
+                checks.parse_keys(keys)
+        self.assertEqual(checks.parse_keys("0 9 Up"), ["-k", "0", "-k", "9", "-k", "Up"])
 
 
 class TextTest(unittest.TestCase):
@@ -77,6 +99,11 @@ class RiskyTest(unittest.TestCase):
             "buy now": ["buy"],
             "Deleted": ["delet"],
             "send and pay": ["send", "pay"],
+            # L23: "Vaciar el documento" emptied a document without a confirmation card.
+            "Vaciar el documento": ["vaci"],
+            "vacía todo": ["vaci"],
+            "clear the file": ["clear"],
+            "wipe it": ["wipe"],
         }
         for text, stems in cases.items():
             with self.subTest(text=text):
