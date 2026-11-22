@@ -12,7 +12,7 @@ docs/nube.md):
                            ``esp32_state`` and turn events.
 - GET  /api/v1/health    : liveness probe.
 
-STT, the agent (Gentle Shell) and TTS are placeholders: ``/converse`` returns a
+STT and the agent (Gentle Shell) are placeholders. By default, ``/converse`` returns a
 canned reply plus a generated beep until those providers are chosen and measured
 (docs/nube.md). The contracts are in docs/contratos.md. PC actions travel to the host over the WebSocket; the ESP32 never
 receives them.
@@ -41,6 +41,8 @@ from fastapi import (
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from app.tts import make_synthesizer
+
 DEVICE_TOKEN = os.environ.get("JARVIS_DEVICE_TOKEN", "dev-jarvis-token")
 HOST_TOKEN = os.environ.get("JARVIS_HOST_TOKEN", "dev-host-token")
 HEARTBEAT_TIMEOUT_S = 15.0
@@ -50,6 +52,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 STATIC_DIR = BASE_DIR / "static"
 UPLOAD_DIR = STATIC_DIR / "uploads"
 REPLY_WAV = STATIC_DIR / "jarvis-reply.wav"
+DEFAULT_REPLY_TEXT = "En orden, señor."
 
 VALID_STATES = {"idle", "recording", "thinking", "speaking", "error"}
 
@@ -151,8 +154,16 @@ def generate_reply_wav(path: Path) -> None:
 async def startup() -> None:
     STATIC_DIR.mkdir(parents=True, exist_ok=True)
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    if not REPLY_WAV.exists():
-        generate_reply_wav(REPLY_WAV)
+    if model := os.environ.get("JARVIS_PIPER_MODEL"):
+        # Until the agent supplies dynamic text, render the fixed reply once.
+        reply_wav = STATIC_DIR / "jarvis-spoken-reply.wav"
+        synthesizer = make_synthesizer(Path(model))
+        reply_wav.write_bytes(await synthesizer.synthesize(DEFAULT_REPLY_TEXT))
+    else:
+        reply_wav = REPLY_WAV
+        if not reply_wav.exists():
+            generate_reply_wav(reply_wav)
+    app.state.reply_audio_url = f"/static/{reply_wav.name}"
     asyncio.create_task(watch_offline())
 
 
@@ -218,8 +229,7 @@ async def heartbeat(hb: Heartbeat) -> dict:
 
 @app.post("/api/v1/converse", dependencies=[Depends(require_device_token)])
 async def converse(audio: UploadFile) -> ConverseResponse:
-    # Placeholder pipeline: save the clip, return a canned reply. STT, the agent
-    # and TTS get wired here once the providers are chosen and measured.
+    # STT and agent routing are not wired here yet; use the fixed reply.
     started = time.perf_counter()
     data = await audio.read()
     if not data:
@@ -245,7 +255,7 @@ async def converse(audio: UploadFile) -> ConverseResponse:
             "ts": time.time(),
         }
     )
-    reply_text = "En orden, señor."  # placeholder; real reply comes from the agent
+    reply_text = DEFAULT_REPLY_TEXT  # a later stage supplies the agent's reply
     await host_clients.broadcast(
         {
             "type": "turn_done",
@@ -259,7 +269,7 @@ async def converse(audio: UploadFile) -> ConverseResponse:
     return ConverseResponse(
         turn_id=turn_id,
         reply_text=reply_text,
-        reply_audio_url=f"/static/{REPLY_WAV.name}",
+        reply_audio_url=getattr(app.state, "reply_audio_url", f"/static/{REPLY_WAV.name}"),
         actions=actions,
     )
 

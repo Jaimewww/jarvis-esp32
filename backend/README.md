@@ -9,9 +9,9 @@ ESP32 lo alcanza por la LAN.
 
 - `POST /api/v1/converse` — recibe el WAV del ESP32 (multipart), lo guarda y
   responde `turn_id`, `reply_text`, `reply_audio_url` y `actions`, y emite
-  `turn_started` y `turn_done` por el WebSocket. **Marcador de posición:** STT,
-  agente (Gentle Shell) y TTS no están integrados; responde con un beep generado
-  en el arranque y una acción de prueba.
+  `turn_started` y `turn_done` por el WebSocket. La frase y la acción siguen
+  siendo de prueba. El audio es un pitido por defecto, o «En orden, señor.»
+  hablado si se configura [Piper](#voz-local-piper-y-whisper).
 - `POST /api/v1/heartbeat` — estado del ESP32 (`idle`/`recording`/`thinking`/
   `speaking`/`error` + RSSI e IP); lo reenvía a los clientes anfitriones como
   `esp32_state`.
@@ -40,6 +40,51 @@ uvicorn app.main:app --port 8000
 
 Tokens por defecto (solo para desarrollo, redefinir con variables de entorno):
 `JARVIS_DEVICE_TOKEN=dev-jarvis-token`, `JARVIS_HOST_TOKEN=dev-host-token`.
+
+## Voz local: Piper y Whisper
+
+| Qué querés probar | Dependencias locales |
+|---|---|
+| TTS con Piper | Python (probado con 3.14), `requirements-voice.txt`, `ffmpeg` en `PATH` y una voz Piper `.onnx` con su `.onnx.json` |
+| STT con Whisper | `whisper-server` de whisper.cpp (probado con 1.9.5), un modelo GGML (`ggml-large-v3-turbo-q5_0.bin` por defecto) y una revisión que incluya el [PR #13](https://github.com/Jaimewww/jarvis-esp32/pull/13) |
+
+### Probar Piper
+
+Desde la raíz, con el entorno virtual de arriba ya creado:
+
+```bash
+backend/.venv/bin/python -m pip install -r backend/requirements-voice.txt
+mkdir -p "$HOME/.local/share/piper-voices"
+backend/.venv/bin/python -m piper.download_voices \
+  --data-dir "$HOME/.local/share/piper-voices" es_MX-ald-medium
+PYTHON=backend/.venv/bin/python bash tools/probe-piper.sh \
+  "$HOME/.local/share/piper-voices/es_MX-ald-medium.onnx" /tmp/jarvis-piper-probe.wav
+```
+
+El script usa la frase «En orden, señor.» y verifica que el WAV no esté vacío
+ni sea silencioso y que sea PCM de **16 kHz, mono, 16 bits**. Para reproducirlo,
+usá tu reproductor de audio o `ffplay -nodisp -autoexit /tmp/jarvis-piper-probe.wav`.
+
+### Probar `/converse` con Piper
+
+```bash
+cd backend
+JARVIS_PIPER_MODEL="$HOME/.local/share/piper-voices/es_MX-ald-medium.onnx" \
+  .venv/bin/uvicorn app.main:app --port 8000
+```
+
+Con `JARVIS_PIPER_MODEL` el backend sintetiza la respuesta fija una vez, al
+arrancar. Mandá un WAV con el [`curl` de abajo](#prueba-con-curl), descargá la
+ruta relativa que devuelve `reply_audio_url` y comprobá que se escucha la
+frase. Sin esa variable, se conserva el pitido y no hace falta Piper ni FFmpeg.
+
+### Activar también Whisper cuando esté disponible
+
+`whisper-server` y su modelo son requisitos del sistema, no paquetes de pip.
+La [guía del adaptador de STT](https://github.com/Jaimewww/jarvis-esp32/blob/036a6d1/backend/README.md#stt-con-whispercpp-local)
+documenta el modelo, `tools/whisper-server.sh` y su puerto `8080`. En una revisión
+que contenga el adaptador, levantá ese servidor y agregá `JARVIS_STT=whisper` al
+mismo comando de arranque del backend. Esta rama de TTS por sí sola no activa STT.
 
 ## Adaptador de Gentle Dot
 
@@ -148,7 +193,7 @@ curl -s -X POST http://127.0.0.1:8000/api/v1/converse \
 
 1. Integrar STT local (Whisper vs Parakeet, comparar y decidir midiendo).
 2. Enchufar Gentle Shell como agente y definir el esquema de acciones reales.
-3. Elegir y probar TTS con el ESP32 (formato y sample rate de salida).
+3. Probar el WAV hablado con el ESP32 y sintetizar la respuesta del agente cuando exista.
 4. Que el daemon del fork reenvíe `esp32_state` a sus clientes (la TUI ya
    consumiría el evento).
 5. Lo pendiente de los contratos: `409` ante un segundo turno, eventos
