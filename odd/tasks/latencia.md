@@ -49,7 +49,7 @@ lands on `feat/stt-whisper` (worktree `pi-stt`).
 - [x] T1 S1 — #13: catch any transcriber error and emit exactly one turn_error, with a test. Route: inline (pi-stt). Commit 651496d on feat/stt-whisper (backend 54 passed, 6 skipped; RED observed first). Replied on #13.
 - [x] T2 S2 — Review and approve #31/#32 with the two notes. Route: inline (gh). Both approved 2026-11-23.
 - [x] T3 S3,S4 — Latency proposal PR with decisions A-D in docs/decisiones.md (D22). Route: inline. Commit eff5b6b, PR #33.
-- [ ] T4 S5 — Per-stage turn timing plus `jarvis.bench` baseline. Route: TBD.
+- [ ] T4 S5 — Per-stage turn timing plus `jarvis.bench` baseline. Route: gentle-ai-worker. Code done on feat/turn-timing (turntrace.py, bench.py with 14 fixed requests, PC/desktop behind --include-pc; host 240 passed, 6 skipped). Pending: baseline run with the user.
 - [ ] T5 S5 — STT CPU-fallback warning. Route: inline.
 - [x] T6 S4B,S6 — Define the basic catalog: docs/catalogo-basico.md (phrase table = test cases, with "no entran" rows). Route: inline.
 - [ ] T7 S6 — P1 fast path in the backend. Route: Jaime (L5); we review.
