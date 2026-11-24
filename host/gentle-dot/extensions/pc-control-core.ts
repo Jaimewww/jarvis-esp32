@@ -184,8 +184,9 @@ export async function runInApp(
 		opts.sleep ??
 		((ms: number) =>
 			new Promise<void>((r) => {
-				const t = setTimeout(r, ms);
-				signal?.addEventListener("abort", () => (clearTimeout(t), r()), { once: true });
+				const onAbort = () => (clearTimeout(t), r());
+				const t = setTimeout(() => (signal?.removeEventListener("abort", onAbort), r()), ms);
+				signal?.addEventListener("abort", onAbort, { once: true });
 			}));
 	const now = opts.now ?? Date.now;
 	const waitMs = opts.waitMs ?? APP_WINDOW_WAIT_MS;
