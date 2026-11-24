@@ -31,6 +31,7 @@ from .backend import (
     TurnStage,
     TurnStarted,
 )
+from .turntrace import TurnTrace
 from .client import (
     AUTH_ERRORS,
     Activity,
@@ -191,6 +192,8 @@ class PromptTiming:
     reply_id: str | None = None
     #: Sent from the microphone (f4) rather than typed.
     spoken: bool = False
+    #: The whole turn stage by stage: model calls, tools, confirmations.
+    trace: TurnTrace | None = None
 
     def _since(self, at: float | None) -> float | None:
         return None if at is None else at - self.sent_at
@@ -339,6 +342,8 @@ class VoiceInput:
         self._monotonic = monotonic
         self.phase = "idle"
         self.started_at: float | None = None
+        #: When recording stopped (the end of speech), kept until the next recording.
+        self.stopped_at: float | None = None
 
     @property
     def recording(self) -> bool:
@@ -361,6 +366,7 @@ class VoiceInput:
 
     def transcribe(self) -> None:
         self.phase = "transcribing"
+        self.stopped_at = self._monotonic()
 
     def reset(self) -> None:
         self.phase = "idle"
@@ -379,12 +385,16 @@ class HostModel:
         self,
         clock: Callable[[], float] = time.time,
         monotonic: Callable[[], float] = time.monotonic,
+        on_turn: Callable[[TurnTrace], None] | None = None,
     ) -> None:
         self._clock = clock
         self._monotonic = monotonic
+        #: Called once per timed turn when it ends, with its stage-by-stage trace.
+        self._on_turn = on_turn
         #: Send stamps of typed prompts not echoed yet, oldest first (the daemon queues),
-        #: each with whether it was spoken (f4) rather than typed.
-        self._sent: deque[tuple[float, bool]] = deque()
+        #: each with whether it was spoken (f4) rather than typed, the wall clock and the
+        #: end of speech (monotonic) when spoken.
+        self._sent: deque[tuple[float, bool, float, float | None]] = deque()
         #: The typed prompt being answered now, and the last one that finished.
         self._timing: PromptTiming | None = None
         self.last_timing: PromptTiming | None = None
@@ -428,7 +438,7 @@ class HostModel:
         self.daemon_status = status
         self.daemon_detail = "" if status is ConnectionStatus.CONNECTED else detail
         if status is not ConnectionStatus.CONNECTED:
-            self._settle_timing()  # the link dropped: no idle will come for it
+            self._settle_timing("disconnect")  # the link dropped: no idle will come for it
             if self.login.running:
                 self.login.finish(False, LOGIN_DROPPED)
 
@@ -615,14 +625,22 @@ class HostModel:
 
     # Daemon events
 
-    def note_sent(self, *, spoken: bool = False) -> None:
+    def note_sent(self, *, spoken: bool = False, speech_end_at: float | None = None) -> None:
         """A prompt left this host now; its echo, first text and end are timed.
 
         ``spoken``: it was said into the microphone (f4) and transcribed, not typed; its
-        echo is marked so both views show it as said.
+        echo is marked so both views show it as said. ``speech_end_at`` (monotonic): when
+        the person stopped speaking, so the turn also records the time to transcribe.
         """
 
-        self._sent.append((self._monotonic(), spoken))
+        self._sent.append((self._monotonic(), spoken, self._clock(), speech_end_at))
+
+    def note_confirms(self, keys: Iterable[str]) -> None:
+        """The confirmation cards up now; the open turn times how long a person takes."""
+
+        timing = self._timing
+        if timing is not None and timing.trace is not None:
+            timing.trace.waits_open(keys, self._monotonic())
 
     def apply_daemon(self, event: Event) -> None:
         self._time(event)
@@ -727,36 +745,64 @@ class HostModel:
 
         return self._reply_timings.get(message_id)
 
-    def _settle_timing(self) -> None:
+    def _settle_timing(self, reason: str) -> None:
         """End the open timing where it is (its last ``message_done``), if one is open."""
 
         timing, self._timing = self._timing, None
-        if timing is not None and timing.done_at is not None:
+        if timing is None:
+            return
+        if timing.done_at is not None:
             timing.settled = True
+        self._end_trace(timing, timing.done_at, reason)
+
+    def _end_trace(self, timing: PromptTiming, at: float | None, reason: str) -> None:
+        trace = timing.trace
+        if trace is None or trace.ended_by is not None:
+            return
+        trace.finish(self._monotonic() if at is None else at, reason)
+        trace.error, trace.stopped = timing.error, timing.stopped
+        if self._on_turn is not None:
+            try:
+                self._on_turn(trace)
+            except Exception:  # noqa: BLE001 - recording a turn never breaks the window
+                pass
 
     def _time(self, event: Event) -> None:
         if isinstance(event, Ready):
             # A new connection: prompts sent before it will not be echoed to this one.
             self._sent.clear()
-            self._settle_timing()
+            self._settle_timing("reconnect")
         elif isinstance(event, UserMessageEvent):
-            self._settle_timing()  # the agent went on to the next prompt without idle
+            self._settle_timing("next_prompt")  # the agent went on to the next prompt without idle
             # Only prompts typed here are timed; one from another window is not.
             if self._sent:
-                sent_at, spoken = self._sent.popleft()
-                self._timing = PromptTiming(sent_at, spoken=spoken)
+                sent_at, spoken, wall_at, speech_end_at = self._sent.popleft()
+                trace = TurnTrace(sent_at, wall_at, spoken=spoken, speech_end_at=speech_end_at)
+                self._timing = PromptTiming(sent_at, spoken=spoken, trace=trace)
             else:
                 self._timing = None
             if self._timing is not None:
                 self._timing.echo_at = self._monotonic()
+                if self._timing.trace is not None:
+                    self._timing.trace.echo(event.text, self._timing.echo_at)
         elif self._timing is None:
             return
+        elif isinstance(event, ActivityEvent):
+            if self._timing.trace is not None:
+                activity = event.activity
+                self._timing.trace.activity(
+                    activity.id, activity.kind, activity.status, event.message_id, self._monotonic()
+                )
         elif isinstance(event, MessageDeltaEvent):
+            if self._timing.trace is not None:
+                self._timing.trace.delta(event.message_id, event.delta, self._monotonic())
             if event.delta and self._timing.first_text_at is None:
                 self._timing.first_text_at = self._monotonic()
         elif isinstance(event, MessageDoneEvent):
             timing = self._timing
             timing.done_at = self._monotonic()
+            if timing.trace is not None:
+                timing.trace.done(event.message_id, event.text, timing.done_at, event.error)
             if timing.first_text_at is None and event.text:
                 timing.first_text_at = timing.done_at  # the whole text came at once
             timing.error = event.error
@@ -767,12 +813,13 @@ class HostModel:
             self._reply_timings[event.message_id] = timing
             self.last_timing = timing  # provisional until idle
             if event.error or event.stopped:
-                self._settle_timing()
+                self._settle_timing("error" if event.error else "stopped")
         elif isinstance(event, AgentStateEvent) and event.state == "idle":
             timing, self._timing = self._timing, None
             timing.done_at = self._monotonic()
             timing.settled = True
             self.last_timing = timing
+            self._end_trace(timing, timing.done_at, "idle")
 
     @property
     def activities(self) -> list[Activity]:

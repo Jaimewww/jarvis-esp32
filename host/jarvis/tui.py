@@ -114,6 +114,7 @@ from .devview import DeveloperView, footer_row, place
 from .loginview import LoginPanel
 from .model import LOGIN_CANCELLED, HostModel, Login, LoginStage, VoiceInput
 from .theme import DEFAULT_DARK, LIGHT, THEMES, Theme, to_text
+from .turntrace import TurnLog, default_log_path
 from .userview import UserView
 from .voice import MAX_RECORDING_S, ProcessRecorder, Recorder, Transcriber, VoiceError, WhisperTranscriber
 
@@ -351,6 +352,7 @@ class JarvisApp(App[None]):
         control_clock: Callable[[], datetime] | None = None,
         confirm_arm_s: float = 0.4,
         control_backoff: tuple[float, float] = BACKOFF,
+        turn_log: TurnLog | None = None,
     ) -> None:
         super().__init__()
         # PC control (/control, f5): what jarvis-input reports, and the countdown to it.
@@ -385,7 +387,8 @@ class JarvisApp(App[None]):
         self._wanted_thinking = typed_thinking
         self._wanted_checked = False
         # What both views show; every event goes through it.
-        self._host = HostModel()
+        # A typed or spoken turn that ends is appended to ``turn_log`` (none in tests).
+        self._host = HostModel(on_turn=turn_log.write if turn_log is not None else None)
         #: Animation of the user view (spinner, pulse, voice meter); off for stable tests.
         self.animate = animate
         self._user = UserView(self._host, animate=animate, id=self.USER_VIEW)
@@ -475,6 +478,9 @@ class JarvisApp(App[None]):
         """One modal at a time: while a card waits, the input and ``/login`` panel step aside."""
 
         confirming = bool(self._confirms)
+        # The open turn times how long the person takes to answer.
+        self._host.note_confirms(f"{p.source}:{p.reply_id if p.source == 'helper' else p.ask.request_id}"
+                                 for p in self._confirms)
         self._footer.confirming = confirming
         self._confirm_card.display = confirming
         self._confirm_card.refresh(layout=True)
@@ -922,6 +928,7 @@ class JarvisApp(App[None]):
     async def _transcribe_and_send(self, recorder: Recorder, directory: Path, gen: int) -> None:
         text: str | None = None
         error: str | None = None
+        speech_end_at = self._host.voice.stopped_at  # set when recording stopped
         try:
             path = await recorder.stop()
             if gen == self._voice_gen:
@@ -946,7 +953,7 @@ class JarvisApp(App[None]):
         elif not self._client.send(text.strip()):
             self.notify("Gentle Dot is not connected: what you said was not sent.", severity="error")
         else:
-            self._host.note_sent(spoken=True)
+            self._host.note_sent(spoken=True, speech_end_at=speech_end_at)
 
     def _cancel_voice(self) -> bool:
         """Drop the recording or the transcription under way; ``True`` if there was one."""
@@ -1252,6 +1259,7 @@ def main(argv: list[str] | None = None) -> int:
         stream=sys.stderr,
     )
     token_path = Path(args.token_file).expanduser() if args.token_file else None
+    log_path = default_log_path()
     JarvisApp(
         host=args.host,
         port=args.port,
@@ -1262,6 +1270,7 @@ def main(argv: list[str] | None = None) -> int:
         theme_name=args.theme,
         typed_model=args.model,
         typed_thinking=args.thinking,
+        turn_log=TurnLog(log_path, {"source": "tui"}) if log_path is not None else None,
     ).run()
     return 0
 

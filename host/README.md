@@ -530,6 +530,37 @@ What it deliberately does not do:
 * No file attachments, no attachments upload, no conversation switching, no sign-out
   (`/login` signs in only), and no paging back past the first history page.
 
+## Turn log: every stage of a whole turn
+
+Each prompt typed or said (f4) in the window is timed from sending to the agent going
+back to `idle`, stage by stage, and appended as **one JSON line** to
+`$XDG_STATE_HOME/jarvis/turns.jsonl` (default `~/.local/state/jarvis/turns.jsonl`, mode
+`0600`). `JARVIS_TURN_LOG=/path/file.jsonl` moves it; `JARVIS_TURN_LOG=off` turns it off.
+A write that fails is logged once as a warning and never stops the turn. The developer
+view's `turn` row shows the last one: `2 calls 3.8s · 1 tool · wait 3.0s` (model calls
+and their time, tools, time a person took on confirmation cards).
+
+```json
+{"v": 1, "at": "2026-11-23T20:30:00.123+00:00", "source": "tui", "spoken": false,
+ "chars": 12, "stt_s": null, "echo_s": 0.1, "first_text_s": 7.0, "total_s": 7.6,
+ "ended_by": "idle", "error": null, "stopped": false, "model_calls_n": 2, "tools_n": 1,
+ "model_s": 3.8, "tool_s": 3.5, "human_wait_s": 3.0,
+ "model_calls": [{"start_s": 0.1, "end_s": 2.0, "first_text_s": null, "error": null}, …],
+ "tools": [{"kind": "open_app", "status": "done", "start_s": 2.1, "end_s": 5.6, "call": 0}],
+ "waits": [{"start_s": 2.2, "end_s": 5.2}]}
+```
+
+Every time is in seconds from sending, measured on this host (the daemon's frames carry
+no time). A model call ends at its `message_done`; it starts at the latest boundary
+before its first frame (the echo, the previous `message_done`, the end of a tool or of a
+confirmation), since the daemon sends no "call started" frame. A tool runs from its first
+`activity` to a status other than `running` (`call` is the index of the model call that
+asked for it). `stt_s` (spoken prompts) runs from releasing f4 to sending, recording
+stop and transcription included. `ended_by`: `idle`, `error`, `stopped`, `next_prompt`,
+`disconnect` or `reconnect`. The record holds **no prompt text and no tool titles**
+(they may carry what was typed), only `chars`, kinds and times. Prompts from other
+windows are not timed.
+
 ## Timing the typed path: `python -m jarvis.bench`
 
 ```bash
