@@ -410,6 +410,12 @@ acción» de D22.
 | Texto o intención con palabras como «borrar», «enviar» o «pagar» | No; la intención solo se muestra en el aviso |
 | Borrar todo el contenido: `ctrl+a` seguido de `Delete`, `BackSpace` o `ctrl+x`, o `g g d shift+g` de Vim | Sí |
 | Cerrar una ventana o app: `alt+F4`, `ctrl+w`, `ctrl+q` | Sí |
+| Equivalentes (L17): `Tab` y luego `space` o Enter en chat o correo; en un navegador, cambiar de pestaña (`ctrl+Tab`, `ctrl+1..9`…) y luego Enter; `KP_Delete`; `ctrl+Home ctrl+shift+End` y borrar; `ggdG` o `:%d` en el texto; `ctrl+F4`, `super+w`, `super+q`, `super+shift+e`, `ctrl+alt+Delete` | Sí |
+| Borrado repartido en dos llamadas a la misma ventana (`ctrl+a` y luego `Delete` o escribir encima; `g g` y luego `d shift+g`), dentro de 60 s | Sí |
+
+El ayudante recuerda en memoria la cola de la última acción en una ventana (L17 (a)); una
+acción negada no la cambia. Justo antes de `wtype` vuelve a evaluar con el título recién
+leído: un motivo que el usuario no confirmó niega sin preguntar otra vez (L17 (c)).
 
 Se mantienen sin cambios: la lista de bloqueo (terminales, contraseñas, ajustes), el
 rechazo de letras que imitan palabras de riesgo (cirílicas o griegas), los 30 s de espera

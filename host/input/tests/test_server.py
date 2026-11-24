@@ -788,6 +788,54 @@ class ConfirmTest(Base):
         self.assertEqual(self.calls("wtype"), [])
         self.assertTrue((await self.agent({"op": "type", "text": "hola"}))["ok"])  # no Return: fine
 
+    async def test_title_change_without_window_id_denies(self) -> None:
+        # L17 (c): the focused window's title changed between the check and wtype.
+        self.focus(SEARCH, {**SEARCH, "title": "WhatsApp"})
+        r, _ = await self.subscribe()
+        res = await self.agent({"op": "type", "text": "hola\n"})
+        self.assertFalse(res["ok"])
+        self.assertIn("cambió", res["error"])
+        await self._no_prompt(r)
+        self.assertEqual(self.calls("wtype"), [])
+
+    async def test_tab_switch_then_return_in_a_browser_asks(self) -> None:
+        self.focus(SEARCH)  # a plain page: the switched-to tab may be web chat
+        for keys in ["ctrl+Tab Return", "ctrl+2 Return"]:
+            task, [(r, w)], ev = await self._pending({"op": "key", "keys": keys})
+            self.assertIn("enviar en un chat o correo", ev["message"], keys)
+            await self.ask_on(r, w, {"op": "answer", "id": ev["id"], "allow": False})
+            self.assertFalse((await task)["ok"], keys)
+            w.close()
+        self.assertEqual(self.calls("wtype"), [])
+
+    async def test_equivalents_ask(self) -> None:
+        # L17 (d): Tab then space presses Send in chat; KP_Delete, ctrl+Home ctrl+shift+End;
+        # ctrl+F4 and the niri close/quit binds.
+        cases = [({"id": 9, "app_id": "org.telegram.desktop", "title": "Telegram"}, "Tab space",
+                  "enviar en un chat o correo"),
+                 (EDITOR, "ctrl+a KP_Delete", "borrar todo el contenido"),
+                 (EDITOR, "ctrl+Home ctrl+shift+End Delete", "borrar todo el contenido"),
+                 (EDITOR, "ctrl+F4", "cerrar la ventana"), (EDITOR, "super+w", "cerrar la ventana"),
+                 (EDITOR, "super+shift+e", "cerrar la ventana"), (EDITOR, "ctrl+alt+Delete", "cerrar la ventana")]
+        for window, keys, reason in cases:
+            self.focus(window)
+            task, [(r, w)], ev = await self._pending({"op": "key", "keys": keys})
+            self.assertIn(reason, ev["message"], keys)
+            await self.ask_on(r, w, {"op": "answer", "id": ev["id"], "allow": False})
+            self.assertFalse((await task)["ok"], keys)
+            w.close()
+        self.assertEqual(self.calls("wtype"), [])
+
+    async def test_typed_vim_clear_asks(self) -> None:
+        # L17 (b)
+        for text in ["ggdG", ":%d\n"]:
+            task, [(r, w)], ev = await self._pending({"op": "type", "text": text})
+            self.assertIn("borrar todo el contenido", ev["message"], text)
+            await self.ask_on(r, w, {"op": "answer", "id": ev["id"], "allow": False})
+            self.assertFalse((await task)["ok"], text)
+            w.close()
+        self.assertEqual(self.calls("wtype"), [])
+
     async def test_return_elsewhere_does_not_ask(self) -> None:
         r, _ = await self.subscribe()
         for window in [SEARCH, EDITOR]:
@@ -796,6 +844,84 @@ class ConfirmTest(Base):
             self.assertEqual(await self.agent({"op": "type", "text": "hola\n"}), {"ok": True}, window)
         await self._no_prompt(r)
         self.assertEqual(len(self.calls("wtype")), 4)
+
+
+class CrossCallTest(Base):
+    """L17 (a): clear-all across calls on the same window, from an in-memory tail."""
+    confirm_timeout = 0.6
+
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        await self.grant()
+        self.helper._limiter = server.checks.RateLimiter(100, server.RATE_WINDOW_S)
+
+    async def _asks(self, req: dict[str, Any], allow: bool, reason: str = "borrar todo el contenido") -> dict:
+        r, w = await self.subscribe()
+        task = asyncio.create_task(self.agent(req))
+        ev = await self.next_event(r)
+        self.assertEqual(ev["event"], "confirm")
+        self.assertIn(reason, ev["message"])
+        await self.ask_on(r, w, {"op": "answer", "id": ev["id"], "allow": allow})
+        res = await task
+        w.close()
+        return res
+
+    async def _no_prompt(self, req: dict[str, Any]) -> dict:
+        r, w = await self.subscribe()
+        res = await self.agent(req)
+        with self.assertRaises(asyncio.TimeoutError):
+            await asyncio.wait_for(r.readline(), 0.2)
+        w.close()
+        return res
+
+    async def test_select_all_then_delete_next_call(self) -> None:
+        self.assertEqual(await self._no_prompt({"op": "key", "keys": "ctrl+a"}), {"ok": True})
+        self.assertEqual(len(self.calls("wtype")), 1)
+        tail = self.helper._tails.get(EDITOR["id"])
+        self.assertTrue(tail.select_all)
+        # denied: no wtype, and the tail stays as it was, so the next Delete asks again
+        self.assertFalse((await self._asks({"op": "key", "keys": "Delete"}, allow=False))["ok"])
+        self.assertEqual(len(self.calls("wtype")), 1)
+        self.assertEqual(self.helper._tails.get(EDITOR["id"]), tail)
+        self.assertEqual(await self._asks({"op": "key", "keys": "BackSpace"}, allow=True), {"ok": True})
+        self.assertEqual(len(self.calls("wtype")), 2)
+        # the selection was consumed: a further Delete is a plain Delete
+        self.assertEqual(await self._no_prompt({"op": "key", "keys": "Delete"}), {"ok": True})
+        self.assertEqual(len(self.calls("wtype")), 3)
+
+    async def test_vim_clear_split_across_calls(self) -> None:
+        self.assertEqual(await self._no_prompt({"op": "key", "keys": "Escape g g"}), {"ok": True})
+        self.assertFalse((await self._asks({"op": "key", "keys": "d shift+g"}, allow=False))["ok"])
+        self.assertEqual(len(self.calls("wtype")), 1)
+
+    async def test_type_over_pending_select_all(self) -> None:
+        self.assertEqual(await self._no_prompt({"op": "key", "keys": "ctrl+a"}), {"ok": True})
+        self.assertFalse((await self._asks({"op": "type", "text": "hola"}, allow=False))["ok"])
+        self.assertEqual(len(self.calls("wtype")), 1)
+
+    async def test_another_window_clears_the_tail(self) -> None:
+        self.assertEqual(await self._no_prompt({"op": "key", "keys": "ctrl+a"}), {"ok": True})
+        self.focus(NOTEPAD)
+        self.assertEqual(await self._no_prompt({"op": "key", "keys": "Delete"}), {"ok": True})
+        self.focus(EDITOR)
+        self.assertEqual(await self._no_prompt({"op": "key", "keys": "Delete"}), {"ok": True})
+        self.assertEqual(len(self.calls("wtype")), 3)
+
+    async def test_tail_expires(self) -> None:
+        now = [1000.0]
+        self.helper._tails = server.checks.KeyTails(ttl=60, clock=lambda: now[0])
+        self.assertEqual(await self._no_prompt({"op": "key", "keys": "ctrl+a"}), {"ok": True})
+        now[0] += 61
+        self.assertEqual(await self._no_prompt({"op": "key", "keys": "Delete"}), {"ok": True})
+        self.assertEqual(len(self.calls("wtype")), 2)
+
+    async def test_denial_before_wtype_leaves_tail(self) -> None:
+        self.assertEqual(await self._no_prompt({"op": "key", "keys": "g g"}), {"ok": True})
+        tail = self.helper._tails.get(EDITOR["id"])
+        self.focus(EDITOR, {"id": 99, "app_id": "x", "title": "y"})  # focus moves before wtype
+        self.assertFalse((await self._no_prompt({"op": "key", "keys": "i"}))["ok"])
+        self.assertEqual(self.helper._tails.get(EDITOR["id"]), tail)
+        self.assertEqual(len(self.calls("wtype")), 1)
 
 
 class RevokeKillsTest(Base):
@@ -867,6 +993,7 @@ class ScreenshotTest(Base):
 GHOSTTY = {"id": 3, "app_id": "com.mitchellh.ghostty", "title": "jarvis"}
 KEEPASS = {"id": 5, "app_id": "org.keepassxc.KeePassXC", "title": "db.kdbx"}
 NOTEPAD = {"id": 11, "app_id": "dev.duxlabs.shell.notepad", "title": "Sin título"}
+WHATSAPP_WEB = {"id": 14, "app_id": "brave-browser", "title": "(1) WhatsApp"}
 
 
 class AppsTest(Base):
@@ -1150,6 +1277,68 @@ class TypeIntoWindowTest(Base):
     async def test_return_rule_uses_target_not_focused(self) -> None:
         self.focus(BRAVE, NOTEPAD)  # focused Brave would need a confirmation; the target does not
         self.assertTrue((await self.agent({"op": "key", "keys": "Return", "window_id": 11}))["ok"])
+
+    async def test_return_uses_target_browser_title_not_focused(self) -> None:
+        # L17 (e): same browser app_id for both, only the target's title tells web chat apart.
+        self.windows({**SEARCH, "focused": True}, BRAVE, WHATSAPP_WEB, NOTEPAD)
+        self.focus(SEARCH)  # a plain page has focus; the target is Gmail
+        r, w = await self.subscribe()
+        task = asyncio.create_task(self.agent({"op": "key", "keys": "Return", "window_id": 8}))
+        ev = await self.next_event(r)
+        self.assertIn("enviar en un chat o correo", ev["message"])
+        self.assertIn("Gmail", ev["message"])
+        await self.ask_on(r, w, {"op": "answer", "id": ev["id"], "allow": False})
+        self.assertFalse((await task)["ok"])
+        self.assertEqual(self.calls("wtype"), [])
+
+    async def test_return_on_plain_target_while_whatsapp_has_focus(self) -> None:
+        self.windows({**WHATSAPP_WEB, "focused": True}, BRAVE, SEARCH, NOTEPAD)
+        self.focus(WHATSAPP_WEB, SEARCH)
+        r, _ = await self.subscribe()
+        res = await self.agent({"op": "key", "keys": "Return", "window_id": 12})
+        self.assertEqual(res, {"ok": True, "window_id": 12})
+        with self.assertRaises(asyncio.TimeoutError):
+            await asyncio.wait_for(r.readline(), 0.2)
+        self.assertEqual(self.order(), ["focus 12", "wtype", "focus 14"])
+
+    # L17 (c): the title is read again after focusing, right before wtype.
+    async def test_title_turned_into_chat_after_focus_denies(self) -> None:
+        self.windows({**GHOSTTY, "focused": True}, SEARCH)
+        self.focus(GHOSTTY, {**SEARCH, "title": "WhatsApp"})
+        r, _ = await self.subscribe()
+        res = await self.agent({"op": "key", "keys": "Return", "window_id": 12})
+        self.assertFalse(res["ok"])
+        self.assertIn("cambió", res["error"])
+        self.assertIn("enviar en un chat o correo", res["error"])
+        with self.assertRaises(asyncio.TimeoutError):  # no second prompt, a clear denial
+            await asyncio.wait_for(r.readline(), 0.2)
+        self.assertEqual(self.calls("wtype"), [])
+        self.assertEqual(self.order(), ["focus 12", "focus 3"])
+
+    async def test_title_race_adds_a_reason_after_confirming_another(self) -> None:
+        self.windows({**GHOSTTY, "focused": True}, SEARCH)
+        self.focus(GHOSTTY, {**SEARCH, "title": "Inbox - Gmail"})
+        r, w = await self.subscribe()
+        task = asyncio.create_task(self.agent({"op": "key", "keys": "ctrl+a Delete Return", "window_id": 12}))
+        ev = await self.next_event(r)
+        self.assertIn("borrar todo el contenido", ev["message"])
+        self.assertNotIn("enviar", ev["message"])
+        await self.ask_on(r, w, {"op": "answer", "id": ev["id"], "allow": True})
+        res = await task
+        self.assertFalse(res["ok"])
+        self.assertIn("enviar en un chat o correo", res["error"])
+        with self.assertRaises(asyncio.TimeoutError):  # the confirmed reason is not asked again
+            await asyncio.wait_for(r.readline(), 0.2)
+        self.assertEqual(self.calls("wtype"), [])
+
+    async def test_title_unchanged_after_confirm_types(self) -> None:
+        self.focus(GHOSTTY, {**BRAVE, "title": "Otra bandeja - Gmail"})  # still mail: already confirmed
+        r, w = await self.subscribe()
+        task = asyncio.create_task(self.agent({"op": "key", "keys": "Return", "window_id": 8}))
+        ev = await self.next_event(r)
+        await self.ask_on(r, w, {"op": "answer", "id": ev["id"], "allow": True})
+        self.assertEqual(await task, {"ok": True, "window_id": 8})
+        self.assertEqual(len(self.calls("wtype")), 1)
 
     async def test_requires_permission(self) -> None:
         await self.control({"op": "revoke"})

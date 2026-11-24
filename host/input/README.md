@@ -253,15 +253,31 @@ For `type` and `key`, in order:
      Gmail, Outlook, Discord, Messenger, Slack, Teams, Proton Mail, …; whole words, case and
      accents ignored). Return in a browser on any other page (search, forms) does not ask, nor
      in any other app.
-   * **Clearing all content** (“borrar todo el contenido”): `ctrl+a` followed later in the same
-     key sequence by `Delete`, `BackSpace` or `ctrl+x`; or Vim's `g g d shift+g`.
-   * **Closing a window or app** (“cerrar la ventana”): `alt+F4`, `ctrl+w` or `ctrl+q` (extra
-     modifiers included, e.g. `ctrl+shift+w`).
+     Also (L17): in those windows `Tab` followed later by `space` or Return (Tab to the Send
+     button); and in **any** browser a tab switch (`ctrl+Tab`, `ctrl+shift+Tab`,
+     `ctrl+Page_Up/Page_Down`, `ctrl+1..9`, `alt+1..9`) followed later by Return, whatever the
+     current title.
+   * **Clearing all content** (“borrar todo el contenido”): a select-all (`ctrl+a`, or
+     `ctrl+Home` then `ctrl+shift+End`, or the reverse) followed later by `Delete`, `KP_Delete`,
+     `BackSpace`, `ctrl+x` or a typed character; Vim's `g g d shift+g` or `:%d`, as keys or
+     inside typed text (`ggdG`, `:%d`, any app; a fail-safe heuristic).
+     **Across calls** (L17 (a)): the helper keeps in memory the tail of the last action on one
+     window (its last 4 presses, whether a select-all is still pending) for 60 s; an action on
+     another window replaces it. So `ctrl+a` then `Delete` in the next call, `g g` then
+     `d shift+g`, or `ctrl+a` then `pc_type` over the selection ask. A clear that finished in a
+     previous call does not ask again; a denied action leaves the tail unchanged (it is updated
+     only once `wtype` ran).
+   * **Closing a window or app** (“cerrar la ventana”): `alt+F4`, `ctrl+w`, `ctrl+q`, `ctrl+F4`
+     (extra modifiers included, e.g. `ctrl+shift+w`), and the niri binds `super+w`, `super+q`,
+     `super+shift+e`, plus `ctrl+alt+Delete`.
 
    Words in the text or the intent (“borrar”, “enviar”, “pagar”, …) never ask by themselves;
    the intent is only shown in the prompt. No subscriber = denied immediately; no answer within
    30 s = denied; subscribers all gone = denied.
 6. Focus re-checked right before `wtype`: a different window id or a now-blocked window = denied.
+   The rules of step 5 run again on the fresh title (L17 (c)); a reason the user did not
+   confirm (e.g. the page turned into WhatsApp) = denied with “La ventana cambió …”, never a
+   second prompt.
 
 With `window_id` (S16), steps 3–4 apply to the target window from `niri msg -j windows` instead
 of the focused one, and the helper focuses it (after step 5) before step 6, which then compares

@@ -169,6 +169,7 @@ class Helper:
         self._background: set[asyncio.Task[Any]] = set()
         self._action_lock = asyncio.Lock()
         self._limiter = checks.RateLimiter(RATE_MAX, RATE_WINDOW_S)
+        self._tails = checks.KeyTails()  # L17 (a): clear-all split across calls
         self._expires_mono: float | None = None
         self._expires_at: str | None = None
         self._timer: asyncio.TimerHandle | None = None
@@ -685,8 +686,10 @@ class Helper:
         target = await self._target_window(req["window_id"]) if "window_id" in req else None
         window = target if target is not None else await self._focused_for_input()
         # S10a: ask by the action (send in chat/mail, clear all, close), never by words; the
-        # intent is only shown in the prompt.
-        reasons = checks.confirm_reasons(window.app_id, window.title, keys=keys, text=text)
+        # intent is only shown in the prompt. A clear split across calls on the same window
+        # counts too (L17 (a)): the tail is only updated once wtype ran, never on a denial.
+        tail = self._tails.get(window.id)
+        reasons = checks.confirm_reasons(window.app_id, window.title, keys=keys, text=text, tail=tail)
         if reasons:
             message = (f"{what} en {window.app_id or '?'} («{window.title[:80]}»). "
                        f"{'; '.join(reasons)}. Intención: {intent[:200] or '—'}. {shown}")
@@ -694,6 +697,7 @@ class Helper:
                 raise Deny("El usuario no confirmó la acción (denegada, sin respuesta o sin TUI conectada).")
             self._still_enabled()
         prev_id: int | None = None
+        ran = False
         try:
             if target is not None:
                 current = await self._focus()
@@ -710,11 +714,22 @@ class Helper:
                 reason = checks.blocked_reason(again, screenshot=False)
                 if reason:
                     raise Deny(reason)
+                # L17 (c): the title may have changed since the check (a tab switch, a new page);
+                # a reason the user did not confirm denies, with no second prompt.
+                fresh = checks.confirm_reasons(again.app_id, again.title, keys=keys, text=text, tail=tail)
+                new = [r for r in fresh if r not in reasons]
+                if new:
+                    raise Deny(f"La ventana cambió a «{again.title[:80]}» y ahora la acción pediría "
+                               f"confirmación ({'; '.join(new)}); "
+                               + ("no se hizo nada." if argv is argvs[0] else "se cortó el texto."))
                 self._still_enabled()  # revoked during the focus settle or a previous run
+                ran = True
                 code, _ = await self._run(argv, timeout=WTYPE_TIMEOUT_S, capture=False, track=True)
                 if code != 0:
                     raise Deny(f"wtype terminó con código {code}")
         finally:
+            if ran:  # keys may have reached the window even if wtype failed or was cut
+                self._tails.record(window.id, checks.next_tail(tail, keys=keys, text=text))
             if target is not None:
                 await self._restore_focus(prev_id, target.id)
         return {"ok": True} if target is None else {"ok": True, "window_id": target.id}

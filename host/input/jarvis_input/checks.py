@@ -451,8 +451,40 @@ REASON_SEND = "enviar en un chat o correo"
 REASON_CLEAR = "borrar todo el contenido"
 REASON_CLOSE = "cerrar la ventana"
 
-_DELETE_KEYS = {"delete", "backspace"}
-_VIM_CLEAR = ((frozenset(), "g"), (frozenset(), "g"), (frozenset(), "d"), (frozenset({"shift"}), "g"))
+Combo = tuple[frozenset[str], str]
+_NO_MODS: frozenset[str] = frozenset()
+_SHIFT = frozenset({"shift"})
+_COMMAND_MODS = frozenset({"ctrl", "alt", "logo", "altgr"})
+_DELETE_KEYS = {"delete", "backspace", "kp_delete"}
+_TAB_KEYS = {"tab", "iso_left_tab", "kp_tab"}
+_SPACE_KEYS = {"space", "kp_space"}
+_HOME_KEYS = {"home", "kp_home"}
+_END_KEYS = {"end", "kp_end"}
+_PAGE_KEYS = {"page_up", "page_down", "prior", "next", "kp_page_up", "kp_page_down", "kp_prior", "kp_next"}
+_TAB_DIGITS = {str(n) for n in range(1, 10)} | {f"kp_{n}" for n in range(1, 10)}
+# keysym names that type a character (a bare one replaces a selection, as typed text does)
+_CHAR_NAMES = {"space", "colon", "percent", "semicolon", "comma", "period", "minus", "plus", "equal",
+               "slash", "underscore", "apostrophe", "quotedbl", "exclam", "question"}
+# typed text -> the same (modifiers, key) the keys would give, for the shared rules below
+_TEXT_KEYS = {" ": "space", ":": "colon", "%": "percent", "\n": "return", "\t": "tab"}
+
+
+def _is_colon(c: Combo) -> bool:
+    return (c[1] == "colon" and not c[0] & _COMMAND_MODS) or c == (_SHIFT, "semicolon")
+
+
+def _is_percent(c: Combo) -> bool:
+    return (c[1] == "percent" and not c[0] & _COMMAND_MODS) or c == (_SHIFT, "5")
+
+
+# Vim clears: g g d shift+g, and the ex command :%d (as keys or as typed text).
+_VIM_CLEARS: tuple[tuple[Callable[[Combo], bool], ...], ...] = (
+    (lambda c: c == (_NO_MODS, "g"), lambda c: c == (_NO_MODS, "g"), lambda c: c == (_NO_MODS, "d"),
+     lambda c: c == (_SHIFT, "g")),
+    (_is_colon, _is_percent, lambda c: c == (_NO_MODS, "d")),
+)
+TAIL_COMBOS = 4  # the longest Vim clear: enough to finish one split across calls
+TAIL_TTL_S = 60.0
 
 
 def _is_browser(app_id: str) -> bool:
@@ -469,10 +501,10 @@ def is_chat_or_mail(app_id: str, title: str) -> bool:
     return _is_browser(a) and _WEB_CHAT_MAIL_TITLE.search(_base(title)) is not None
 
 
-def key_combos(args: list[str]) -> list[tuple[frozenset[str], str]]:
+def key_combos(args: list[str]) -> list[Combo]:
     """parse_keys output -> (modifiers, lowercase key) per press, in order. A bare argument is the
     capital parse_keys sends for shift+letter."""
-    combos: list[tuple[frozenset[str], str]] = []
+    combos: list[Combo] = []
     held: list[str] = []
     i = 0
     while i < len(args):
@@ -490,46 +522,134 @@ def key_combos(args: list[str]) -> list[tuple[frozenset[str], str]]:
         elif a == "-s":
             i += 2
         else:
-            combos += [(frozenset({"shift"}), ch.lower()) for ch in a]
+            combos += [(_SHIFT, ch.lower()) for ch in a]
             i += 1
     return combos
 
 
-def _clears_all(combos: list[tuple[frozenset[str], str]]) -> bool:
-    select_all = False
+def text_combos(text: str) -> list[Combo]:
+    """Typed text as the presses it amounts to: a capital is shift+letter, ":" colon, "\n" Return."""
+    return [(_NO_MODS, _TEXT_KEYS[ch]) if ch in _TEXT_KEYS
+            else (_SHIFT, ch.lower()) if ch.isupper() else (_NO_MODS, ch) for ch in text]
+
+
+@dataclass(frozen=True)
+class KeyTail:
+    """What the previous calls on one window left behind (L17 (a)): the last presses, whether
+    everything is still selected, and a ctrl+Home/ctrl+End that a ctrl+shift+End/Home completes."""
+    recent: tuple[Combo, ...] = ()
+    select_all: bool = False
+    corner: str = ""
+
+
+def _scan(tail: KeyTail, combos: list[Combo]) -> tuple[bool, KeyTail]:
+    """Whether `combos`, after `tail`, clear all content (a match that ends in `combos`; one that
+    ended in the tail was already asked), and the tail they leave."""
+    seq = list(tail.recent) + combos
+    select_all, corner, clears = tail.select_all, tail.corner, False
     for i, (mods, key) in enumerate(combos):
-        if select_all and (key in _DELETE_KEYS or ("ctrl" in mods and key == "x")):
-            return True
+        j = len(tail.recent) + i
+        replaces = not mods & _COMMAND_MODS and (len(key) == 1 or key in _CHAR_NAMES)
+        if select_all and (key in _DELETE_KEYS or ("ctrl" in mods and key == "x") or replaces):
+            clears, select_all = True, False  # the selection is gone after it
         if "ctrl" in mods and key == "a":
             select_all = True
-        if tuple(combos[i:i + len(_VIM_CLEAR)]) == _VIM_CLEAR:
-            return True
-    return False
+        if "ctrl" in mods and key in _HOME_KEYS | _END_KEYS:
+            edge = "home" if key in _HOME_KEYS else "end"
+            if "shift" in mods and corner and corner != edge:
+                select_all = True
+            elif "shift" not in mods:
+                corner = edge
+        for pattern in _VIM_CLEARS:
+            n = len(pattern)
+            if j + 1 >= n and all(p(c) for p, c in zip(pattern, seq[j + 1 - n:j + 1])):
+                clears = True
+    return clears, KeyTail(tuple(seq[-TAIL_COMBOS:]), select_all, corner)
 
 
-def _closes(combos: list[tuple[frozenset[str], str]]) -> bool:
-    return any(("alt" in mods and key == "f4") or ("ctrl" in mods and key in ("w", "q"))
+def _closes(combos: list[Combo]) -> bool:
+    return any(("alt" in mods and key == "f4") or ("ctrl" in mods and key in ("w", "q", "f4"))
+               or ("logo" in mods and key in ("w", "q")) or ({"logo", "shift"} <= mods and key == "e")
+               or ({"ctrl", "alt"} <= mods and key in ("delete", "kp_delete"))
                for mods, key in combos)
 
 
-def confirm_reasons(app_id: str, title: str, *, keys: list[str] | None = None,
-                    text: str | None = None) -> list[str]:
-    """Why this action must ask the user first (S10a), in Spanish, or [] when it needs no prompt.
+def _followed(combos: list[Combo], first: Callable[[Combo], bool], then: Callable[[Combo], bool]) -> bool:
+    seen = False
+    for c in combos:
+        if seen and then(c):
+            return True
+        seen = seen or first(c)
+    return False
 
-    By the action only, never by words in the text or the intent: Return (any Return keysym in
-    the keys, or a newline in the text) in a chat or mail window; clearing all content (ctrl+a then
-    Delete/BackSpace/ctrl+x, or Vim's g g d shift+g); closing a window or app (alt+F4, ctrl+w,
-    ctrl+q). `keys` is parse_keys output."""
-    combos = key_combos(keys) if keys is not None else []
+
+def _switches_tab(c: Combo) -> bool:
+    mods, key = c
+    return (("ctrl" in mods and (key in _TAB_KEYS or key in _PAGE_KEYS or key in _TAB_DIGITS))
+            or ("alt" in mods and key in _TAB_DIGITS))
+
+
+def _sends(app_id: str, title: str, keys: list[str] | None, text: str | None, combos: list[Combo]) -> bool:
+    returns = (keys is not None and presses_return(keys)) or (text is not None and "\n" in text)
+    if is_chat_or_mail(app_id, title):
+        # Return, or Tab to the Send button and space/Return on it
+        return returns or _followed(combos, lambda c: c[1] in _TAB_KEYS,
+                                    lambda c: c[1] in _SPACE_KEYS or c[1] in _RETURN_KEYS)
+    # a tab switch inside the sequence may land on web chat whatever the title is now
+    return _is_browser(app_id.casefold()) and _followed(combos, _switches_tab, lambda c: c[1] in _RETURN_KEYS)
+
+
+def _combos(keys: list[str] | None, text: str | None) -> list[Combo]:
+    return (key_combos(keys) if keys is not None else []) + (text_combos(text) if text is not None else [])
+
+
+def confirm_reasons(app_id: str, title: str, *, keys: list[str] | None = None,
+                    text: str | None = None, tail: KeyTail = KeyTail()) -> list[str]:
+    """Why this action must ask the user first (S10a, L17), in Spanish, or [] when it needs no prompt.
+
+    By the action only, never by words in the text or the intent:
+    - send: Return (any Return keysym, or a newline in the text), or Tab then space/Return, in a
+      chat or mail window; in any browser, a tab switch (ctrl+Tab, ctrl+PageDown, ctrl/alt+1..9)
+      later followed by Return;
+    - clear all: a select-all (ctrl+a, or ctrl+Home then ctrl+shift+End) then Delete/KP_Delete/
+      BackSpace/ctrl+x or a typed character; Vim's g g d shift+g or :%d, as keys or typed text.
+      Matched against `tail` (the previous calls on the same window) plus this action;
+    - close: alt+F4, ctrl+w, ctrl+q, ctrl+F4, super+w, super+q, super+shift+e, ctrl+alt+Delete.
+    `keys` is parse_keys output."""
+    combos = _combos(keys, text)
     reasons: list[str] = []
-    sends = (keys is not None and presses_return(keys)) or (text is not None and "\n" in text)
-    if sends and is_chat_or_mail(app_id, title):
+    if _sends(app_id, title, keys, text, combos):
         reasons.append(REASON_SEND)
-    if _clears_all(combos):
+    if _scan(tail, combos)[0]:
         reasons.append(REASON_CLEAR)
     if _closes(combos):
         reasons.append(REASON_CLOSE)
     return reasons
+
+
+def next_tail(tail: KeyTail, *, keys: list[str] | None = None, text: str | None = None) -> KeyTail:
+    """The tail after this action ran on the same window."""
+    return _scan(tail, _combos(keys, text))[1]
+
+
+class KeyTails:
+    """The tail of the last action typed into a window (L17 (a)): memory only, a single slot (an
+    action on another window replaces it), forgotten `ttl` seconds after it was recorded."""
+
+    def __init__(self, ttl: float = TAIL_TTL_S, clock: Callable[[], float] = time.monotonic) -> None:
+        self.ttl, self.clock = ttl, clock
+        self._slot: tuple[int, KeyTail, float] | None = None
+
+    def get(self, wid: int) -> KeyTail:
+        if self._slot is None:
+            return KeyTail()
+        owner, tail, at = self._slot
+        if owner != wid or self.clock() - at > self.ttl:
+            return KeyTail()
+        return tail
+
+    def record(self, wid: int, tail: KeyTail) -> None:
+        self._slot = (wid, tail, self.clock())
 
 
 # --- open ----------------------------------------------------------------------------------

@@ -504,7 +504,8 @@ def vscode_cases(run: Run, ws: cdp.Cdp, wid: int, other: int) -> None:
         assert text() == "", f"buffer not empty before typing: {text()!r}"
         assert mode() == "NORMAL", f"vim mode before 'a' is {mode()}"
         run.focus_other(other)
-        run.helper.agent({"op": "key", "keys": "a", "intent": WORDS_INTENT, "window_id": wid})
+        res = run.helper.agent({"op": "key", "keys": "a", "intent": WORDS_INTENT, "window_id": wid})
+        assert res == {"ok": True, "window_id": wid}, f"helper reply to key 'a': {res}"
         run.type_into(wid, BACK_TO_BACK)
         time.sleep(0.3)
         got, got_mode = text(), mode()

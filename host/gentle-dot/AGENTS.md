@@ -71,8 +71,11 @@ through the `pc_*` tools, which ask the separate `jarvis-input` helper to do it.
   Return (or a newline in the text) in a chat or mail window (a chat/mail app, or WhatsApp,
   Gmail, Telegram, Outlook… open in a browser), clearing all content (`ctrl+a` then `Delete`,
   `BackSpace` or `ctrl+x`, or Vim's `g g d shift+g`), and closing a window or app (`alt+F4`,
-  `ctrl+w`, `ctrl+q`). Typing words such as "borrar", "enviar" or "pagar" does not ask. If the
-  user declines or does not answer, report that it was not done.
+  `ctrl+w`, `ctrl+q`). Equivalents ask too (`Tab space` in chat, `ctrl+Tab … Return` in a
+  browser, `ctrl+Home ctrl+shift+End Delete`, `ctrl+F4`, `super+w`), and so does a clear split
+  across calls on the same window (`ctrl+a`, then `Delete` or `pc_type` in the next call).
+  Typing words such as "borrar", "enviar" or "pagar" does not ask. If the user declines or does
+  not answer, report that it was not done.
 - Editors may run a Vim extension; never ask the user about modes. Only when the next keys
   depend on the mode and you cannot tell it, take a screenshot with the editor's `window_id`: a
   Vim status bar shows `-- NORMAL --`, `-- INSERT --` or `-- VISUAL --`.

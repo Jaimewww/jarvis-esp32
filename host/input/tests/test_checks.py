@@ -200,6 +200,126 @@ class ConfirmRulesTest(unittest.TestCase):
         self.assertEqual(reasons("discord", "Discord", keys="ctrl+a Delete Return ctrl+w Return"),
                          [self.SEND, self.CLEAR, self.CLOSE])
 
+    # L17 (b): typed text with the Vim clear asks, in any app (fail-safe heuristic).
+    def test_typed_vim_clear(self) -> None:
+        for text in ["ggdG", "Escape ggdG", ":%d", ":%d\n", "x:%dx"]:
+            for app_id in ["org.gnome.TextEditor", "code", "brave-browser"]:
+                with self.subTest(text=text, app_id=app_id):
+                    self.assertEqual(reasons(app_id, "Notas", text=text), [self.CLEAR])
+        for text in ["gg dG", "ggdg", "%d:", ": %d", "hola", "g g d G"]:
+            with self.subTest(text=text):
+                self.assertEqual(reasons(text=text), [])
+        # the same Vim ex clear as keys
+        self.assertEqual(reasons(keys="Escape colon percent d Return"), [self.CLEAR])
+        self.assertEqual(reasons(keys="shift+semicolon shift+5 d Return"), [self.CLEAR])
+
+    # L17 (c): in a browser a tab switch followed by Return may land on web chat: it asks.
+    def test_tab_switch_then_return_in_a_browser(self) -> None:
+        for keys in ["ctrl+Tab Return", "ctrl+shift+Tab Return", "ctrl+Page_Down Return",
+                     "ctrl+pageup Return", "ctrl+2 Return", "alt+9 Return", "ctrl+Tab a b ctrl+Return",
+                     "ctrl+1 KP_Enter"]:
+            with self.subTest(keys=keys):
+                self.assertEqual(reasons("brave-browser", "recetas - Buscar con Google", keys=keys), [self.SEND])
+        for keys in ["Return ctrl+Tab", "ctrl+Tab", "ctrl+2", "Tab Return", "2 Return", "shift+Tab Return"]:
+            with self.subTest(keys=keys):
+                self.assertEqual(reasons("brave-browser", "recetas - Buscar con Google", keys=keys), [])
+        self.assertEqual(reasons(keys="ctrl+Tab Return"), [])  # not a browser
+
+    # L17 (d): equivalents of the same actions.
+    def test_tab_then_space_or_return_sends_in_chat(self) -> None:
+        for keys in ["Tab space", "Tab Tab space", "shift+Tab space", "Tab Return", "Tab a space"]:
+            with self.subTest(keys=keys):
+                self.assertEqual(reasons("discord", "Discord", keys=keys), [self.SEND])
+                self.assertEqual(reasons("brave-browser", "WhatsApp", keys=keys), [self.SEND])
+        self.assertEqual(reasons("signal", "Signal", text="hola\t "), [self.SEND])
+        for keys in ["space Tab", "Tab", "space"]:
+            with self.subTest(keys=keys):
+                self.assertEqual(reasons("discord", "Discord", keys=keys), [])
+        self.assertEqual(reasons(keys="Tab space"), [])  # a plain editor
+        self.assertEqual(reasons("brave-browser", "recetas", keys="Tab space"), [])
+
+    def test_more_clear_all_equivalents(self) -> None:
+        for keys in ["ctrl+a KP_Delete", "ctrl+Home ctrl+shift+End Delete", "ctrl+Home ctrl+shift+End BackSpace",
+                     "ctrl+Home ctrl+shift+End ctrl+x", "ctrl+End ctrl+shift+Home BackSpace",
+                     "ctrl+Home ctrl+shift+End KP_Delete", "ctrl+a x", "ctrl+a space"]:
+            with self.subTest(keys=keys):
+                self.assertEqual(reasons(keys=keys), [self.CLEAR])
+        for keys in ["KP_Delete", "ctrl+Home Delete", "ctrl+shift+End Delete", "ctrl+Home shift+End Delete",
+                     "ctrl+a ctrl+c", "ctrl+a Escape"]:
+            with self.subTest(keys=keys):
+                self.assertEqual(reasons(keys=keys), [])
+
+    def test_more_close_equivalents(self) -> None:
+        for keys in ["ctrl+F4", "super+w", "super+shift+e", "super+shift+E", "ctrl+alt+Delete", "super+q"]:
+            with self.subTest(keys=keys):
+                self.assertEqual(reasons(keys=keys), [self.CLOSE])
+        for keys in ["ctrl+F5", "super+e", "super+1", "ctrl+Delete", "alt+Delete"]:
+            with self.subTest(keys=keys):
+                self.assertEqual(reasons(keys=keys), [])
+
+
+def after(*steps: tuple[str, str], app_id: str = "org.gnome.TextEditor") -> tuple[list[str], checks.KeyTail]:
+    """Run steps ("keys"|"text", value) through the cross-call tail; the reasons of the last one."""
+    tail = checks.KeyTail()
+    got: list[str] = []
+    for kind, value in steps:
+        kw = {"keys": checks.parse_keys(value)} if kind == "keys" else {"text": value}
+        got = checks.confirm_reasons(app_id, "Notas", tail=tail, **kw)
+        tail = checks.next_tail(tail, **kw)
+    return got, tail
+
+
+class CrossCallTest(unittest.TestCase):
+    """L17 (a): clear-all is matched against the tail of the previous call plus the current one."""
+
+    CLEAR = "borrar todo el contenido"
+
+    def test_select_all_then_delete_in_the_next_call(self) -> None:
+        for first, second in [("ctrl+a", "Delete"), ("ctrl+a", "BackSpace"), ("ctrl+a", "ctrl+x"),
+                              ("ctrl+a", "KP_Delete"), ("ctrl+a Right", "Delete"), ("ctrl+Home", "ctrl+shift+End Delete"),
+                              ("ctrl+Home ctrl+shift+End", "BackSpace"), ("Escape g g", "d shift+g"),
+                              ("g", "g d shift+g"), ("g g d", "shift+g"), ("Escape colon", "percent d Return")]:
+            with self.subTest(first=first, second=second):
+                self.assertEqual(after(("keys", first), ("keys", second))[0], [self.CLEAR])
+
+    def test_typing_over_a_pending_select_all(self) -> None:
+        self.assertEqual(after(("keys", "ctrl+a"), ("text", "hola"))[0], [self.CLEAR])
+        self.assertEqual(after(("keys", "ctrl+Home ctrl+shift+End"), ("text", "x"))[0], [self.CLEAR])
+        self.assertEqual(after(("text", "gg"), ("keys", "d shift+g"))[0], [self.CLEAR])
+
+    def test_a_finished_clear_does_not_ask_again(self) -> None:
+        for first, second in [("ctrl+a Delete", "Delete"), ("ctrl+a Delete", "x"), ("ctrl+a ctrl+x", "BackSpace"),
+                              ("Escape g g d shift+g", "i"), ("Escape g g d shift+g", "d shift+g"),
+                              ("ctrl+a x", "Delete")]:
+            with self.subTest(first=first, second=second):
+                self.assertEqual(after(("keys", first), ("keys", second))[0], [])
+        self.assertEqual(after(("keys", "ctrl+a"), ("text", "hola"), ("text", "chau"))[0], [])
+        self.assertEqual(after(("keys", "ctrl+a"), ("text", "hola"), ("keys", "Delete"))[0], [])
+        self.assertEqual(after(("keys", "ctrl+a ctrl+c"), ("keys", "ctrl+v"))[0], [])
+        self.assertEqual(after(("keys", "g"), ("keys", "d shift+g"))[0], [])
+        self.assertEqual(after(("text", "hola"), ("keys", "Delete"))[0], [])
+
+    def test_tail_is_bounded(self) -> None:
+        _, tail = after(("text", "a" * 2000))
+        self.assertLessEqual(len(tail.recent), checks.TAIL_COMBOS)
+        self.assertLessEqual(checks.TAIL_COMBOS, 8)
+
+    def test_tails_per_window_and_expiry(self) -> None:
+        now = [100.0]
+        tails = checks.KeyTails(ttl=60, clock=lambda: now[0])
+        _, pending = after(("keys", "ctrl+a"))
+        self.assertEqual(tails.get(7), checks.KeyTail())
+        tails.record(7, pending)
+        self.assertEqual(tails.get(7), pending)
+        self.assertEqual(tails.get(8), checks.KeyTail())  # another window has its own (empty) tail
+        now[0] += 59
+        self.assertEqual(tails.get(7), pending)
+        now[0] += 2
+        self.assertEqual(tails.get(7), checks.KeyTail())  # forgotten after the ttl
+        tails.record(7, pending)
+        tails.record(8, checks.KeyTail(select_all=False))
+        self.assertEqual(tails.get(7), checks.KeyTail())  # targeting another window clears it
+
 
 class FocusTest(unittest.TestCase):
     def test_parse(self) -> None:
