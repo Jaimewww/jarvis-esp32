@@ -1,8 +1,8 @@
 """Pure checks of jarvis-input (S13, S12 (3)): no sockets, no processes, no I/O.
 
 Ported from ``host/gentle-dot/extensions/pc-control-core.ts`` (key parsing, text validation,
-blocklist, rate limit) and extended: risky words by stem with Unicode normalization and a basic
-confusables map, terminals blocked for input, and the Return-confirmation app list.
+blocklist, rate limit) and extended: lookalike letters that imitate risky words (denied), terminals
+blocked for input, and the rule table of actions that ask the user first (S10a).
 """
 
 from __future__ import annotations
@@ -121,8 +121,10 @@ def preview(text: str) -> str:
     return f"{len(text)} caracteres, empieza {head!r}…"
 
 
-# --- risky words ---------------------------------------------------------------------------
+# --- lookalike words -----------------------------------------------------------------------
 
+# Words are never a reason to ask (S10a); these stems only catch text or an intent that imitates
+# them with Cyrillic/Greek lookalike letters, which is denied outright.
 RISKY_STEMS = ("envi", "pag", "compr", "elimin", "borr", "vaci", "submit", "send", "pay", "buy",
                "delet", "clear", "wipe")
 
@@ -146,31 +148,18 @@ def _base(text: str) -> str:
     return text.casefold()
 
 
-def _stems_of(word: str) -> list[str]:
-    return [s for s in RISKY_STEMS if word.startswith(s)]
-
-
-def _collect(texts: tuple[str, ...], lookalike: bool) -> list[str]:
+def lookalike_stems(*texts: str) -> list[str]:
+    """Risky stems that only appear after mapping Cyrillic/Greek lookalikes to Latin (deny those)."""
     found: list[str] = []
     for text in texts:
         for word in _WORD.findall(_base(text)):
             mapped = word.translate(_CONFUSABLES)
-            if lookalike and mapped == word:
+            if mapped == word:
                 continue
-            for stem in _stems_of(mapped if lookalike else word):
-                if stem not in found:
+            for stem in RISKY_STEMS:
+                if mapped.startswith(stem) and stem not in found:
                     found.append(stem)
     return found
-
-
-def risky_stems(*texts: str) -> list[str]:
-    """Risky stems at the start of a word (envi*, pag*, …, delet*), in order, once each."""
-    return _collect(texts, lookalike=False)
-
-
-def lookalike_stems(*texts: str) -> list[str]:
-    """Risky stems that only appear after mapping Cyrillic/Greek lookalikes to Latin (deny those)."""
-    return _collect(texts, lookalike=True)
 
 
 # --- focused window ------------------------------------------------------------------------
@@ -436,10 +425,16 @@ def list_apps(data_dirs: Iterable[Path], *, query: str | None = None,
     return [{"id": i, "name": n} for _, i, n in found[:cap]], len(found) > cap
 
 
-# Browsers, mail and messaging: Return / ctrl+Return there usually sends something.
-_CONFIRM_APP_PARTS = (
+# --- what asks the user first (S10a) ------------------------------------------------------
+
+# Browsers: Return there only asks when the window title shows web chat or mail.
+_BROWSER_APP_PARTS = (
     "brave", "firefox", "chromium", "chrome", "vivaldi", "opera", "microsoft-edge", "librewolf",
     "waterfox", "floorp", "zen_browser", "zen-browser", "epiphany", "qutebrowser", "falkon", "midori",
+)
+_BROWSER_APP_IDS = {"zen"}
+# Mail and messaging apps (app_id substrings, lowercase): Return / ctrl+Return there sends.
+_CHAT_MAIL_APP_PARTS = (
     "thunderbird", "betterbird", "evolution", "geary", "kmail", "mailspring", "claws-mail",
     "tutanota", "protonmail", "proton-mail", "telegram", "kotatogram", "64gram", "materialgram",
     "signal", "discord", "vesktop", "webcord", "armcord", "slack", "whatsapp", "whatsie", "zapzap",
@@ -447,12 +442,94 @@ _CONFIRM_APP_PARTS = (
     "rocket.chat", "ferdium", "franz", "beeper", "viber", "caprine", "messenger", "gajim", "dino",
     "pidgin", "hexchat", "polari", "revolt", "wire",
 )
-_CONFIRM_APP_IDS = {"zen"}
+# Web chat and mail, by the browser window title (whole words, after _base: case and accents).
+_WEB_CHAT_MAIL_TITLE = re.compile(
+    r"\b(whatsapp|telegram|gmail|outlook|hotmail|discord|messenger|slack|teams|proton ?mail|tuta|"
+    r"tutanota|yahoo mail|instagram|element|mattermost|rocket\.chat|zoho mail|signal)\b")
+
+REASON_SEND = "enviar en un chat o correo"
+REASON_CLEAR = "borrar todo el contenido"
+REASON_CLOSE = "cerrar la ventana"
+
+_DELETE_KEYS = {"delete", "backspace"}
+_VIM_CLEAR = ((frozenset(), "g"), (frozenset(), "g"), (frozenset(), "d"), (frozenset({"shift"}), "g"))
 
 
-def needs_return_confirm(app_id: str) -> bool:
+def _is_browser(app_id: str) -> bool:
+    return app_id in _BROWSER_APP_IDS or any(p in app_id for p in _BROWSER_APP_PARTS)
+
+
+def is_chat_or_mail(app_id: str, title: str) -> bool:
+    """A mail or messaging app, or a browser window whose title shows web chat or mail."""
     a = app_id.casefold()
-    return bool(a) and (a in _CONFIRM_APP_IDS or any(p in a for p in _CONFIRM_APP_PARTS))
+    if not a:
+        return False
+    if any(p in a for p in _CHAT_MAIL_APP_PARTS):
+        return True
+    return _is_browser(a) and _WEB_CHAT_MAIL_TITLE.search(_base(title)) is not None
+
+
+def key_combos(args: list[str]) -> list[tuple[frozenset[str], str]]:
+    """parse_keys output -> (modifiers, lowercase key) per press, in order. A bare argument is the
+    capital parse_keys sends for shift+letter."""
+    combos: list[tuple[frozenset[str], str]] = []
+    held: list[str] = []
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "-M":
+            held.append(args[i + 1])
+            i += 2
+        elif a == "-m":
+            if args[i + 1] in held:
+                held.remove(args[i + 1])
+            i += 2
+        elif a == "-k":
+            combos.append((frozenset(held), args[i + 1].lower()))
+            i += 2
+        elif a == "-s":
+            i += 2
+        else:
+            combos += [(frozenset({"shift"}), ch.lower()) for ch in a]
+            i += 1
+    return combos
+
+
+def _clears_all(combos: list[tuple[frozenset[str], str]]) -> bool:
+    select_all = False
+    for i, (mods, key) in enumerate(combos):
+        if select_all and (key in _DELETE_KEYS or ("ctrl" in mods and key == "x")):
+            return True
+        if "ctrl" in mods and key == "a":
+            select_all = True
+        if tuple(combos[i:i + len(_VIM_CLEAR)]) == _VIM_CLEAR:
+            return True
+    return False
+
+
+def _closes(combos: list[tuple[frozenset[str], str]]) -> bool:
+    return any(("alt" in mods and key == "f4") or ("ctrl" in mods and key in ("w", "q"))
+               for mods, key in combos)
+
+
+def confirm_reasons(app_id: str, title: str, *, keys: list[str] | None = None,
+                    text: str | None = None) -> list[str]:
+    """Why this action must ask the user first (S10a), in Spanish, or [] when it needs no prompt.
+
+    By the action only, never by words in the text or the intent: Return (any Return keysym in
+    the keys, or a newline in the text) in a chat or mail window; clearing all content (ctrl+a then
+    Delete/BackSpace/ctrl+x, or Vim's g g d shift+g); closing a window or app (alt+F4, ctrl+w,
+    ctrl+q). `keys` is parse_keys output."""
+    combos = key_combos(keys) if keys is not None else []
+    reasons: list[str] = []
+    sends = (keys is not None and presses_return(keys)) or (text is not None and "\n" in text)
+    if sends and is_chat_or_mail(app_id, title):
+        reasons.append(REASON_SEND)
+    if _clears_all(combos):
+        reasons.append(REASON_CLEAR)
+    if _closes(combos):
+        reasons.append(REASON_CLOSE)
+    return reasons
 
 
 # --- open ----------------------------------------------------------------------------------

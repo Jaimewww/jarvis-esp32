@@ -678,17 +678,15 @@ class Helper:
         except Exception as e:  # noqa: BLE001 - never replace the action's own result
             log.warning("no pude devolver el foco a %d: %s", prev_id, e)
 
-    async def _input(self, *, req: dict[str, Any], argvs: list[list[str]], intent: str, risky: list[str],
-                     presses_return: bool, what: str, shown: str) -> dict[str, Any]:
+    async def _input(self, *, req: dict[str, Any], argvs: list[list[str]], intent: str,
+                     keys: list[str] | None, text: str | None, what: str, shown: str) -> dict[str, Any]:
         # S16: with window_id the checks and the confirmation are about the target window; it is
         # focused only after the confirmation (answered in the TUI), and focus goes back afterwards.
         target = await self._target_window(req["window_id"]) if "window_id" in req else None
         window = target if target is not None else await self._focused_for_input()
-        reasons = []
-        if risky:
-            reasons.append("palabras de riesgo: " + ", ".join(s + "*" for s in risky))
-        if presses_return and checks.needs_return_confirm(window.app_id):
-            reasons.append(f"Return en {window.app_id} puede enviar algo")
+        # S10a: ask by the action (send in chat/mail, clear all, close), never by words; the
+        # intent is only shown in the prompt.
+        reasons = checks.confirm_reasons(window.app_id, window.title, keys=keys, text=text)
         if reasons:
             message = (f"{what} en {window.app_id or '?'} («{window.title[:80]}»). "
                        f"{'; '.join(reasons)}. Intención: {intent[:200] or '—'}. {shown}")
@@ -733,8 +731,7 @@ class Helper:
         if look:
             raise Deny("Texto con letras que imitan palabras de riesgo (" + ", ".join(look) + "); no se escribe.")
         return await self._input(req=req, argvs=slots.type_argvs(text), intent=intent,
-                                 risky=checks.risky_stems(text, intent), presses_return="\n" in text,
-                                 what="escriba", shown=f"Texto: {text[:300]}")
+                                 keys=None, text=text, what="escriba", shown=f"Texto: {text[:300]}")
 
     async def _key(self, req: dict[str, Any]) -> dict[str, Any]:
         keys = req.get("keys")
@@ -758,9 +755,8 @@ class Helper:
             argv = slots.key_argv(paced)
         except ValueError as e:
             raise Deny(str(e)) from None
-        return await self._input(req=req, argvs=[argv], intent=intent, risky=checks.risky_stems(intent),
-                                 presses_return=checks.presses_return(args), what=f"pulse {keys[:60]}",
-                                 shown="")
+        return await self._input(req=req, argvs=[argv], intent=intent, keys=args, text=None,
+                                 what=f"pulse {keys[:60]}", shown="")
 
     async def _screenshot(self, req: dict[str, Any]) -> dict[str, Any]:
         argv = ["grim"]

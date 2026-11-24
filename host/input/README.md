@@ -8,8 +8,9 @@ Jarvis TUI and `jarvis-stop` grant, revoke and confirm over a second socket the 
 reach. It replaces the S12 permission file, which the agent could forge.
 
 * `jarvis_input/checks.py` — pure checks: key parsing (ported from
-  `host/gentle-dot/extensions/pc-control-core.ts`), text limits, risky words, blocklist,
-  Return-confirmation apps, `open` validation, rate limiter.
+  `host/gentle-dot/extensions/pc-control-core.ts`), text limits, lookalike letters, blocklist,
+  the rule table of actions that ask first (`confirm_reasons`, S10a), `open` validation, rate
+  limiter.
 * `jarvis_input/launch.py` — `open` (S15): finds the desktop entry, parses `Exec`, and refuses
   anything the sandboxed daemon could rewrite. Reads files only.
 * `jarvis_input/server.py` — the two sockets, the in-memory permission, confirmations, and the
@@ -148,8 +149,8 @@ everything else as `-k`: key names, or `0x…` keysyms for text, so argv has no 
   `niri msg action focus-window --id <id>` and polls `focused-window` for up to 500 ms: ok only
   once that window is focused, otherwise an error.
 * `type`/`key` with `window_id` (S16), all under the action lock: the target gets the `focus`
-  checks (listed, not blocklisted, not a terminal); risky-word and Return-in-browser
-  confirmations name the **target** window and are asked before anything is focused (so the user
+  checks (listed, not blocklisted, not a terminal); confirmations (S10a, step 5 below) name
+  and are judged on the **target** window and are asked before anything is focused (so the user
   can answer in the TUI); then the currently focused window id is remembered; if the target is
   not already focused it is focused, confirmed (≤ 500 ms) and given 400 ms to settle (Electron
   apps such as VS Code drop keys sent right after they regain focus), focus is re-checked against the target right before `wtype`,
@@ -242,13 +243,24 @@ For `type` and `key`, in order:
    prompts, desktop portals, GParted; **and terminals** (foot, kitty, Alacritty, Ghostty,
    WezTerm, GNOME Console/Terminal, Konsole, xterm, …), because typing into a terminal would
    run commands outside the daemon's sandbox and could drive the Jarvis TUI itself (`/control on`).
-5. Confirmation through `control.sock` when the text or intent has a word starting with a
-   risky stem (`envi`, `pag`, `compr`, `elimin`, `borr`, `vaci`, `submit`, `send`, `pay`, `buy`,
-   `delet`, `clear`, `wipe`; text is NFKC-normalized, zero-width/format characters dropped, accents stripped,
-   case-folded), or when Return/KP_Enter (any modifiers, or a newline in `text`) goes to a
-   browser, mail or messaging app (Brave, Firefox, Chromium/Chrome, Zen, Thunderbird,
-   Evolution, Telegram, Signal, Discord, Slack, WhatsApp, Element, Teams, …). No subscriber =
-   denied immediately; no answer within 30 s = denied; subscribers all gone = denied.
+5. Confirmation through `control.sock` **by the action, never by words** (S10a,
+   `checks.confirm_reasons`). It asks when:
+   * **Sending in a chat or mail** (“enviar en un chat o correo”): any Return keysym anywhere in
+     the keys (`Return`, `ctrl+Return`, `KP_Enter`, `ISO_Enter`, …, any modifiers) or a newline
+     in `text`, going to a mail or messaging app (Thunderbird, Evolution, Geary, Telegram,
+     Signal, Discord, Slack, WhatsApp, Element, Teams, …) or to a browser (Brave, Firefox,
+     Chromium/Chrome, Zen, …) whose window title shows web chat or mail (WhatsApp, Telegram,
+     Gmail, Outlook, Discord, Messenger, Slack, Teams, Proton Mail, …; whole words, case and
+     accents ignored). Return in a browser on any other page (search, forms) does not ask, nor
+     in any other app.
+   * **Clearing all content** (“borrar todo el contenido”): `ctrl+a` followed later in the same
+     key sequence by `Delete`, `BackSpace` or `ctrl+x`; or Vim's `g g d shift+g`.
+   * **Closing a window or app** (“cerrar la ventana”): `alt+F4`, `ctrl+w` or `ctrl+q` (extra
+     modifiers included, e.g. `ctrl+shift+w`).
+
+   Words in the text or the intent (“borrar”, “enviar”, “pagar”, …) never ask by themselves;
+   the intent is only shown in the prompt. No subscriber = denied immediately; no answer within
+   30 s = denied; subscribers all gone = denied.
 6. Focus re-checked right before `wtype`: a different window id or a now-blocked window = denied.
 
 With `window_id` (S16), steps 3–4 apply to the target window from `niri msg -j windows` instead
@@ -318,17 +330,20 @@ focus is back on it afterwards):
 | browser: type `hola mundo` | complete right after the window gets focus (L19-L22); every keydown on a character `code` |
 | browser: type the L27 sentence + `’ — …` | complete text, legacy keysyms included, character codes only |
 | browser: type ~100 distinct characters | complete text over several wtype runs, character codes only |
-| browser: key `Escape g g d shift+g` | keydowns `Escape g g d G`, Escape with `code` `Escape` (L24-L25), letters on character codes; textarea `ggdG` |
-| browser: key `ctrl+a Delete` | keydowns `a`/`KeyA` and `Delete`/`Delete`; textarea emptied |
+| browser: key `Escape g g d shift+g`, confirmed with a held `y` | asked (S10a); keydowns `Escape g g d G`, Escape with `code` `Escape` (L24-L25), letters on character codes; textarea `ggdG` |
+| browser: key `ctrl+a Delete`, confirmed with a held `y` | asked (S10a); keydowns `a`/`KeyA` and `Delete`/`Delete`; textarea emptied |
+| browser: key `Return` on a plain page | no confirmation (S10a; no subscriber, so a prompt would deny it); keydown `Enter`/`Enter` |
 | browser: `screenshot` with `window_id` (T26) | the target page painted magenta is ≥ 5% of the PNG (decoded with stdlib `zlib`), `window_id` echoed; skipped without `grim` |
 | vscode+vim: key `i`, type `hola mundo` | INSERT mode, buffer exactly `hola mundo`, character codes only (desktop-e2e L2) |
-| vscode+vim: key `Escape g g d shift+g` | buffer empty, NORMAL mode (L23-L25) |
+| vscode+vim: key `Escape g g d shift+g`, confirmed with a held `y` (every clear below too) | asked (S10a); buffer empty, NORMAL mode (L23-L25) |
 | vscode+vim: key `i`, type the sentence | buffer exactly the sentence (L27) |
 | vscode+vim: key `Escape g g d shift+g` again | buffer empty, NORMAL mode |
 | vscode+vim: key `a`, then type ` Cada nuevo proyecto` right away | buffer exactly the text, INSERT mode (desktop-e2e L5-L7) |
 | vscode+vim: key `Escape g g d shift+g` a third time | buffer empty, NORMAL mode |
-| vscode+vim: key `a` needing a confirmation answered with a held `y`, then the text | buffer exactly the text, INSERT mode (desktop-e2e L8) |
+| vscode+vim: key `a` with the production intent “… sin borrar contenido.”, then the text | no confirmation (S10a: words never ask); buffer exactly the text, INSERT mode (desktop-e2e L5-L8) |
 | vscode+vim: key `Escape g g d shift+g` a fourth time | buffer empty, NORMAL mode |
+| vscode+vim: key `i`, type `borrar todo, enviar y pagar` | no confirmation (S10a); buffer exactly the text |
+| vscode+vim: key `Escape g g d shift+g` a fifth time | buffer empty, NORMAL mode |
 
 Output: `PASS|FAIL|SKIP: <case> (<s>) — <detail>` per case, then
 `summary: N passed, N failed, N skipped in Ns`. Exit **0** all ran cases passed, **1** a case

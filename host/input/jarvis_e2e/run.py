@@ -45,8 +45,11 @@ HOLA = "hola mundo"
 SENTENCE = "Hola mundo, este es un texto de prueba. ’ — …"  # L27 + legacy keysyms (ad4cf60)
 VIM_CLEAR = "Escape g g d shift+g"
 BACK_TO_BACK = " Cada nuevo proyecto"  # leading space and capital: Vim commands in NORMAL
-# the production intent (L5): "borrar" is a risk word, so the key needs a confirmation
-CONFIRM_INTENT = "Entrar en modo inserción al final del texto en VS Code sin borrar contenido."
+# the production intent (L5): it says "borrar", which asked before S10a; now only the action
+# counts, so the key 'a' must go through with no confirmation
+WORDS_INTENT = "Entrar en modo inserción al final del texto en VS Code sin borrar contenido."
+# Typed words that asked before S10a and must not now (no newline, a plain editor)
+RISKY_WORDS = "borrar todo, enviar y pagar"
 MARK_CSS, MARK_RGB = "rgb(255, 0, 255)", (255, 0, 255)  # the target page colour in the screenshot case
 SELECT_DELETE = "ctrl+a Delete"
 # More distinct characters than one wtype keymap has safe keycodes for (several wtype runs).
@@ -357,7 +360,7 @@ def browser_cases(run: Run, target: cdp.Cdp, wid: int, other: int) -> None:
     def keys() -> str:
         reset()
         run.focus_other(other)
-        run.key_into(wid, VIM_CLEAR)
+        run.key_confirmed_with_y(wid, VIM_CLEAR, "prueba e2e")  # the Vim clear asks first (S10a)
         time.sleep(0.2)
         events = target.evaluate("window.__keys")
         downs = keydowns(events)
@@ -369,7 +372,7 @@ def browser_cases(run: Run, target: cdp.Cdp, wid: int, other: int) -> None:
         value = target.evaluate("document.getElementById('t').value")
         assert value == "ggdG", f"textarea has {value!r}, expected 'ggdG'"
         run.check_focus_back(other)
-        return "keydowns Escape(code Escape) g g d G, focus restored"
+        return "confirmation asked; keydowns Escape(code Escape) g g d G, focus restored"
 
     run.case(f"browser: key {VIM_CLEAR!r} keydowns", keys)
 
@@ -377,16 +380,30 @@ def browser_cases(run: Run, target: cdp.Cdp, wid: int, other: int) -> None:
         reset()
         target.evaluate("document.getElementById('t').value = 'texto a quitar'; window.__keys = []; true")
         run.focus_other(other)
-        run.key_into(wid, SELECT_DELETE)
+        run.key_confirmed_with_y(wid, SELECT_DELETE, "prueba e2e")  # clearing all asks first (S10a)
         time.sleep(0.2)
         downs = keydowns(target.evaluate("window.__keys"))
         value = target.evaluate("document.getElementById('t').value")
         assert downs == [("a", "KeyA"), ("Delete", "Delete")], f"keydowns key/code {downs}"
         assert value == "", f"textarea has {value!r}, expected empty"
         run.check_focus_back(other)
-        return "keydowns a(KeyA) Delete(Delete), textarea empty, focus restored"
+        return "confirmation asked; keydowns a(KeyA) Delete(Delete), textarea empty, focus restored"
 
-    run.case(f"browser: key {SELECT_DELETE!r} empties a textarea", select_delete)
+    run.case(f"browser: key {SELECT_DELETE!r} asks, then empties a textarea", select_delete)
+
+    def return_on_a_page() -> str:
+        # S10a: Return in a browser that is not on web chat or mail goes through with no prompt
+        # (the helper has no subscriber here, so a prompt would deny the key).
+        reset()
+        run.focus_other(other)
+        run.key_into(wid, "Return")
+        time.sleep(0.2)
+        downs = keydowns(target.evaluate("window.__keys"))
+        assert downs == [("Enter", "Enter")], f"keydowns key/code {downs}"
+        run.check_focus_back(other)
+        return "no confirmation; keydown Enter(Enter), focus restored"
+
+    run.case("browser: Return on a plain page needs no confirmation", return_on_a_page)
 
     def screenshot() -> str:
         # T26/S17: the target page is painted magenta; the capture of its window must show it
@@ -456,13 +473,13 @@ def vscode_cases(run: Run, ws: cdp.Cdp, wid: int, other: int) -> None:
     def clear() -> str:
         before = text()
         run.focus_other(other)
-        run.key_into(wid, VIM_CLEAR)
+        run.key_confirmed_with_y(wid, VIM_CLEAR, "vaciar el documento")  # asks first (S10a)
         time.sleep(0.3)
         got, got_mode = text(), mode()
         assert got == "", f"buffer has {got!r} (was {before!r}), expected empty; vim mode {got_mode}"
         assert got_mode == "NORMAL", f"vim mode {got_mode}, expected NORMAL"
         run.check_focus_back(other)
-        return f"cleared {len(before)} chars, NORMAL mode, focus restored"
+        return f"confirmation asked; cleared {len(before)} chars, NORMAL mode, focus restored"
 
     def back_to_back() -> str:
         # The agent sends the mode key and the text as two calls with nothing in between: the
@@ -481,19 +498,20 @@ def vscode_cases(run: Run, ws: cdp.Cdp, wid: int, other: int) -> None:
         run.check_focus_back(other)
         return "mode key then text back to back: text complete, focus restored"
 
-    def confirmed_back_to_back() -> str:
-        # Production (L5-L7): the 'a' needed a TUI confirmation answered with `y`, then the text.
+    def words_back_to_back() -> str:
+        # Production (L5-L7): the 'a' came with an intent saying "sin borrar", which asked before
+        # S10a. Now words never ask: with no subscriber, a prompt would deny the key.
         assert text() == "", f"buffer not empty before typing: {text()!r}"
         assert mode() == "NORMAL", f"vim mode before 'a' is {mode()}"
         run.focus_other(other)
-        run.key_confirmed_with_y(wid, "a", CONFIRM_INTENT)
+        run.helper.agent({"op": "key", "keys": "a", "intent": WORDS_INTENT, "window_id": wid})
         run.type_into(wid, BACK_TO_BACK)
         time.sleep(0.3)
         got, got_mode = text(), mode()
         assert got == BACK_TO_BACK, f"buffer has {got!r}, expected {BACK_TO_BACK!r}; vim mode {got_mode}"
         assert got_mode == "INSERT", f"vim mode after 'a' and the text is {got_mode}"
         run.check_focus_back(other)
-        return "confirmed mode key then text: text complete, focus restored"
+        return "no confirmation for the intent's words; text complete, focus restored"
 
     run.case(f"vscode+vim: key 'i' then type {HOLA!r}", typed(HOLA))
     run.case(f"vscode+vim: key {VIM_CLEAR!r} empties the buffer", clear)
@@ -501,8 +519,11 @@ def vscode_cases(run: Run, ws: cdp.Cdp, wid: int, other: int) -> None:
     run.case(f"vscode+vim: key {VIM_CLEAR!r} empties it again", clear)
     run.case(f"vscode+vim: key 'a' then type {BACK_TO_BACK!r}, back to back", back_to_back)
     run.case(f"vscode+vim: key {VIM_CLEAR!r} empties it a third time", clear)
-    run.case(f"vscode+vim: key 'a' confirmed with y, then type {BACK_TO_BACK!r}", confirmed_back_to_back)
+    run.case(f"vscode+vim: key 'a' with a 'sin borrar' intent, no confirmation, then type {BACK_TO_BACK!r}",
+             words_back_to_back)
     run.case(f"vscode+vim: key {VIM_CLEAR!r} empties it a fourth time", clear)
+    run.case(f"vscode+vim: key 'i' then type {RISKY_WORDS!r}, no confirmation", typed(RISKY_WORDS))
+    run.case(f"vscode+vim: key {VIM_CLEAR!r} empties it a fifth time", clear)
 
 
 def execute(root: Path, args: argparse.Namespace) -> list[Result]:

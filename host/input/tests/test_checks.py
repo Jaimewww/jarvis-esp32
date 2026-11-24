@@ -84,51 +84,121 @@ class TextTest(unittest.TestCase):
         self.assertIsNotNone(checks.validate_text(None))  # type: ignore[arg-type]
 
 
-class RiskyTest(unittest.TestCase):
-    def test_stems(self) -> None:
-        cases = {
-            "envía el correo": ["envi"],
-            "Envíe ya": ["envi"],
-            "PAGAR ahora": ["pag"],
-            "compra esto": ["compr"],
-            "eliminar archivo": ["elimin"],
-            "borrá todo": ["borr"],
-            "Submit form": ["submit"],
-            "sending": ["send"],
-            "PayPal": ["pay"],
-            "buy now": ["buy"],
-            "Deleted": ["delet"],
-            "send and pay": ["send", "pay"],
-            # L23: "Vaciar el documento" emptied a document without a confirmation card.
-            "Vaciar el documento": ["vaci"],
-            "vacía todo": ["vaci"],
-            "clear the file": ["clear"],
-            "wipe it": ["wipe"],
-        }
-        for text, stems in cases.items():
-            with self.subTest(text=text):
-                self.assertEqual(checks.risky_stems(text), stems)
-
-    def test_not_risky(self) -> None:
-        for text in ["hola mundo", "resend", "un repago", "subir archivo", "pa ge", ""]:
-            with self.subTest(text=text):
-                self.assertEqual(checks.risky_stems(text), [])
-
-    def test_normalization(self) -> None:
-        self.assertEqual(checks.risky_stems("\uff53\uff45\uff4e\uff44"), ["send"])  # fullwidth (NFKC)
-        self.assertEqual(checks.risky_stems("se\u200bnd"), ["send"])  # zero-width space
-        self.assertEqual(checks.risky_stems("de\u00adlete"), ["delet"])  # soft hyphen
-        self.assertEqual(checks.risky_stems("e\u0301nviar"), ["envi"])  # combining accent
+class LookalikeTest(unittest.TestCase):
+    """Lookalike letters that turn a word into a risky one are still denied outright (S10a)."""
 
     def test_lookalikes(self) -> None:
         self.assertEqual(checks.lookalike_stems("s\u0435nd"), ["send"])  # Cyrillic e
         self.assertEqual(checks.lookalike_stems("\u0440ay"), ["pay"])  # Cyrillic er
         self.assertEqual(checks.lookalike_stems("b\u03c5y"), ["buy"])  # Greek upsilon
-        self.assertEqual(checks.lookalike_stems("send"), [])  # plain: risky, not a lookalike
-        self.assertEqual(checks.lookalike_stems("\u043f\u0440\u0438\u0432\u0435\u0442"), [])
+        self.assertEqual(checks.lookalike_stems("b\u043errar"), ["borr"])  # Cyrillic o
+        self.assertEqual(checks.lookalike_stems("s\u0435\u200bnd"), ["send"])  # plus zero-width space
+        self.assertEqual(checks.lookalike_stems("\uff42\u043errar"), ["borr"])  # fullwidth + Cyrillic
+        self.assertEqual(checks.lookalike_stems("hola", "\u0440agar"), ["pag"])  # any of the texts
 
-    def test_multiple_texts(self) -> None:
-        self.assertEqual(checks.risky_stems("hola", "enviar mensaje"), ["envi"])
+    def test_plain_words_are_not_lookalikes(self) -> None:
+        for text in ["send", "borrar todo", "enviar", "pagar", "hola mundo", "",
+                     "\u043f\u0440\u0438\u0432\u0435\u0442"]:  # real Russian: no Latin risky word
+            with self.subTest(text=text):
+                self.assertEqual(checks.lookalike_stems(text), [])
+
+    def test_word_gating_is_gone(self) -> None:
+        # S10a (2): words in the text or the intent never ask by themselves.
+        self.assertFalse(hasattr(checks, "risky_stems"))
+
+
+GMAIL = "Recibidos (3) - diego@example.com - Gmail"
+
+
+def reasons(app_id: str = "org.gnome.TextEditor", title: str = "Notas", *, keys: str | None = None,
+            text: str | None = None) -> list[str]:
+    return checks.confirm_reasons(app_id, title, keys=checks.parse_keys(keys) if keys is not None else None,
+                                  text=text)
+
+
+class ConfirmRulesTest(unittest.TestCase):
+    """S10a: the rule table of what asks the user first, by the action, never by words."""
+
+    SEND, CLEAR, CLOSE = "enviar en un chat o correo", "borrar todo el contenido", "cerrar la ventana"
+
+    def test_chat_and_mail_apps(self) -> None:
+        for app_id in ["org.mozilla.Thunderbird", "org.telegram.desktop", "signal", "discord", "Slack",
+                       "whatsapp-for-linux", "im.riot.Riot", "Element", "org.gnome.Geary", "vesktop",
+                       "com.github.eneshecan.WhatsAppForLinux", "teams-for-linux"]:
+            with self.subTest(app_id=app_id):
+                self.assertTrue(checks.is_chat_or_mail(app_id, "Algo"))
+        for app_id in ["org.gnome.TextEditor", "spotify", "", "code", "brave-browser", "firefox",
+                       "chromium", "google-chrome", "zen", "app.zen_browser.zen", "librewolf"]:
+            with self.subTest(app_id=app_id):
+                self.assertFalse(checks.is_chat_or_mail(app_id, "recetas - Buscar con Google"))
+
+    def test_web_chat_and_mail_in_a_browser_by_title(self) -> None:
+        for title in ["WhatsApp", "(2) WhatsApp Business", "Telegram Web", GMAIL, "Correo: Diego - Outlook",
+                      "#general | Servidor - Discord", "Messenger | Facebook", "general (Canal) - Slack",
+                      "TELEGRAM", "Whatsápp", "Inbox | diego | Proton Mail", "Chat | Microsoft Teams"]:
+            for app_id in ["brave-browser", "firefox", "chromium", "zen", "org.mozilla.firefox"]:
+                with self.subTest(app_id=app_id, title=title):
+                    self.assertTrue(checks.is_chat_or_mail(app_id, title))
+        for title in ["recetas - Buscar con Google", "Formulario de inscripción", "", "Inbox",
+                      "GitHub - pull request"]:
+            with self.subTest(title=title):
+                self.assertFalse(checks.is_chat_or_mail("brave-browser", title))
+        # A title only counts in a browser: an editor with a file called WhatsApp is no chat.
+        self.assertFalse(checks.is_chat_or_mail("org.gnome.TextEditor", "WhatsApp.md"))
+
+    def test_return_asks_only_in_chat_and_mail(self) -> None:
+        self.assertEqual(reasons("brave-browser", "recetas - Buscar con Google", keys="Return"), [])
+        self.assertEqual(reasons("brave-browser", "WhatsApp", keys="Return"), [self.SEND])
+        self.assertEqual(reasons("brave-browser", GMAIL, keys="ctrl+Return"), [self.SEND])
+        self.assertEqual(reasons("org.telegram.desktop", "Telegram", keys="Return"), [self.SEND])
+        self.assertEqual(reasons("org.mozilla.Thunderbird", "Redactar", keys="ctrl+Return"), [self.SEND])
+        self.assertEqual(reasons(keys="Return"), [])  # a plain editor
+        self.assertEqual(reasons(keys="ctrl+Return"), [])
+
+    def test_any_return_name_anywhere_in_the_sequence(self) -> None:
+        for keys in ["KP_Enter", "kp_ENTER", "ctrl+a enter", "Tab Tab Return", "shift+Return", "iso_enter",
+                     "LineFeed", "3270_Enter", "h o l a ctrl+RETURN"]:
+            with self.subTest(keys=keys):
+                self.assertIn(self.SEND, reasons("discord", "Discord", keys=keys))
+        self.assertEqual(reasons("discord", "Discord", keys="ctrl+l Tab a"), [])
+
+    def test_newline_in_typed_text_is_return(self) -> None:
+        self.assertEqual(reasons("signal", "Signal", text="hola\n"), [self.SEND])
+        self.assertEqual(reasons("brave-browser", "WhatsApp", text="hola\nchau"), [self.SEND])
+        self.assertEqual(reasons("signal", "Signal", text="hola"), [])
+        self.assertEqual(reasons("brave-browser", "recetas", text="hola\n"), [])
+        self.assertEqual(reasons(text="línea 1\nlínea 2\n"), [])
+
+    def test_words_never_ask(self) -> None:
+        for text in ["borrar todo", "enviar el correo", "pagar la factura", "BORRAR", "delete all", "send it",
+                     "comprar ya", "vaciar"]:
+            with self.subTest(text=text):
+                self.assertEqual(reasons(text=text), [])
+                self.assertEqual(reasons("signal", "Signal", text=text), [])  # no newline: no send
+        self.assertEqual(reasons(keys="a"), [])  # the intent "sin borrar" is never looked at
+        self.assertEqual(reasons(keys="ctrl+v"), [])
+
+    def test_clear_all_content(self) -> None:
+        for keys in ["ctrl+a Delete", "ctrl+a BackSpace", "ctrl+a ctrl+x", "ctrl+A del", "ctrl+a backspace",
+                     "ctrl+a Escape Delete", "Escape g g d shift+g", "g g d shift+G", "Escape g g d shift+g i"]:
+            with self.subTest(keys=keys):
+                self.assertEqual(reasons(keys=keys), [self.CLEAR])
+        for keys in ["Delete", "BackSpace", "ctrl+x", "ctrl+a", "Delete ctrl+a", "ctrl+a ctrl+c",
+                     "g g", "d shift+g", "g g d g", "ctrl+l Delete"]:
+            with self.subTest(keys=keys):
+                self.assertEqual(reasons(keys=keys), [])
+
+    def test_close_window_or_app(self) -> None:
+        for keys in ["alt+F4", "alt+f4", "ctrl+w", "ctrl+q", "ctrl+W", "ctrl+shift+w", "Escape ctrl+q"]:
+            with self.subTest(keys=keys):
+                self.assertEqual(reasons(keys=keys), [self.CLOSE])
+        for keys in ["F4", "w", "q", "shift+w", "alt+w", "ctrl+e"]:
+            with self.subTest(keys=keys):
+                self.assertEqual(reasons(keys=keys), [])
+
+    def test_several_reasons_in_order_once_each(self) -> None:
+        self.assertEqual(reasons("discord", "Discord", keys="ctrl+a Delete Return ctrl+w Return"),
+                         [self.SEND, self.CLEAR, self.CLOSE])
 
 
 class FocusTest(unittest.TestCase):
@@ -166,16 +236,6 @@ class FocusTest(unittest.TestCase):
         for app_id in ["org.gnome.TextEditor", "brave-browser", "firefox", "spotify"]:
             with self.subTest(app_id=app_id):
                 self.assertIsNone(checks.blocked_reason(win(app_id), screenshot=False))
-
-    def test_confirm_apps(self) -> None:
-        for app_id in ["brave-browser", "firefox", "chromium", "google-chrome", "org.mozilla.Thunderbird",
-                       "org.telegram.desktop", "signal", "discord", "Slack", "whatsapp-for-linux",
-                       "im.riot.Riot", "Element", "zen", "app.zen_browser.zen", "librewolf"]:
-            with self.subTest(app_id=app_id):
-                self.assertTrue(checks.needs_return_confirm(app_id))
-        for app_id in ["org.gnome.TextEditor", "spotify", "", "code"]:
-            with self.subTest(app_id=app_id):
-                self.assertFalse(checks.needs_return_confirm(app_id))
 
 
 class OpenValidationTest(unittest.TestCase):
