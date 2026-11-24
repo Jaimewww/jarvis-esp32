@@ -117,3 +117,7 @@ lands on `feat/stt-whisper` (worktree `pi-stt`).
 - L10 (2026-11-23, user): "ya no usare openia usare models de claude". P3 compares Claude models
   (Haiku 5.5 for chat, Sonnet 5.5 for PC tasks, Opus 5.5 as reference) instead of gpt-6.1-sol;
   the OpenAI baseline (L8/L9) remains the "before" reference.
+- L11 (2026-11-23, user): the daemon offers only OpenAI for now (Anthropic needs an API key; the
+  Claude subscription is refused), so "hasta solucionar usemos OPENIA". P3 compares OpenAI
+  models first: gpt-6.1-sol low (current), gpt-6-luna off, gpt-6.1-terra off, gpt-5.4-mini off,
+  gpt-5.4-nano off. Claude models get the same bench once a key is connected.
