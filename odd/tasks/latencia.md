@@ -69,7 +69,7 @@ lands on `feat/stt-whisper` (worktree `pi-stt`).
 - [x] T8 S7 — P3 model per request type. Closed by L12/L13: the user stays on OpenAI (ChatGPT), and no OpenAI model or thinking level beats gpt-6.1-sol low; no Claude comparison.
 - [ ] T9 S8 — P4 first signal plus sentence TTS on Piper. Route: TBD (after #31/#32).
 - [ ] T10 S9 — P2 composite tools, no screenshot by default, clock in the agent context. Route: inline, branch feat/pc-composite (worktree pi-comp, on feat/pc-media), PR #36: af91b89 (pc_write_in/pc_run, AGENTS.md, before_agent_start clock), f84ee4d (review advisories: no unmatched-window fallback, abort). Native review approved (risk+reliability, item 2); node tests 114 passed, test_install 201 passed. Installed live 2026-11-24. Pending: re-bench `question` + `pc` with the user.
-- [ ] T11 S10 — Confirmation by action (security, own PR, native review). Route: explore → user decisions (L16) → gentle-ai-worker, branch feat/confirm-by-action (worktree pi-confirm) on feat/pc-composite, PR #37: d4f92f6, b6b2990 (D23), 7c8edb1 (L17 hardening). Native review approved both candidates; independent verify PASS on S10a and L17 (a)-(e); helper 247 OK, node 114 pass. Installed live 2026-11-24. Pending: desktop e2e (host/e2e/run.sh) with the user. Follow-up: per-window cross-call memory, ctrl+a ctrl+v.
+- [x] T11 S10 — Confirmation by action (security, own PR, native review). Route: explore → user decisions (L16) → gentle-ai-worker, branch feat/confirm-by-action (worktree pi-confirm) on feat/pc-composite, PR #37: d4f92f6, b6b2990 (D23), 7c8edb1 (L17 hardening). Native review approved both candidates; independent verify PASS on S10a and L17 (a)-(e); helper 247 OK, node 114 pass. Installed live 2026-11-24. Desktop e2e (L18): pi-confirm 17/17 on the rerun. Follow-up: per-window cross-call memory, ctrl+a ctrl+v.
 - [ ] T12 S11 — P5 local AI measurement. Route: TBD.
 - [ ] T13 S12 — Cleanup of worktrees and branches. Route: inline.
 - [ ] T14 S5 — Find out why the bench's catalog and PC tools fail (L6), and make the bench flag a request that did not do its job (failed tool or no tool) as an error. Re-run the PC baseline. Route: gentle-ai-worker. Bench now has a `done k/n` column (53371d7); pc-terminal was replaced by pc-archivos (9443579); host 243 passed, 6 skipped. Pending: the user re-runs with `/control on`.
@@ -177,3 +177,11 @@ lands on `feat/stt-whisper` (worktree `pi-stt`).
   host/README.md:410 still says "las palabras de riesgo". Not changed (fail-safe or user
   choice): common words in the title pattern over-ask; web chats outside the title list
   (Google Chat, LinkedIn) do not ask.
+- L18 (2026-11-24, desktop e2e `host/e2e/run.sh`, run by the user): first run on pi-confirm
+  16/17. Every T11 case passed (clears asked 5/5 in Vim plus ctrl+a Delete in the browser;
+  Return on a plain page, the "sin borrar" intent and typing "borrar todo, enviar y pagar" did
+  not ask). The one failure was "vscode+vim: key 'i' then type 'Hola mundo, … ’ — …'":
+  "characters typed on non-character keycodes (key/code): Meta/MetaLeft" (typing keycode
+  slots; slots.py is unchanged by T11). Rerun: pi-comp (base) 14/14 and pi-confirm 17/17, the
+  same case passing on both. The failure is intermittent, not caused by T11; watch it in later
+  runs.
