@@ -395,6 +395,34 @@ frases (P4), menos consultas en las tareas de la PC (P2) y medir IA local (P5).
 0,2-0,3 s en GPU (y unos 15 s si cae a CPU, por eso se avisa). Metas previstas: orden del
 catálogo de ~4,9 s a ~0,5-1 s; tarea de la PC de ~48 s a ~10-15 s.
 
+## D23 — Confirmación según la acción, no según las palabras
+
+El ayudante `jarvis-input` pide confirmación en la TUI antes de una acción irreversible
+según **la acción**, nunca según las palabras del texto escrito o de la intención
+(S10a, decisiones del usuario en L16 de `odd/tasks/latencia.md`). Reemplaza la parte de
+las palabras de riesgo de los resguardos de D20 y concreta el punto «confirmación según la
+acción» de D22.
+
+| Acción | ¿Pregunta? |
+|---|---|
+| Enter (`Return`, `ctrl+Return` o cualquier Enter en una secuencia, o un salto de línea en el texto) en una app de chat o correo, o en un navegador cuyo título muestra un chat o correo web (WhatsApp, Telegram, Gmail, Outlook, Discord, Messenger, Slack…) | Sí |
+| Enter en un navegador en cualquier otra página (búsquedas, formularios) o en otra app | No |
+| Texto o intención con palabras como «borrar», «enviar» o «pagar» | No; la intención solo se muestra en el aviso |
+| Borrar todo el contenido: `ctrl+a` seguido de `Delete`, `BackSpace` o `ctrl+x`, o `g g d shift+g` de Vim | Sí |
+| Cerrar una ventana o app: `alt+F4`, `ctrl+w`, `ctrl+q` | Sí |
+
+Se mantienen sin cambios: la lista de bloqueo (terminales, contraseñas, ajustes), el
+rechazo de letras que imitan palabras de riesgo (cirílicas o griegas), los 30 s de espera
+y la denegación sin respuesta, sin TUI conectada o al revocar, y el aviso en la TUI. La
+tabla vive en el código (`host/input/jarvis_input/checks.py`, `confirm_reasons`).
+
+**Por qué:** con las palabras, el agente preguntaba por «entrar en modo inserción sin
+borrar contenido» (desktop-e2e L5-L8) y no por un `ctrl+a Delete` con una intención
+inocente; la confirmación dependía de cómo redactaba el modelo, no de lo que hacía.
+
+**Descartado:** preguntar por Enter en cualquier navegador (pregunta en cada búsqueda) y
+seguir preguntando por las palabras del texto escrito.
+
 ## Decisiones abiertas
 
 - **Motor de la charla de voz** (D14).

@@ -26,8 +26,9 @@ agente (pc_*) ── agent.sock ────┘   la pantalla)  └── (argv,
 - **`jarvis-input`** (`host/input/`, servicio de usuario en `graphical-session.target`) es el
   único proceso con acceso a Wayland y niri. Guarda el permiso de `/control on` en memoria
   (reiniciarlo = permiso revocado) y hace todos los controles de S12: lista de bloqueo por
-  ventana enfocada, re-chequeo de foco, palabras de riesgo con confirmación en la TUI (30 s),
-  10 acciones/s, 2000 caracteres.
+  ventana enfocada, re-chequeo de foco, confirmación en la TUI (30 s) según la acción y no
+  según las palabras (S10a: Enter en un chat o correo, borrar todo el contenido, cerrar la
+  ventana), 10 acciones/s, 2000 caracteres.
 - **`gentle-dot.service`** corre aislado: sin Wayland, X11, niri, bus de sesión ni
   `jarvis-control/`; extensiones y ayudante de solo lectura (`host/systemd/`).
 - **Esta extensión** es un cliente fino de `$XDG_RUNTIME_DIR/jarvis/agent.sock`: un JSON por
@@ -112,7 +113,9 @@ bash host/systemd/test_install.sh            # instalador en un sandbox
 5. `/control on` en la TUI; enfocar un editor y pedir "escribe hola" → aparece.
 6. `pc_key` con `ctrl+l` en el navegador → selecciona la barra de direcciones.
 7. "Saca una captura de pantalla y dime qué ves" → describe la pantalla.
-8. "Escribe: envía el correo" → la TUI pide confirmación; no contestar en 30 s → no se escribe.
+8. "Escribe: envía el correo" en un editor → se escribe sin confirmación (las palabras no
+   preguntan, S10a). Con Gmail o WhatsApp Web abierto en Brave, pedir que mande un mensaje
+   (Enter) → la TUI pide confirmación; no contestar en 30 s → no se manda.
 9. Enfocar KeePassXC (u otra de la lista) y pedir escribir → se niega.
 10. `systemctl --user stop jarvis-input` (desde tu terminal) y pedir "abre Brave" → el agente
     dice `jarvis-input is not running`.

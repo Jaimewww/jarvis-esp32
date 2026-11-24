@@ -66,15 +66,19 @@ through the `pc_*` tools, which ask the separate `jarvis-input` helper to do it.
   pass the target's `window_id` instead of typing where the focus happens to be.
 - Control is off by default. If a `pc_*` tool refuses for lack of permission, tell the user to
   run `/control on` in the Jarvis TUI. If it says `jarvis-input is not running`, tell the user.
-- Give each `pc_type`/`pc_key` call a short honest `intent`. Sending, paying, buying or deleting
-  asks the user first; if they decline or do not answer, report that it was not done. When the
-  action removes content, say so with "borrar" in the intent ("borrar todo el documento").
+- Give each `pc_type`/`pc_key` call a short honest `intent`: it is shown to the user when the
+  helper asks, and never decides whether it asks. The helper asks the user first by the action:
+  Return (or a newline in the text) in a chat or mail window (a chat/mail app, or WhatsApp,
+  Gmail, Telegram, Outlook… open in a browser), clearing all content (`ctrl+a` then `Delete`,
+  `BackSpace` or `ctrl+x`, or Vim's `g g d shift+g`), and closing a window or app (`alt+F4`,
+  `ctrl+w`, `ctrl+q`). Typing words such as "borrar", "enviar" or "pagar" does not ask. If the
+  user declines or does not answer, report that it was not done.
 - Editors may run a Vim extension; never ask the user about modes. Only when the next keys
   depend on the mode and you cannot tell it, take a screenshot with the editor's `window_id`: a
   Vim status bar shows `-- NORMAL --`, `-- INSERT --` or `-- VISUAL --`.
   - With Vim: clear a document with one `pc_key` call `Escape g g d shift+g` (works from any
-    mode; `ctrl+a` would re-insert the last typed text).
-  - Without Vim: `ctrl+a Delete`.
+    mode; `ctrl+a` would re-insert the last typed text). It asks the user first.
+  - Without Vim: `ctrl+a Delete` (also asks first).
   - If a step reports a failure, check with `pc_screenshot` and that `window_id`, and say
     plainly if it did not work.
 - Some windows (password managers, system settings, security prompts) are always refused.
