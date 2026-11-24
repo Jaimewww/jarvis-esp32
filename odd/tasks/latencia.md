@@ -56,7 +56,7 @@ lands on `feat/stt-whisper` (worktree `pi-stt`).
 - [x] T8 S7 — P3 model per request type. Closed by L12/L13: the user stays on OpenAI (ChatGPT), and no OpenAI model or thinking level beats gpt-6.1-sol low; no Claude comparison.
 - [ ] T9 S8 — P4 first signal plus sentence TTS on Piper. Route: TBD (after #31/#32).
 - [ ] T10 S9 — P2 composite tools, no screenshot by default, clock in the agent context. Route: inline, branch feat/pc-composite (worktree pi-comp, on feat/pc-media), PR #36: af91b89 (pc_write_in/pc_run, AGENTS.md, before_agent_start clock), f84ee4d (review advisories: no unmatched-window fallback, abort). Native review approved (risk+reliability, item 2); node tests 114 passed, test_install 201 passed. Installed live 2026-11-24. Pending: re-bench `question` + `pc` with the user.
-- [ ] T11 S10 — Confirmation by action (security, own PR, native review). Route: TBD.
+- [ ] T11 S10 — Confirmation by action (security, own PR, native review). Route: explore the current confirmation rules → design for the user's approval → gentle-ai-worker, branch feat/confirm-by-action on feat/pc-composite.
 - [ ] T12 S11 — P5 local AI measurement. Route: TBD.
 - [ ] T13 S12 — Cleanup of worktrees and branches. Route: inline.
 - [ ] T14 S5 — Find out why the bench's catalog and PC tools fail (L6), and make the bench flag a request that did not do its job (failed tool or no tool) as an error. Re-run the PC baseline. Route: gentle-ai-worker. Bench now has a `done k/n` column (53371d7); pc-terminal was replaced by pc-archivos (9443579); host 243 passed, 6 skipped. Pending: the user re-runs with `/control on`.
@@ -140,3 +140,6 @@ lands on `feat/stt-whisper` (worktree `pi-stt`).
   did not drop (4-6 → 4-5). But each call now costs ~10-13 s instead of ~5 s, including
   one-call questions with no PC tools (cuenta 5.33 → 12.32), so the totals did not improve.
   Pending: per-call timings (`--json`) to tell provider latency from a T10 side effect.
+- L15 (2026-11-24, user): "eso de medicion mejor ahgamolo cuando jaime haga sus cambios. lo
+  siguiente si hagamos". The per-call bench waits for P1 (T7); T11 starts now. Jaime was sent
+  the P1 request by WhatsApp.
