@@ -63,7 +63,7 @@ lands on `feat/stt-whisper` (worktree `pi-stt`).
 - [x] T2 S2 — Review and approve #31/#32 with the two notes. Route: inline (gh). Both approved 2026-11-23.
 - [x] T3 S3,S4 — Latency proposal PR with decisions A-D in docs/decisiones.md (D22). Route: inline. Commit eff5b6b, PR #33.
 - [ ] T4 S5 — Per-stage turn timing plus `jarvis.bench` baseline. Route: gentle-ai-worker. Code done on feat/turn-timing (turntrace.py, bench.py with 14 fixed requests, PC/desktop behind --include-pc; host 240 passed, 6 skipped). Pending: baseline run with the user.
-- [ ] T5 S5 — STT CPU-fallback warning. Route: inline.
+- [x] T5 S5 — STT CPU-fallback warning. Route: gentle-ai-worker, branch feat/stt-cpu-warning (worktree pi-sttwarn) on feat/stt-whisper, PR #38: c4df873. whisper-server reports its device only on its stderr, so an STT stage slower than JARVIS_STT_SLOW_MS (3000 ms) counts as CPU: one log WARNING per process, an optional `warning` on the slow turn_stage{stt} (additive contract field), and a TUI notification. Backend 60 passed/6 skipped, host 124 passed/4 skipped. Native assess: medium, review not due.
 - [x] T6 S4B,S6 — Define the basic catalog: docs/catalogo-basico.md (phrase table = test cases, with "no entran" rows). Route: inline.
 - [ ] T7 S6 — P1 fast path in the backend. Route: Jaime (L5); we review.
 - [x] T8 S7 — P3 model per request type. Closed by L12/L13: the user stays on OpenAI (ChatGPT), and no OpenAI model or thinking level beats gpt-6.1-sol low; no Claude comparison.
