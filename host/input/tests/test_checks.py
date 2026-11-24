@@ -295,7 +295,6 @@ class CrossCallTest(unittest.TestCase):
                 self.assertEqual(after(("keys", first), ("keys", second))[0], [])
         self.assertEqual(after(("keys", "ctrl+a"), ("text", "hola"), ("text", "chau"))[0], [])
         self.assertEqual(after(("keys", "ctrl+a"), ("text", "hola"), ("keys", "Delete"))[0], [])
-        self.assertEqual(after(("keys", "ctrl+a ctrl+c"), ("keys", "ctrl+v"))[0], [])
         self.assertEqual(after(("keys", "g"), ("keys", "d shift+g"))[0], [])
         self.assertEqual(after(("text", "hola"), ("keys", "Delete"))[0], [])
 
@@ -318,7 +317,65 @@ class CrossCallTest(unittest.TestCase):
         self.assertEqual(tails.get(7), checks.KeyTail())  # forgotten after the ttl
         tails.record(7, pending)
         tails.record(8, checks.KeyTail(select_all=False))
-        self.assertEqual(tails.get(7), checks.KeyTail())  # targeting another window clears it
+        self.assertEqual(tails.get(7), pending)  # T16: an action on another window keeps it
+
+    def test_tails_are_bounded_lru(self) -> None:
+        now = [100.0]
+        tails = checks.KeyTails(ttl=60, clock=lambda: now[0])
+        _, pending = after(("keys", "ctrl+a"))
+        for wid in range(1, checks.TAIL_WINDOWS + 1):
+            tails.record(wid, pending)
+        tails.record(1, pending)  # window 1 is now the most recent; 2 is the least recent
+        tails.record(100, pending)
+        self.assertEqual(tails.get(2), checks.KeyTail())  # evicted
+        for wid in [1, 100, *range(3, checks.TAIL_WINDOWS + 1)]:
+            self.assertEqual(tails.get(wid), pending, wid)
+        self.assertLessEqual(checks.TAIL_WINDOWS, 8)
+
+    def test_tails_expire_per_entry(self) -> None:
+        now = [100.0]
+        tails = checks.KeyTails(ttl=60, clock=lambda: now[0])
+        _, pending = after(("keys", "ctrl+a"))
+        tails.record(7, pending)
+        now[0] += 30
+        tails.record(8, pending)
+        now[0] += 31
+        self.assertEqual(tails.get(7), checks.KeyTail())
+        self.assertEqual(tails.get(8), pending)
+
+    def test_failed_run_keeps_a_pending_select_all(self) -> None:
+        _, pending = after(("keys", "ctrl+a"))
+        tail = checks.next_tail(pending, text="hola", failed=True)  # maybe nothing was typed
+        self.assertEqual(checks.confirm_reasons("org.gnome.TextEditor", "Notas", keys=["-k", "Delete"],
+                                                tail=tail), [self.CLEAR])
+        tail = checks.next_tail(checks.KeyTail(), keys=checks.parse_keys("ctrl+a"), failed=True)
+        self.assertTrue(tail.select_all)  # maybe it was pressed
+
+
+class ClearOverSelectAllTest(unittest.TestCase):
+    """T16: paste, Return and Tab over a pending select-all replace everything: they ask."""
+
+    CLEAR = "borrar todo el contenido"
+
+    def test_asks(self) -> None:
+        for second in ["ctrl+v", "ctrl+shift+v", "shift+Insert", "Return", "KP_Enter", "shift+Return", "Tab"]:
+            with self.subTest(second=second):
+                self.assertEqual(after(("keys", "ctrl+a"), ("keys", second))[0], [self.CLEAR])
+                self.assertEqual(after(("keys", "ctrl+a " + second))[0], [self.CLEAR])
+        for text in ["\n", "\t"]:
+            with self.subTest(text=text):
+                self.assertEqual(after(("keys", "ctrl+a"), ("text", text))[0], [self.CLEAR])
+        self.assertEqual(after(("keys", "ctrl+a ctrl+c"), ("keys", "ctrl+v"))[0], [self.CLEAR])
+        self.assertEqual(after(("keys", "ctrl+Home ctrl+shift+End"), ("keys", "ctrl+v"))[0], [self.CLEAR])
+
+    def test_does_not_ask(self) -> None:
+        for second in ["ctrl+c", "ctrl+Insert", "Right", "Home", "shift+Tab", "ctrl+Return", "Escape"]:
+            with self.subTest(second=second):
+                self.assertEqual(after(("keys", "ctrl+a"), ("keys", second))[0], [])
+        for keys in ["ctrl+v", "shift+Insert", "Return", "Tab"]:  # nothing selected
+            with self.subTest(keys=keys):
+                self.assertEqual(after(("keys", keys))[0], [])
+        self.assertEqual(after(("keys", "ctrl+a ctrl+v"), ("keys", "Return"))[0], [])  # consumed
 
 
 class FocusTest(unittest.TestCase):

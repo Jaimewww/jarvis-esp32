@@ -411,10 +411,12 @@ acción» de D22.
 | Borrar todo el contenido: `ctrl+a` seguido de `Delete`, `BackSpace` o `ctrl+x`, o `g g d shift+g` de Vim | Sí |
 | Cerrar una ventana o app: `alt+F4`, `ctrl+w`, `ctrl+q` | Sí |
 | Equivalentes (L17): `Tab` y luego `space` o Enter en chat o correo; en un navegador, cambiar de pestaña (`ctrl+Tab`, `ctrl+1..9`…) y luego Enter; `KP_Delete`; `ctrl+Home ctrl+shift+End` y borrar; `ggdG` o `:%d` en el texto; `ctrl+F4`, `super+w`, `super+q`, `super+shift+e`, `ctrl+alt+Delete` | Sí |
-| Borrado repartido en dos llamadas a la misma ventana (`ctrl+a` y luego `Delete` o escribir encima; `g g` y luego `d shift+g`), dentro de 60 s | Sí |
+| Borrado repartido en dos llamadas a la misma ventana (`ctrl+a` y luego `Delete` o escribir encima; `g g` y luego `d shift+g`), dentro de 60 s, aunque haya acciones en otras ventanas en el medio (T16) | Sí |
+| Pegar (`ctrl+v`, `shift+Insert`), Enter o `Tab` (o un salto de línea o tabulador en el texto) sobre un `ctrl+a` pendiente (T16) | Sí |
 
-El ayudante recuerda en memoria la cola de la última acción en una ventana (L17 (a)); una
-acción negada no la cambia. Justo antes de `wtype` vuelve a evaluar con el título recién
+El ayudante recuerda en memoria la cola de la última acción en cada ventana (L17 (a); T16:
+hasta 8 ventanas, se olvida la usada hace más tiempo, 60 s cada una); una acción negada no la
+cambia, y un texto cortado entre corridas de `wtype` solo cuenta lo que se escribió. Justo antes de `wtype` vuelve a evaluar con el título recién
 leído: un motivo que el usuario no confirmó niega sin preguntar otra vez (L17 (c)).
 
 Se mantienen sin cambios: la lista de bloqueo (terminales, contraseñas, ajustes), el

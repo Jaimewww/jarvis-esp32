@@ -899,13 +899,74 @@ class CrossCallTest(Base):
         self.assertFalse((await self._asks({"op": "type", "text": "hola"}, allow=False))["ok"])
         self.assertEqual(len(self.calls("wtype")), 1)
 
-    async def test_another_window_clears_the_tail(self) -> None:
+    async def test_another_window_keeps_the_tail(self) -> None:
+        # T16: ctrl+a on A, any action on B, then Delete on A still asks
         self.assertEqual(await self._no_prompt({"op": "key", "keys": "ctrl+a"}), {"ok": True})
         self.focus(NOTEPAD)
         self.assertEqual(await self._no_prompt({"op": "key", "keys": "Delete"}), {"ok": True})
+        self.assertEqual(await self._no_prompt({"op": "type", "text": "hola"}), {"ok": True})
         self.focus(EDITOR)
-        self.assertEqual(await self._no_prompt({"op": "key", "keys": "Delete"}), {"ok": True})
+        tail = self.helper._tails.get(EDITOR["id"])
+        self.assertFalse((await self._asks({"op": "key", "keys": "Delete"}, allow=False))["ok"])
         self.assertEqual(len(self.calls("wtype")), 3)
+        self.assertEqual(self.helper._tails.get(EDITOR["id"]), tail)
+        self.assertEqual(await self._asks({"op": "key", "keys": "Delete"}, allow=True), {"ok": True})
+        self.assertEqual(len(self.calls("wtype")), 4)
+
+    async def test_paste_return_tab_over_pending_select_all(self) -> None:
+        for second in [{"op": "key", "keys": "ctrl+v"}, {"op": "key", "keys": "shift+Insert"},
+                       {"op": "key", "keys": "Return"}, {"op": "key", "keys": "Tab"},
+                       {"op": "type", "text": "\n"}, {"op": "type", "text": "\t"}]:
+            with self.subTest(second=second):
+                self.helper._tails = server.checks.KeyTails()
+                self.assertEqual(await self._no_prompt({"op": "key", "keys": "ctrl+a"}), {"ok": True})
+                n = len(self.calls("wtype"))
+                self.assertFalse((await self._asks(second, allow=False))["ok"])
+                self.assertEqual(len(self.calls("wtype")), n)
+        self.helper._tails = server.checks.KeyTails()
+        self.assertEqual(await self._no_prompt({"op": "key", "keys": "ctrl+a ctrl+c"}), {"ok": True})
+
+    @staticmethod
+    def _gg_at_chunk_end() -> str:
+        """Text typed in two wtype runs whose first run ends with "gg"."""
+        pool = [chr(c) for c in range(0x21, 0x7F) if chr(c) not in "gdG"] + list("áéíóúñ")
+        for n in range(40, len(pool)):
+            text = "".join(pool[:n]) + "gg" + "".join(pool[n:])
+            argvs = slots.type_argvs(text)
+            if len(argvs) == 2 and argvs[0][argvs[0].index("-d") + 2:].count("-k") == n + 2:
+                return text
+        raise AssertionError("no split found")
+
+    async def test_cut_text_records_only_the_typed_part(self) -> None:
+        text = self._gg_at_chunk_end()
+        self.focus(EDITOR, EDITOR, NOTEPAD)  # check, run 1, focus moved before run 2
+        res = await self._no_prompt({"op": "type", "text": text})
+        self.assertFalse(res["ok"])
+        self.assertIn("se cortó", res["error"])
+        self.assertEqual(len(self.calls("wtype")), 1)
+        self.focus(EDITOR)
+        # only the first run reached Vim, ending in g g: d shift+g clears all
+        self.assertFalse((await self._asks({"op": "key", "keys": "d shift+g"}, allow=False))["ok"])
+        self.assertEqual(len(self.calls("wtype")), 1)
+
+    async def test_failed_run_keeps_pending_select_all(self) -> None:
+        self.assertEqual(await self._no_prompt({"op": "key", "keys": "ctrl+a"}), {"ok": True})
+        text = self._gg_at_chunk_end()
+        real = self.helper._run
+
+        async def run(argv: list[str], **kw: Any) -> tuple[int, bytes]:
+            if argv[0] == "wtype" and len(self.calls("wtype")) == 1:
+                await real(argv, **kw)
+                return 1, b""  # the first run of the text fails
+            return await real(argv, **kw)
+
+        with mock.patch.object(self.helper, "_run", run):
+            res = await self._asks({"op": "type", "text": text}, allow=True)
+        self.assertFalse(res["ok"])
+        self.assertEqual(len(self.calls("wtype")), 2)  # ctrl+a, the failed run; no second run
+        # the failed run may have typed nothing: the select-all may still be there, Delete asks
+        self.assertFalse((await self._asks({"op": "key", "keys": "Delete"}, allow=False))["ok"])
+        self.assertEqual(len(self.calls("wtype")), 2)
 
     async def test_tail_expires(self) -> None:
         now = [1000.0]

@@ -13,7 +13,7 @@ import re
 import stat
 import time
 import unicodedata
-from collections import deque
+from collections import OrderedDict, deque
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -485,6 +485,9 @@ _VIM_CLEARS: tuple[tuple[Callable[[Combo], bool], ...], ...] = (
 )
 TAIL_COMBOS = 4  # the longest Vim clear: enough to finish one split across calls
 TAIL_TTL_S = 60.0
+TAIL_WINDOWS = 8  # windows with a remembered tail; the least recently used one is forgotten
+_INSERT_KEYS = {"insert", "kp_insert"}
+_TYPED_TAB_KEYS = {"tab", "kp_tab"}  # bare Tab types a tab (shift+Tab is ISO_Left_Tab, a move)
 
 
 def _is_browser(app_id: str) -> bool:
@@ -549,8 +552,10 @@ def _scan(tail: KeyTail, combos: list[Combo]) -> tuple[bool, KeyTail]:
     select_all, corner, clears = tail.select_all, tail.corner, False
     for i, (mods, key) in enumerate(combos):
         j = len(tail.recent) + i
-        replaces = not mods & _COMMAND_MODS and (len(key) == 1 or key in _CHAR_NAMES)
-        if select_all and (key in _DELETE_KEYS or ("ctrl" in mods and key == "x") or replaces):
+        replaces = not mods & _COMMAND_MODS and (len(key) == 1 or key in _CHAR_NAMES or key in _RETURN_KEYS)
+        replaces = replaces or (not mods and key in _TYPED_TAB_KEYS)  # T16: Return/Tab over all
+        pastes = ("ctrl" in mods and key == "v") or (mods == _SHIFT and key in _INSERT_KEYS)
+        if select_all and (key in _DELETE_KEYS or ("ctrl" in mods and key == "x") or replaces or pastes):
             clears, select_all = True, False  # the selection is gone after it
         if "ctrl" in mods and key == "a":
             select_all = True
@@ -612,7 +617,8 @@ def confirm_reasons(app_id: str, title: str, *, keys: list[str] | None = None,
       chat or mail window; in any browser, a tab switch (ctrl+Tab, ctrl+PageDown, ctrl/alt+1..9)
       later followed by Return;
     - clear all: a select-all (ctrl+a, or ctrl+Home then ctrl+shift+End) then Delete/KP_Delete/
-      BackSpace/ctrl+x or a typed character; Vim's g g d shift+g or :%d, as keys or typed text.
+      BackSpace/ctrl+x, a paste (ctrl+v, shift+Insert), Return/KP_Enter, Tab, or a typed character
+      (a typed newline or tab too); Vim's g g d shift+g or :%d, as keys or typed text.
       Matched against `tail` (the previous calls on the same window) plus this action;
     - close: alt+F4, ctrl+w, ctrl+q, ctrl+F4, super+w, super+q, super+shift+e, ctrl+alt+Delete.
     `keys` is parse_keys output."""
@@ -627,29 +633,42 @@ def confirm_reasons(app_id: str, title: str, *, keys: list[str] | None = None,
     return reasons
 
 
-def next_tail(tail: KeyTail, *, keys: list[str] | None = None, text: str | None = None) -> KeyTail:
-    """The tail after this action ran on the same window."""
-    return _scan(tail, _combos(keys, text))[1]
+def next_tail(tail: KeyTail, *, keys: list[str] | None = None, text: str | None = None,
+              failed: bool = False) -> KeyTail:
+    """The tail after this action ran on the same window. `failed`: wtype ran but failed, so any
+    part of it may have been typed: its presses count, and a select-all or ctrl+Home/End pending
+    before it is kept (T16)."""
+    after = _scan(tail, _combos(keys, text))[1]
+    if not failed:
+        return after
+    return KeyTail(after.recent, after.select_all or tail.select_all, after.corner or tail.corner)
 
 
 class KeyTails:
-    """The tail of the last action typed into a window (L17 (a)): memory only, a single slot (an
-    action on another window replaces it), forgotten `ttl` seconds after it was recorded."""
+    """The tail of the last action typed into each window (L17 (a), T16): memory only, at most
+    `size` windows (the least recently recorded one is forgotten), each entry forgotten `ttl`
+    seconds after it was recorded."""
 
-    def __init__(self, ttl: float = TAIL_TTL_S, clock: Callable[[], float] = time.monotonic) -> None:
-        self.ttl, self.clock = ttl, clock
-        self._slot: tuple[int, KeyTail, float] | None = None
+    def __init__(self, ttl: float = TAIL_TTL_S, clock: Callable[[], float] = time.monotonic,
+                 size: int = TAIL_WINDOWS) -> None:
+        self.ttl, self.clock, self.size = ttl, clock, size
+        self._tails: OrderedDict[int, tuple[KeyTail, float]] = OrderedDict()
 
     def get(self, wid: int) -> KeyTail:
-        if self._slot is None:
+        entry = self._tails.get(wid)
+        if entry is None:
             return KeyTail()
-        owner, tail, at = self._slot
-        if owner != wid or self.clock() - at > self.ttl:
+        tail, at = entry
+        if self.clock() - at > self.ttl:
+            del self._tails[wid]
             return KeyTail()
         return tail
 
     def record(self, wid: int, tail: KeyTail) -> None:
-        self._slot = (wid, tail, self.clock())
+        self._tails[wid] = (tail, self.clock())
+        self._tails.move_to_end(wid)
+        while len(self._tails) > self.size:
+            self._tails.popitem(last=False)
 
 
 # --- open ----------------------------------------------------------------------------------

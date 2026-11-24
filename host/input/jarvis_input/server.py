@@ -680,15 +680,21 @@ class Helper:
             log.warning("no pude devolver el foco a %d: %s", prev_id, e)
 
     async def _input(self, *, req: dict[str, Any], argvs: list[list[str]], intent: str,
-                     keys: list[str] | None, text: str | None, what: str, shown: str) -> dict[str, Any]:
+                     keys: list[str] | None, text: str | None, what: str, shown: str,
+                     texts: list[str] | None = None) -> dict[str, Any]:
+        """`texts`: for typed text, the part of `text` each argv in `argvs` types."""
         # S16: with window_id the checks and the confirmation are about the target window; it is
         # focused only after the confirmation (answered in the TUI), and focus goes back afterwards.
         target = await self._target_window(req["window_id"]) if "window_id" in req else None
         window = target if target is not None else await self._focused_for_input()
         # S10a: ask by the action (send in chat/mail, clear all, close), never by words; the
         # intent is only shown in the prompt. A clear split across calls on the same window
-        # counts too (L17 (a)): the tail is only updated once wtype ran, never on a denial.
+        # counts too (L17 (a)): the tail is only updated once wtype ran, never on a denial, and only
+        # with the runs that ran (T16: a cut or failed text is not recorded as fully typed).
         tail = self._tails.get(window.id)
+        pieces: list[tuple[list[str] | None, str | None]] = (
+            [(None, t) for t in texts] if texts is not None else [(keys, text)] * len(argvs))
+        typed = tail
         reasons = checks.confirm_reasons(window.app_id, window.title, keys=keys, text=text, tail=tail)
         if reasons:
             message = (f"{what} en {window.app_id or '?'} («{window.title[:80]}»). "
@@ -706,7 +712,8 @@ class Helper:
                     log.info("enfocando %d (%s) para escribir", target.id, target.app_id[:60])
                     await self._focus_and_confirm(target.id)
                     await asyncio.sleep(FOCUS_SETTLE_S)
-            for argv in argvs:  # more than one only for text with very many distinct characters
+            for argv, (piece_keys, piece_text) in zip(argvs, pieces, strict=True):
+                # more than one argv only for text with very many distinct characters
                 again = await self._focus()  # re-check right before wtype (against the target, if any)
                 if again is None or again.id != window.id:
                     raise Deny("El foco cambió antes de escribir; no se hizo nada." if argv is argvs[0]
@@ -724,12 +731,16 @@ class Helper:
                                + ("no se hizo nada." if argv is argvs[0] else "se cortó el texto."))
                 self._still_enabled()  # revoked during the focus settle or a previous run
                 ran = True
-                code, _ = await self._run(argv, timeout=WTYPE_TIMEOUT_S, capture=False, track=True)
+                code = -1
+                try:
+                    code, _ = await self._run(argv, timeout=WTYPE_TIMEOUT_S, capture=False, track=True)
+                finally:  # a failed or killed run may have typed any part of it
+                    typed = checks.next_tail(typed, keys=piece_keys, text=piece_text, failed=code != 0)
                 if code != 0:
                     raise Deny(f"wtype terminó con código {code}")
         finally:
-            if ran:  # keys may have reached the window even if wtype failed or was cut
-                self._tails.record(window.id, checks.next_tail(tail, keys=keys, text=text))
+            if ran:
+                self._tails.record(window.id, typed)
             if target is not None:
                 await self._restore_focus(prev_id, target.id)
         return {"ok": True} if target is None else {"ok": True, "window_id": target.id}
@@ -745,8 +756,17 @@ class Helper:
         look = checks.lookalike_stems(text, intent)
         if look:
             raise Deny("Texto con letras que imitan palabras de riesgo (" + ", ".join(look) + "); no se escribe.")
-        return await self._input(req=req, argvs=slots.type_argvs(text), intent=intent,
-                                 keys=None, text=text, what="escriba", shown=f"Texto: {text[:300]}")
+        argvs = slots.type_argvs(text)
+        texts: list[str] = []
+        start = 0
+        for argv in argvs:  # each run types its characters after the "-d" delay, one -k each
+            n = argv[argv.index("-d") + 2:].count("-k")
+            texts.append(text[start:start + n])
+            start += n
+        if start != len(text):
+            raise Deny("No pude repartir el texto entre las corridas de wtype; no se escribe.")
+        return await self._input(req=req, argvs=argvs, intent=intent, keys=None, text=text,
+                                 what="escriba", shown=f"Texto: {text[:300]}", texts=texts)
 
     async def _key(self, req: dict[str, Any]) -> dict[str, Any]:
         keys = req.get("keys")

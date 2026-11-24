@@ -259,14 +259,17 @@ For `type` and `key`, in order:
      current title.
    * **Clearing all content** (“borrar todo el contenido”): a select-all (`ctrl+a`, or
      `ctrl+Home` then `ctrl+shift+End`, or the reverse) followed later by `Delete`, `KP_Delete`,
-     `BackSpace`, `ctrl+x` or a typed character; Vim's `g g d shift+g` or `:%d`, as keys or
+     `BackSpace`, `ctrl+x`, a paste (`ctrl+v`, `ctrl+shift+v`, `shift+Insert`), `Return`/
+     `KP_Enter`, a bare `Tab` or a typed character (a typed newline or tab too; T16); Vim's `g g d shift+g` or `:%d`, as keys or
      inside typed text (`ggdG`, `:%d`, any app; a fail-safe heuristic).
-     **Across calls** (L17 (a)): the helper keeps in memory the tail of the last action on one
-     window (its last 4 presses, whether a select-all is still pending) for 60 s; an action on
-     another window replaces it. So `ctrl+a` then `Delete` in the next call, `g g` then
+     **Across calls** (L17 (a), T16): the helper keeps in memory, per window, the tail of the
+     last action on it (its last 4 presses, whether a select-all is still pending) for 60 s,
+     for at most 8 windows (the least recently used one is forgotten); actions on other
+     windows in between do not touch it. So `ctrl+a` then `Delete` in a later call, `g g` then
      `d shift+g`, or `ctrl+a` then `pc_type` over the selection ask. A clear that finished in a
      previous call does not ask again; a denied action leaves the tail unchanged (it is updated
-     only once `wtype` ran).
+     only once `wtype` ran, and only with the `wtype` runs that ran: text cut between runs
+     records only the typed part, and a failed run keeps a pending select-all).
    * **Closing a window or app** (“cerrar la ventana”): `alt+F4`, `ctrl+w`, `ctrl+q`, `ctrl+F4`
      (extra modifiers included, e.g. `ctrl+shift+w`), and the niri binds `super+w`, `super+q`,
      `super+shift+e`, plus `ctrl+alt+Delete`.
