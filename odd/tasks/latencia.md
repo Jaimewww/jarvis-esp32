@@ -70,7 +70,8 @@ lands on `feat/stt-whisper` (worktree `pi-stt`).
 - [ ] T9 S8 — P4 first signal plus sentence TTS on Piper. Route: TBD (after #31/#32).
 - [ ] T10 S9 — P2 composite tools, no screenshot by default, clock in the agent context. Route: inline, branch feat/pc-composite (worktree pi-comp, on feat/pc-media), PR #36: af91b89 (pc_write_in/pc_run, AGENTS.md, before_agent_start clock), f84ee4d (review advisories: no unmatched-window fallback, abort). Native review approved (risk+reliability, item 2); node tests 114 passed, test_install 201 passed. Installed live 2026-11-24. Pending: re-bench `question` + `pc` with the user.
 - [x] T11 S10 — Confirmation by action (security, own PR, native review). Route: explore → user decisions (L16) → gentle-ai-worker, branch feat/confirm-by-action (worktree pi-confirm) on feat/pc-composite, PR #37: d4f92f6, b6b2990 (D23), 7c8edb1 (L17 hardening). Native review approved both candidates; independent verify PASS on S10a and L17 (a)-(e); helper 247 OK, node 114 pass. Installed live 2026-11-24. Desktop e2e (L18): pi-confirm 17/17 on the rerun. Follow-up: per-window cross-call memory, ctrl+a ctrl+v.
-- [ ] T12 S11 — P5 local AI measurement. Route: TBD.
+- [ ] T12 S11 — P5 local AI measurement. Route: TBD. Deferred by the user (L19).
+- [ ] T16 S10a — T11 follow-up: per-window cross-call memory (bounded), and paste/Return/Tab over a pending select-all asks (clear-all). Route: gentle-ai-worker on feat/confirm-by-action (PR #37).
 - [ ] T13 S12 — Cleanup of worktrees and branches. Route: inline.
 - [ ] T14 S5 — Find out why the bench's catalog and PC tools fail (L6), and make the bench flag a request that did not do its job (failed tool or no tool) as an error. Re-run the PC baseline. Route: gentle-ai-worker. Bench now has a `done k/n` column (53371d7); pc-terminal was replaced by pc-archivos (9443579); host 243 passed, 6 skipped. Pending: the user re-runs with `/control on`.
 - [x] T15 S5,S6 — Add a `pc_media(action)` tool to jarvis-input/pc-control (wpctl/playerctl, needs no focused window), so volume and media work through the agent until P1 lands. Route: gentle-ai-worker, branch feat/pc-media (e9f1933, e53ad62, 6676f69 explicit mute/unmute). Native review approved (risk+reliability, item 2). Pending: live check after reinstall.
@@ -185,3 +186,5 @@ lands on `feat/stt-whisper` (worktree `pi-stt`).
   slots; slots.py is unchanged by T11). Rerun: pi-comp (base) 14/14 and pi-confirm 17/17, the
   same case passing on both. The failure is intermittent, not caused by T11; watch it in later
   runs.
+- L19 (2026-11-24, user): "dale con los 3 primeros pasos, ia local luego": T5 (STT CPU
+  warning), T13 (cleanup), and the T11 follow-up (T16) now; T12 later.
