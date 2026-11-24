@@ -109,3 +109,8 @@ lands on `feat/stt-whisper` (worktree `pi-stt`).
     in the bench's y/N. It went unanswered, was denied after ~30 s (3 times), and the bench shows
     wait 0. Until T11, keep the TUI visible during the bench and answer there.
   - pc-archivos takes 7-8 calls and ~42 s for an open-and-navigate task: the P2 target case.
+- L9 (2026-11-23, live check of T15 after install.sh, bench `--include-pc --only catalog -n 3`,
+  `/control` off): spotify 12.28/15.14 (2) 3/3, volumen-sube 10.51/12.77 (2) 3/3,
+  volumen-baja 12.33/13.05 (2) 3/3, pausa 12.38/15.83 (2) 3/3, siguiente 12.75/13.24 (2) 3/3,
+  navegador 14.43/14.66 (2) 3/3. pc_media fixes correctness (0/3 → 3/3). Each catalog order still
+  costs ~10-15 s, two model calls of ~5-7 s each: only P1 (no model) reaches the 1.5 s goal.
