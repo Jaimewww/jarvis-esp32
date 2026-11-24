@@ -132,3 +132,11 @@ lands on `feat/stt-whisper` (worktree `pi-stt`).
 - L13 (2026-11-24, user): "seruire usando chatgpt ya nada de claude. asi que continua con el plan".
   L10 is withdrawn: the agent stays on OpenAI (gpt-6.1-sol low). P3 closes with the L12 result;
   latency work continues with fewer calls (T10 P2 next).
+- L14 (2026-11-24, T10 bench after installing PR #36, `--include-pc --only question --only pc -n 3`,
+  gpt-6.1-sol low). Total median / worst, calls, done: hora 16.81/34.03 (1) 3/3, dia 16.82/27.40 (1)
+  3/3, cuenta 12.32/18.10 (1), traduci 13.33/13.58 (1), capital 13.55/19.41 (1), pc-vscode
+  55.40/60.29 (4-5) 3/3, pc-buscar 18.02/27.20 (2) 3/3, pc-archivos 41.65/42.09 (4) 3/3.
+  Calls dropped as intended: hora/dia 2 → 1 (the clock works), pc-archivos 7-8 → 4. pc-vscode
+  did not drop (4-6 → 4-5). But each call now costs ~10-13 s instead of ~5 s, including
+  one-call questions with no PC tools (cuenta 5.33 → 12.32), so the totals did not improve.
+  Pending: per-call timings (`--json`) to tell provider latency from a T10 side effect.
