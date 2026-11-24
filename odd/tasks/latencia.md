@@ -39,6 +39,19 @@ lands on `feat/stt-whisper` (worktree `pi-stt`).
   with 7 calls → ~10-15 s with 2.
 - S10 (P2): Confirm by the action, not by words of the intent. This is a security guard: it goes
   in its own PR with desktop e2e tests and native review.
+- S10a (L16, user decisions for T11). The jarvis-input helper confirms by the action, never by
+  words in the intent or the typed text:
+  1. "Solo chat y correo": Return / ctrl+Return (any Return in a key sequence, or a `\n` in
+     typed text) asks only in chat and mail apps. Chat/mail includes web chat and mail open in a
+     browser, detected by the window title (e.g. WhatsApp, Telegram, Gmail, Outlook, Discord,
+     Messenger, Slack). Return in a browser on any other page (search, forms) does not ask.
+  2. "No pregunta nunca": typed text with words such as "borrar", "enviar" or "pagar" does not
+     ask by itself; the intent is only the text shown in the confirmation prompt.
+  3. "Sí, pregunta": clearing all content asks: `ctrl+a` followed by Delete / BackSpace /
+     `ctrl+x`, and the Vim clear `g g d shift+g` (AGENTS.md).
+  4. "Sí, pregunta": closing a window or app asks: `alt+F4`, `ctrl+w`, `ctrl+q`.
+  Unchanged: the terminal and secrets blocklists, the lookalike-character denial, the 30 s
+  timeout and deny-on-no-answer, and the prompt in the TUI.
 - S11 (P5): Measure 2-3 local 3-4B models (llama.cpp or Ollama) against the same bench, for
   intent with parameters and short chat. Measure only; adopting one is a separate decision.
 - S12: Remove merged worktrees and branches (pi-ctl, pi-e2e, pi-rev, pi-key, pi-next, and pi-stt
@@ -143,3 +156,9 @@ lands on `feat/stt-whisper` (worktree `pi-stt`).
 - L15 (2026-11-24, user): "eso de medicion mejor ahgamolo cuando jaime haga sus cambios. lo
   siguiente si hagamos". The per-call bench waits for P1 (T7); T11 starts now. Jaime was sent
   the P1 request by WhatsApp.
+- L16 (2026-11-24, user, T11 decisions): Enter asks in "Solo chat y correo"; risky words in
+  typed text: "No pregunta nunca (Recomendado)"; clear all content: "Sí, pregunta
+  (Recomendado)"; close window/app (Alt+F4, Ctrl+W, Ctrl+Q): "Sí, pregunta (Recomendado)".
+  Agent decisions: web chat/mail in a browser counts as chat/mail by window title, so WhatsApp
+  Web or Gmail in Brave still ask on Enter; a `\n` in typed text counts as Enter; the rule
+  table lives in code. Recorded as S10a.
