@@ -181,8 +181,8 @@ export default function pcControl(pi: ExtensionAPI) {
 		name: "pc_media",
 		label: "Música y volumen",
 		description:
-			"Controls music and volume on the user's PC: play_pause, next, previous (the active player, via playerctl), volume_up / volume_down (5% steps, capped at 100%) and mute (toggles mute), via wpctl. Use it instead of pc_key for volume and media; never send XF86Audio* keys, which go to the focused window and are refused in terminals. Needs no focused window and no /control on permission. If it says there is no active player, tell the user to start the music first.",
-		promptSnippet: "pc_media: play/pause, next, previous, volume up/down, mute",
+			"Controls music and volume on the user's PC: play_pause, next, previous (the active player, via playerctl), volume_up / volume_down (5% steps, capped at 100%), mute and unmute (explicit, never a toggle), via wpctl. Use it instead of pc_key for volume and media; never send XF86Audio* keys, which go to the focused window and are refused in terminals. Needs no focused window and no /control on permission. If it says there is no active player, tell the user to start the music first.",
+		promptSnippet: "pc_media: play/pause, next, previous, volume up/down, mute, unmute",
 		parameters: Type.Object({
 			action: StringEnum(MEDIA_ACTIONS, { description: "Media or volume action." }),
 		}),

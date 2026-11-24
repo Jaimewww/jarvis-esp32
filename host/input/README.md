@@ -162,8 +162,8 @@ everything else as `-k`: key names, or `0x…` keysyms for text, so argv has no 
 * `media` (T15): `action` is one of a closed set, each with a fixed argv (no caller text reaches it):
   `play_pause`/`next`/`previous` → `playerctl play-pause|next|previous` (the active player);
   `volume_up` → `wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+` (capped at 100%),
-  `volume_down` → `wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-`, `mute` → `wpctl set-mute
-  @DEFAULT_AUDIO_SINK@ toggle`. It never sends keys, so it works with any window focused (or none)
+  `volume_down` → `wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-`, `mute`/`unmute` → `wpctl set-mute
+  @DEFAULT_AUDIO_SINK@ 1|0` (explicit, never a toggle). It never sends keys, so it works with any window focused (or none)
   — unlike `key` with `XF86Audio*`, which goes to the focused window and is refused in terminals
   (odd/tasks/latencia.md L8). **No permission and no confirmation:** these are catalog actions,
   low risk by D8 (like `open`), and must work while `/control` is off; the shared rate limit

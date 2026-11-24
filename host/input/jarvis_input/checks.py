@@ -495,7 +495,9 @@ _MEDIA_ARGV: dict[str, tuple[str, ...]] = {
     "previous": ("playerctl", "previous"),
     "volume_up": ("wpctl", "set-volume", "-l", "1.0", _SINK, "5%+"),
     "volume_down": ("wpctl", "set-volume", _SINK, "5%-"),
-    "mute": ("wpctl", "set-mute", _SINK, "toggle"),
+    # Explicit states, not a toggle: "silencio" must never unmute an already muted sink.
+    "mute": ("wpctl", "set-mute", _SINK, "1"),
+    "unmute": ("wpctl", "set-mute", _SINK, "0"),
 }
 MEDIA_ACTIONS = tuple(_MEDIA_ARGV)
 

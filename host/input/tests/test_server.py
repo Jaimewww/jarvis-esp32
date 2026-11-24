@@ -1201,7 +1201,8 @@ class MediaTest(Base):
                  ("previous", "playerctl", ["previous"]),
                  ("volume_up", "wpctl", ["set-volume", "-l", "1.0", self.SINK, "5%+"]),
                  ("volume_down", "wpctl", ["set-volume", self.SINK, "5%-"]),
-                 ("mute", "wpctl", ["set-mute", self.SINK, "toggle"])]
+                 ("mute", "wpctl", ["set-mute", self.SINK, "1"]),
+                 ("unmute", "wpctl", ["set-mute", self.SINK, "0"])]
         for action, _, _ in cases:
             self.assertEqual(await self.agent({"op": "media", "action": action}), {"ok": True}, action)
         self.assertEqual([(c["name"], c["argv"]) for c in self.calls()], [(n, a) for _, n, a in cases])

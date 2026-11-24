@@ -40,7 +40,7 @@ export type HelperRequest =
 	| { op: "media"; action: MediaAction };
 
 /** T15: the closed media/volume set of jarvis-input's `media` op (C4: playerctl and wpctl). */
-export const MEDIA_ACTIONS = ["play_pause", "next", "previous", "volume_up", "volume_down", "mute"] as const;
+export const MEDIA_ACTIONS = ["play_pause", "next", "previous", "volume_up", "volume_down", "mute", "unmute"] as const;
 export type MediaAction = (typeof MEDIA_ACTIONS)[number];
 
 function mediaAction(params: Record<string, unknown>): MediaAction {

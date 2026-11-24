@@ -220,9 +220,10 @@ class MediaArgvTest(unittest.TestCase):
         self.assertEqual(checks.media_argv("previous"), ["playerctl", "previous"])
         self.assertEqual(checks.media_argv("volume_up"), ["wpctl", "set-volume", "-l", "1.0", sink, "5%+"])
         self.assertEqual(checks.media_argv("volume_down"), ["wpctl", "set-volume", sink, "5%-"])
-        self.assertEqual(checks.media_argv("mute"), ["wpctl", "set-mute", sink, "toggle"])
+        self.assertEqual(checks.media_argv("mute"), ["wpctl", "set-mute", sink, "1"])
+        self.assertEqual(checks.media_argv("unmute"), ["wpctl", "set-mute", sink, "0"])
         self.assertEqual(set(checks.MEDIA_ACTIONS),
-                         {"play_pause", "next", "previous", "volume_up", "volume_down", "mute"})
+                         {"play_pause", "next", "previous", "volume_up", "volume_down", "mute", "unmute"})
 
     def test_argv_is_a_fresh_copy(self) -> None:
         checks.media_argv("next").append("--evil")

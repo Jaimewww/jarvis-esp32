@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { MEDIA_ACTIONS, buildRequest, requestHelper } from "../extensions/pc-control-core.ts";
 
-const ACTIONS = ["play_pause", "next", "previous", "volume_up", "volume_down", "mute"];
+const ACTIONS = ["play_pause", "next", "previous", "volume_up", "volume_down", "mute", "unmute"];
 
 describe("buildRequest pc_media (T15)", () => {
 	it("MEDIA_ACTIONS is the closed C4 set the helper accepts", () => {
