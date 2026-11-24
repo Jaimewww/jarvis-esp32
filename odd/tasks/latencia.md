@@ -55,7 +55,7 @@ lands on `feat/stt-whisper` (worktree `pi-stt`).
 - [ ] T7 S6 — P1 fast path in the backend. Route: Jaime (L5); we review.
 - [x] T8 S7 — P3 model per request type. Closed by L12/L13: the user stays on OpenAI (ChatGPT), and no OpenAI model or thinking level beats gpt-6.1-sol low; no Claude comparison.
 - [ ] T9 S8 — P4 first signal plus sentence TTS on Piper. Route: TBD (after #31/#32).
-- [ ] T10 S9 — P2 composite tools, no screenshot by default. Route: TBD.
+- [ ] T10 S9 — P2 composite tools, no screenshot by default, clock in the agent context. Route: inline, branch feat/pc-composite (worktree pi-comp, on feat/pc-media), PR #36: af91b89 (pc_write_in/pc_run, AGENTS.md, before_agent_start clock), f84ee4d (review advisories: no unmatched-window fallback, abort). Native review approved (risk+reliability, item 2); node tests 114 passed, test_install 201 passed. Installed live 2026-11-24. Pending: re-bench `question` + `pc` with the user.
 - [ ] T11 S10 — Confirmation by action (security, own PR, native review). Route: TBD.
 - [ ] T12 S11 — P5 local AI measurement. Route: TBD.
 - [ ] T13 S12 — Cleanup of worktrees and branches. Route: inline.
