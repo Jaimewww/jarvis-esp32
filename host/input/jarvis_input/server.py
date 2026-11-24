@@ -14,6 +14,7 @@ import logging
 import math
 import os
 import secrets
+import shutil
 import signal
 import socket
 import stat
@@ -38,6 +39,7 @@ NIRI_TIMEOUT_S = 3.0
 WTYPE_TIMEOUT_S = 60.0
 GRIM_TIMEOUT_S = 15.0
 OPEN_WAIT_S = 5.0
+MEDIA_TIMEOUT_S = 3.0
 FOCUS_CONFIRM_S, FOCUS_POLL_S = 0.5, 0.05
 RESTORE_DELAY_S = 0.1  # let the target app take the last keys before focus goes back (S16)
 # After focus moves to another window, Electron apps (VS Code) need a moment to give the
@@ -414,6 +416,8 @@ class Helper:
                 return await self._open(req)
             if op == "apps":
                 return await self._apps(req)
+            if op == "media":
+                return await self._media(req)
             if op in ("type", "key", "screenshot", "windows", "focus"):
                 if not self._enabled():
                     log.info("%s denegado: sin permiso", op)
@@ -511,6 +515,25 @@ class Helper:
         if truncated:
             res["truncated"] = True
         return res
+
+    async def _media(self, req: dict[str, Any]) -> dict[str, Any]:
+        """T15: catalog media/volume (D8: low risk, no permission or confirmation, no focus)."""
+        try:
+            argv = checks.media_argv(req.get("action"))
+        except ValueError as e:
+            raise Deny(str(e)) from None
+        tool, what = argv[0], ("la música" if argv[0] == "playerctl" else "el volumen")
+        if shutil.which(tool) is None:
+            raise Deny(f"Falta {tool} en el sistema, así que no puedo controlar {what}. "
+                       f"Pídele al usuario que lo instale.")
+        log.info("media %s", req["action"])
+        code, _ = await self._run(argv, timeout=MEDIA_TIMEOUT_S, capture=False, track=False)
+        if code != 0:
+            if tool == "playerctl":
+                raise Deny("No hay ningún reproductor activo que acepte esa orden (playerctl "
+                           f"terminó con código {code}).")
+            raise Deny(f"No pude cambiar el volumen (wpctl terminó con código {code}).")
+        return {"ok": True}
 
     async def _list_windows(self) -> list[checks.Window]:
         unreadable = "No pude leer la lista de ventanas (niri)."

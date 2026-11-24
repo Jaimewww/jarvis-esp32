@@ -210,6 +210,33 @@ class RateLimiterTest(unittest.TestCase):
         self.assertTrue(take())
 
 
+class MediaArgvTest(unittest.TestCase):
+    """T15: the closed media/volume set (C4) maps to a fixed argv; nothing else is accepted."""
+
+    def test_fixed_argv_per_action(self) -> None:
+        sink = "@DEFAULT_AUDIO_SINK@"
+        self.assertEqual(checks.media_argv("play_pause"), ["playerctl", "play-pause"])
+        self.assertEqual(checks.media_argv("next"), ["playerctl", "next"])
+        self.assertEqual(checks.media_argv("previous"), ["playerctl", "previous"])
+        self.assertEqual(checks.media_argv("volume_up"), ["wpctl", "set-volume", "-l", "1.0", sink, "5%+"])
+        self.assertEqual(checks.media_argv("volume_down"), ["wpctl", "set-volume", sink, "5%-"])
+        self.assertEqual(checks.media_argv("mute"), ["wpctl", "set-mute", sink, "toggle"])
+        self.assertEqual(set(checks.MEDIA_ACTIONS),
+                         {"play_pause", "next", "previous", "volume_up", "volume_down", "mute"})
+
+    def test_argv_is_a_fresh_copy(self) -> None:
+        checks.media_argv("next").append("--evil")
+        self.assertEqual(checks.media_argv("next"), ["playerctl", "next"])
+
+    def test_rejects_anything_else(self) -> None:
+        for bad in [None, 3, "", "PLAY_PAUSE", "play-pause", "volume_up ", "stop", "volume_up;rm",
+                    ["next"], {"action": "next"}, "x" * 500]:
+            with self.assertRaises(ValueError, msg=repr(bad)) as ctx:
+                checks.media_argv(bad)
+            self.assertIn("play_pause", str(ctx.exception))
+            self.assertLess(len(str(ctx.exception)), 300)
+
+
 class LogPreviewTest(unittest.TestCase):
     def test_preview_never_full(self) -> None:
         secret = "mi clave secreta larguísima"

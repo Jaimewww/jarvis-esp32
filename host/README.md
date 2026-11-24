@@ -411,6 +411,10 @@ bloqueo, las palabras de riesgo y las confirmaciones. Lo instala
 `host/systemd/install.sh`; **`jarvis-input` tiene que estar corriendo** para usar el control
 (`systemctl --user status jarvis-input`).
 
+Música y volumen (`pc_media`: pausa, siguiente, anterior, subir, bajar y silenciar) no
+necesitan `/control on` ni una ventana enfocada: son acciones del catálogo (D8) y el ayudante
+corre `playerctl` y `wpctl` sin teclas. Requieren esos dos programas instalados.
+
 La TUI habla con el ayudante por `$XDG_RUNTIME_DIR/jarvis-control/control.sock` (JSON por
 líneas; solo la TUI y `jarvis-stop`). Ya no escribe ningún archivo de permiso.
 

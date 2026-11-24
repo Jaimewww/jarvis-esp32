@@ -86,7 +86,8 @@ class Base(unittest.IsolatedAsyncioTestCase):
         self.fake.mkdir()
         bindir = root / "bin"
         bindir.mkdir()
-        for name in ["wtype", "grim", "niri", "gtk-launch", "xdg-open", "xdg-mime"]:
+        self.bindir = bindir
+        for name in ["wtype", "grim", "niri", "gtk-launch", "xdg-open", "xdg-mime", "playerctl", "wpctl"]:
             p = bindir / name
             p.write_text(FAKE)
             p.chmod(0o755)
@@ -1187,6 +1188,77 @@ class RevokeWindowTest(Base):
         with mock.patch.object(self.helper, "_list_windows", flaky), self.assertLogs("jarvis_input"):
             res = await self.agent({"op": "screenshot", "window_id": 11})
         self.assertEqual(res, {"ok": False, "error": "grim falló (código 1)"})  # the action's error
+
+
+class MediaTest(Base):
+    """T15: media/volume through playerctl/wpctl (fakes on PATH; the real volume never changes)."""
+
+    SINK = "@DEFAULT_AUDIO_SINK@"
+
+    async def test_each_action_runs_its_fixed_argv_without_permission_or_focus(self) -> None:
+        self.focus({"exit": 1})  # no readable focused window: media must not care
+        cases = [("play_pause", "playerctl", ["play-pause"]), ("next", "playerctl", ["next"]),
+                 ("previous", "playerctl", ["previous"]),
+                 ("volume_up", "wpctl", ["set-volume", "-l", "1.0", self.SINK, "5%+"]),
+                 ("volume_down", "wpctl", ["set-volume", self.SINK, "5%-"]),
+                 ("mute", "wpctl", ["set-mute", self.SINK, "toggle"])]
+        for action, _, _ in cases:
+            self.assertEqual(await self.agent({"op": "media", "action": action}), {"ok": True}, action)
+        self.assertEqual([(c["name"], c["argv"]) for c in self.calls()], [(n, a) for _, n, a in cases])
+
+    async def test_works_with_permission_and_after_revoke(self) -> None:
+        await self.grant()
+        self.assertTrue((await self.agent({"op": "media", "action": "volume_up"}))["ok"])
+        await self.control({"op": "revoke"})
+        self.assertTrue((await self.agent({"op": "media", "action": "volume_down"}))["ok"])
+        self.assertEqual(len(self.calls("wpctl")), 2)
+
+    async def test_rejects_unknown_or_missing_action(self) -> None:
+        for req in [{"op": "media"}, {"op": "media", "action": "stop"}, {"op": "media", "action": 3},
+                    {"op": "media", "action": "volume_up --set 200%"}]:
+            res = await self.agent(req)
+            self.assertFalse(res["ok"], req)
+            self.assertIn("play_pause", res["error"])
+        self.assertEqual(self.calls(), [])
+
+    async def test_no_player(self) -> None:
+        (self.fake / "playerctl_exit").write_text("1")  # playerctl: "No players found"
+        res = await self.agent({"op": "media", "action": "play_pause"})
+        self.assertFalse(res["ok"])
+        self.assertIn("reproductor", res["error"])
+
+    async def test_wpctl_failure(self) -> None:
+        (self.fake / "wpctl_exit").write_text("1")
+        res = await self.agent({"op": "media", "action": "mute"})
+        self.assertFalse(res["ok"])
+        self.assertIn("volumen", res["error"])
+
+    async def test_missing_tool_is_named(self) -> None:
+        (self.bindir / "playerctl").unlink()
+        (self.bindir / "wpctl").unlink()
+        with mock.patch.dict(os.environ, {"PATH": str(self.bindir)}):
+            for action, tool in [("next", "playerctl"), ("volume_up", "wpctl")]:
+                res = await self.agent({"op": "media", "action": action})
+                self.assertFalse(res["ok"], action)
+                self.assertIn(tool, res["error"])
+                self.assertIn("instal", res["error"])
+        self.assertEqual(self.calls(), [])
+
+    async def test_logged(self) -> None:
+        with self.assertLogs("jarvis_input", level="INFO") as logs:
+            await self.agent({"op": "media", "action": "next"})
+        self.assertTrue(any("media next" in line for line in logs.output), logs.output)
+
+    async def test_rate_limit(self) -> None:
+        r, w = await self.connect(self.agent_path)
+        results = [await self.ask_on(r, w, {"op": "media", "action": "volume_up"}) for _ in range(11)]
+        self.assertTrue(all(x["ok"] for x in results[:10]))
+        self.assertIn("10 acciones por segundo", results[-1]["error"])
+        self.assertEqual(len(self.calls("wpctl")), 10)
+
+    async def test_control_socket_does_not_know_it(self) -> None:
+        res = await self.control({"op": "media", "action": "next"})
+        self.assertIn("op desconocida", res["error"])
 
 
 class ScreenshotWindowTest(Base):

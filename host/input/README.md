@@ -62,6 +62,7 @@ All agent requests share a rate limit of **10 per second** (sliding window).
 | `{"op":"apps","query":"notas"}` (S14) | no | `{"ok":true,"apps":[{"id":"<desktop-id>","name":"…"}]}` |
 | `{"op":"windows"}` (S14) | yes | `{"ok":true,"windows":[{"id":11,"app_id":"…","title":"…","focused":false}]}` |
 | `{"op":"focus","window_id":11}` (S14) | yes | `{"ok":true}` |
+| `{"op":"media","action":"volume_up"}` (T15) | no | `{"ok":true}` |
 
 * `open` (S15; see [`open` hardening](#open-hardening-s15)): exactly one of `app` or `url`.
   `app` matches `[A-Za-z0-9][A-Za-z0-9._-]{0,254}`; `url` must be `http://` or `https://` with a
@@ -158,6 +159,19 @@ everything else as `-k`: key names, or `0x…` keysyms for text, so argv has no 
   flow for typing: `apps` + `open` (or `windows`), then `type`/`key` with `window_id`; `focus`
   only to bring a window forward for the user.
 * `windows`, `focus`, `type`, `key` and `screenshot` run one at a time (an action lock).
+* `media` (T15): `action` is one of a closed set, each with a fixed argv (no caller text reaches it):
+  `play_pause`/`next`/`previous` → `playerctl play-pause|next|previous` (the active player);
+  `volume_up` → `wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+` (capped at 100%),
+  `volume_down` → `wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-`, `mute` → `wpctl set-mute
+  @DEFAULT_AUDIO_SINK@ toggle`. It never sends keys, so it works with any window focused (or none)
+  — unlike `key` with `XF86Audio*`, which goes to the focused window and is refused in terminals
+  (odd/tasks/latencia.md L8). **No permission and no confirmation:** these are catalog actions,
+  low risk by D8 (like `open`), and must work while `/control` is off; the shared rate limit
+  still applies, no action lock (it does not touch focus or input), and each run is logged as
+  `media <action>`. Errors: an unknown action (lists the valid ones); `playerctl`/`wpctl` not on
+  the helper's `PATH` ("Falta … Pídele al usuario que lo instale"); `playerctl` exiting non-zero
+  ("No hay ningún reproductor activo…", e.g. no player running); `wpctl` exiting non-zero.
+  Timeout 3 s.
 
 ### `$XDG_RUNTIME_DIR/jarvis-control/control.sock` (TUI and `jarvis-stop` only)
 
@@ -255,7 +269,7 @@ python3 -m unittest discover -s tests        # or: <host venv>/bin/python -m pyt
 ```
 
 The tests run the helper in-process on a temp `XDG_RUNTIME_DIR` with fake `wtype`, `grim`,
-`niri` and `xdg-mime` scripts first on `PATH` that record their argv; `open` tests use a fake
+`niri`, `xdg-mime`, `playerctl` and `wpctl` scripts first on `PATH` that record their argv; `open` tests use a fake
 `$HOME` and a fake fixed `PATH` with fake apps. `test_launch.py` checks the `open` rules on temp
 dirs without running anything. No real Wayland tool or app runs. `test_main.py` starts `python3 -m jarvis_input` with `PATH=/nonexistent`.
 `test_e2e.py` covers the pure parts of the desktop E2E runner below (it starts nothing).

@@ -484,6 +484,29 @@ def validate_url(url: object) -> str | None:
     return None
 
 
+# --- media and volume (T15) ---------------------------------------------------------------
+
+# The C4 catalog's media/volume set, each with a fixed argv: no caller text ever reaches it.
+# Volume moves in 5% steps on the default sink; raising it is capped at 100% (-l 1.0).
+_SINK = "@DEFAULT_AUDIO_SINK@"
+_MEDIA_ARGV: dict[str, tuple[str, ...]] = {
+    "play_pause": ("playerctl", "play-pause"),
+    "next": ("playerctl", "next"),
+    "previous": ("playerctl", "previous"),
+    "volume_up": ("wpctl", "set-volume", "-l", "1.0", _SINK, "5%+"),
+    "volume_down": ("wpctl", "set-volume", _SINK, "5%-"),
+    "mute": ("wpctl", "set-mute", _SINK, "toggle"),
+}
+MEDIA_ACTIONS = tuple(_MEDIA_ARGV)
+
+
+def media_argv(action: object) -> list[str]:
+    """A media action name -> its fixed argv. Raises ValueError for anything outside the set."""
+    if not isinstance(action, str) or action not in _MEDIA_ARGV:
+        raise ValueError("action debe ser una de: " + ", ".join(MEDIA_ACTIONS))
+    return list(_MEDIA_ARGV[action])
+
+
 # --- rate limit ----------------------------------------------------------------------------
 
 
