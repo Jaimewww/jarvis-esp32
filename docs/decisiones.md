@@ -374,6 +374,27 @@ carpeta tiene un responsable, y las fronteras son los
 El adaptador de tareas largas vive en `backend/` pero lo escribe la pista de agente,
 contra la interfaz de agente del contrato C3.
 
+## D22 — Plan de latencia
+
+Se adopta el plan de [latencia-propuestas.md](latencia-propuestas.md), en este orden:
+medir, camino rápido (P1), modelo según el pedido (P3), respuesta percibida y por
+frases (P4), menos consultas en las tareas de la PC (P2) y medir IA local (P5).
+
+- **El camino rápido vive en el backend** (D13, pista S1), antes del agente, así lo
+  aprovechan el ESP32 y la TUI.
+- **Catálogo inicial: lo básico.** Primero se define y se prueba qué órdenes entran;
+  la lista se acuerda con S1 antes de programarla.
+- **Tareas de la PC:** herramientas compuestas (`pc_write_in`, `pc_run`), sin captura
+  de pantalla por defecto (solo si algo falló o se pide) y confirmación según la acción,
+  no según las palabras del pedido. La confirmación va en su propia solicitud, con
+  pruebas de escritorio y revisión, porque es un resguardo de D20.
+- **IA local:** se mide con el mismo juego de pedidos (`python -m jarvis.bench`); adoptarla
+  es otra decisión.
+
+**Por qué:** la consulta al modelo (2,6-5,6 s cada una) domina el turno; STT tarda
+0,2-0,3 s en GPU (y unos 15 s si cae a CPU, por eso se avisa). Metas previstas: orden del
+catálogo de ~4,9 s a ~0,5-1 s; tarea de la PC de ~48 s a ~10-15 s.
+
 ## Decisiones abiertas
 
 - **Motor de la charla de voz** (D14).
