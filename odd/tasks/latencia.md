@@ -53,7 +53,7 @@ lands on `feat/stt-whisper` (worktree `pi-stt`).
 - [ ] T5 S5 — STT CPU-fallback warning. Route: inline.
 - [x] T6 S4B,S6 — Define the basic catalog: docs/catalogo-basico.md (phrase table = test cases, with "no entran" rows). Route: inline.
 - [ ] T7 S6 — P1 fast path in the backend. Route: Jaime (L5); we review.
-- [ ] T8 S7 — P3 model per request type. Route: TBD.
+- [x] T8 S7 — P3 model per request type. Closed by L12/L13: the user stays on OpenAI (ChatGPT), and no OpenAI model or thinking level beats gpt-6.1-sol low; no Claude comparison.
 - [ ] T9 S8 — P4 first signal plus sentence TTS on Piper. Route: TBD (after #31/#32).
 - [ ] T10 S9 — P2 composite tools, no screenshot by default. Route: TBD.
 - [ ] T11 S10 — Confirmation by action (security, own PR, native review). Route: TBD.
@@ -129,3 +129,6 @@ lands on `feat/stt-whisper` (worktree `pi-stt`).
   model gains nothing; each call costs ~5 s regardless. P3 stays open for Claude (Haiku) once a
   key is connected. Real wins remain fewer calls: P1, P2, and giving the agent the current date
   and time so hora/dia stop spending an extra call on the clock (~12 s → ~5 s).
+- L13 (2026-11-24, user): "seruire usando chatgpt ya nada de claude. asi que continua con el plan".
+  L10 is withdrawn: the agent stays on OpenAI (gpt-6.1-sol low). P3 closes with the L12 result;
+  latency work continues with fewer calls (T10 P2 next).
