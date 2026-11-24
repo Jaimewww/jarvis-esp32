@@ -6,7 +6,10 @@ set of ``bench_requests.json`` (S5) N times each and reports, per request, the m
 the worst case of the total time and of the model calls, timed by the window's own code
 (``HostModel`` and ``TurnTrace``) from sending to the agent going back to ``idle``.
 Requests that act on the desktop (catalog commands, PC tasks) run only with
-``--include-pc``; ``--dry-run`` lists the set and connects to nothing.
+``--include-pc``; ``--dry-run`` lists the set and connects to nothing. A run counts as
+``done`` only when the turn ended without error, no tool ended other than ``done``, and,
+for a catalog or PC request, at least one tool ran: the ``done`` column (``k/n``) and the
+JSON say how many runs did their job, while every run is still timed.
 
 ``--prompt`` times one prompt instead: per run and as medians, the seconds from sending
 to the echo (``user_message``), to the first non-empty text and to the end of the turn.
@@ -70,6 +73,10 @@ the REAL desktop: they run only with --include-pc, and their confirmations are a
 here (y/N). Without it, any confirmation the agent asks is denied. --only takes request
 ids or kinds (question, catalog, pc) and may repeat.
 
+The done column counts the runs that did their job: no error, no tool ending failed,
+and for catalog/pc requests at least one tool (an agent that only answers "I cannot"
+is not done). The errors column counts protocol errors only.
+
 --model and --thinking send model_set before the runs. The daemon persists that
 choice as its default model (and thinking level) for every window and later
 sessions; run again with the old values to go back.
@@ -121,6 +128,24 @@ def select(requests: Sequence[Request], *, only: Iterable[str] = (), include_pc:
     return chosen
 
 
+#: Request kinds whose job is an action on the desktop: a run that used no tool did not do it.
+DESKTOP_TASK_KINDS: Final = frozenset({"catalog", "pc"})
+
+
+def run_problem(trace: TurnTrace, *, desktop_task: bool) -> str | None:
+    """Why this run did not do its job, or ``None`` when it did: the turn failed
+    (``error``), a tool did not end ``done`` (``tool failed``), or a desktop task used no
+    tool at all (``no tool``, e.g. the agent only answered that it cannot)."""
+
+    if trace.error is not None or trace.ended_by != "idle":
+        return "error"
+    if any(tool.status != "done" for tool in trace.tools):
+        return "tool failed"
+    if desktop_task and not trace.tools:
+        return "no tool"
+    return None
+
+
 def _stat(values: Sequence[float]) -> dict[str, float | None]:
     if not values:
         return {"median": None, "worst": None}
@@ -131,13 +156,22 @@ def _rounded(stat: dict[str, float | None]) -> dict[str, float | None]:
     return {k: None if v is None else round(v, 3) for k, v in stat.items()}
 
 
-def summarize(traces: Sequence[TurnTrace]) -> dict[str, Any]:
+def summarize(traces: Sequence[TurnTrace], *, desktop_task: bool = False) -> dict[str, Any]:
     """Median and worst case of one request's runs: total, active (total minus a
-    person's answers), model calls and the wait for a person; failed runs counted."""
+    person's answers), model calls and the wait for a person; failed runs counted.
+    ``done`` counts the runs that did their job (``run_problem``); ``not_done`` counts
+    the others by reason. Every run is timed, done or not."""
 
     timed = [t for t in traces if t.total_s is not None]
+    problems = [run_problem(t, desktop_task=desktop_task) for t in traces]
+    not_done: dict[str, int] = {}
+    for problem in problems:
+        if problem is not None:
+            not_done[problem] = not_done.get(problem, 0) + 1
     return {
         "runs": len(traces),
+        "done": problems.count(None),
+        "not_done": not_done,
         "errors": sum(1 for t in traces if t.error is not None or t.ended_by not in ("idle",)),
         "total_s": _rounded(_stat([t.total_s for t in timed if t.total_s is not None])),
         "active_s": _rounded(_stat([t.total_s - t.human_wait_s for t in timed if t.total_s is not None])),
@@ -419,23 +453,29 @@ async def _run_set(session: Session, args: argparse.Namespace, chosen: Sequence[
     on_ask = _asker(session, args.include_pc, ask_human, out)
     results: list[dict[str, Any]] = []
     for request in chosen:
+        desktop_task = request.kind in DESKTOP_TASK_KINDS
         traces: list[TurnTrace] = []
+        details: list[dict[str, Any]] = []
         for i in range(args.runs):
             await _wait_idle(session, args.timeout)
             trace = await _turn(session, request.text, args.timeout, on_ask)
             traces.append(trace)
+            problem = run_problem(trace, desktop_task=desktop_task)
+            details.append({**trace.record(), "done": problem is None, "not_done": problem})
             failed = f" · {trace.ended_by}: {trace.error}" if trace.error or trace.ended_by != "idle" else ""
+            not_done = f" · not done: {problem}" if problem is not None else ""
             print(f"[{request.id}] {i + 1}/{args.runs}: total {_s(trace.total_s)} · first text "
-                  f"{_s(trace.first_text_s)} · {trace.summary()}{failed}", file=out)
+                  f"{_s(trace.first_text_s)} · {trace.summary()}{failed}{not_done}", file=out)
         results.append({"id": request.id, "kind": request.kind, "text": request.text,
-                        "desktop": request.desktop, **summarize(traces),
-                        "runs_detail": [t.record() for t in traces]})
-    print(f"\n{'request':<14} {'kind':<9} {'total median / worst':<22} {'calls median / worst':<21} {'wait median':<12} errors",
-          file=out)
+                        "desktop": request.desktop, **summarize(traces, desktop_task=desktop_task),
+                        "runs_detail": details})
+    print(f"\n{'request':<14} {'kind':<9} {'total median / worst':<22} {'calls median / worst':<21} "
+          f"{'wait median':<12} {'done':<6} errors", file=out)
     for r in results:
         wait = "—" if r["human_wait_s"]["median"] is None else f"{r['human_wait_s']['median']:.2f}s"
+        done = f"{r['done']}/{r['runs']}"
         print(f"{r['id']:<14} {r['kind']:<9} {_fmt_stat(r['total_s']):<22} {_fmt_stat(r['model_calls'], ''):<21} "
-              f"{wait:<12} {r['errors']}", file=out)
+              f"{wait:<12} {done:<6} {r['errors']}", file=out)
     if args.json_path is not None:
         current = models.current
         document = {

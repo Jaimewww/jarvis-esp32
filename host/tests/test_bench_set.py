@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -13,7 +14,7 @@ from fake_gentle_dot import FakeDaemon
 
 from jarvis import bench
 from jarvis.client import Ask
-from jarvis.turntrace import ModelCall, TurnTrace, Wait
+from jarvis.turntrace import ModelCall, ToolCall, TurnTrace, Wait
 
 
 def _run(tmp_path: Path, daemon: FakeDaemon | None, *args: str, ask_human: bench.AskHuman | None = None) -> tuple[int, str, str]:
@@ -40,6 +41,47 @@ def _trace(total: float, calls: int, wait: float = 0.0, error: str | None = None
     trace.finish(total, "error" if error else "idle")
     trace.error = error
     return trace
+
+
+def _with_tools(trace: TurnTrace, *statuses: str) -> TurnTrace:
+    trace.tools = [ToolCall(f"t{i}", "other", 0, 0.0, 0.1, status) for i, status in enumerate(statuses)]
+    return trace
+
+
+def test_a_run_is_done_only_without_error_failed_tool_or_missing_desktop_tool() -> None:
+    assert bench.run_problem(_with_tools(_trace(3.0, 2), "done"), desktop_task=True) is None
+    assert bench.run_problem(_trace(3.0, 1), desktop_task=False) is None  # a question needs no tool
+    assert bench.run_problem(_with_tools(_trace(3.0, 2), "done", "failed"), desktop_task=True) == "tool failed"
+    assert bench.run_problem(_with_tools(_trace(3.0, 2), "failed"), desktop_task=False) == "tool failed"
+    assert bench.run_problem(_trace(3.0, 1), desktop_task=True) == "no tool"
+    assert bench.run_problem(_trace(3.0, 1, error="boom"), desktop_task=True) == "error"
+
+
+def test_stats_count_done_runs_and_keep_timing_the_rest() -> None:
+    traces = [_with_tools(_trace(3.0, 2), "done"), _with_tools(_trace(4.0, 2), "failed"), _trace(5.0, 1)]
+    stats = bench.summarize(traces, desktop_task=True)
+    assert stats["runs"] == 3 and stats["done"] == 1 and stats["errors"] == 0
+    assert stats["not_done"] == {"tool failed": 1, "no tool": 1}
+    assert stats["total_s"] == {"median": 4.0, "worst": 5.0}  # failed runs still timed
+    assert bench.summarize(traces[:1] + traces[2:])["done"] == 2  # a question: no tool is fine
+
+
+def test_a_desktop_request_that_used_no_tool_is_not_done(tmp_path: Path) -> None:
+    daemon = FakeDaemon(tool_call=True)  # model calls, but no tool activity
+    out_json = tmp_path / "b.json"
+    code, out, err = _run(tmp_path, daemon, "-n", "2", "--only", "spotify", "--only", "hora",
+                          "--include-pc", "--json", str(out_json))
+    assert code == 0, err
+    assert "not done: no tool" in out
+    header = next(line for line in out.splitlines() if line.startswith("request"))
+    assert "done" in header.split()
+    assert re.search(r"^spotify .* 0/2\s+0$", out, re.M)
+    assert re.search(r"^hora .* 2/2\s+0$", out, re.M)
+    spotify, hora = json.loads(out_json.read_text(encoding="utf-8"))["requests"]
+    assert spotify["done"] == 0 and spotify["not_done"] == {"no tool": 2}
+    assert [r["done"] for r in spotify["runs"]] == [False, False]
+    assert spotify["runs"][0]["not_done"] == "no tool" and spotify["total_s"]["median"] > 0
+    assert hora["done"] == 2 and hora["runs"][0]["done"] is True and hora["runs"][0]["not_done"] is None
 
 
 def test_the_repo_set_has_10_to_15_requests_and_3_pc_tasks() -> None:

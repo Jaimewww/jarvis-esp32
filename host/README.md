@@ -589,10 +589,15 @@ confirmation is denied.
 Each run goes through the window's own code (`JarvisClient`, `HostModel` and the turn
 trace of [Turn log](#turn-log-every-stage-of-a-whole-turn)), from sending to `idle`. Per
 run it prints total, first text and `2 calls 3.8s · 1 tool · wait 0.0s`; then, per
-request, the **median / worst** total and model calls, the median wait and the failed
-runs. `--json FILE` writes all of it: `model`, `thinking`, `runs`, `include_pc` and per
-request `total_s`, `active_s` (total minus the person's wait), `model_calls` and
-`human_wait_s` as `{median, worst}`, `errors`, and every run's turn record.
+request, the **median / worst** total and model calls, the median wait, **`done`** (`k/n`
+runs that did their job) and the protocol errors. A run is **not done** when the turn
+failed, a tool ended other than `done` (e.g. PC control off: `Control de la PC apagado`),
+or a catalog/PC request used no tool (the agent only answered that it cannot); its line
+ends in `not done: error | tool failed | no tool`, and it is still timed. `--json FILE`
+writes all of it: `model`, `thinking`, `runs`, `include_pc` and per request `total_s`,
+`active_s` (total minus the person's wait), `model_calls` and `human_wait_s` as
+`{median, worst}`, `done`, `not_done` (runs per reason), `errors`, and every run's turn
+record with `done` and `not_done`.
 
 It connects like the window (`--url`, `--host`, `--port`, `--token-file`; the token is
 read from the file and never printed) and sends prompts into the daemon's **active
