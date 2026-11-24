@@ -251,19 +251,26 @@ async def converse(audio: UploadFile) -> ConverseResponse:
     stt_started = time.perf_counter()
     try:
         heard = await transcriber.transcribe(data)
-    except WhisperServerError as error:
-        # turn_error (C2) closes the turn; C1 defines no failure status yet.
-        logger.warning("turn %s: stt failed: %s", turn_id, error)
+    except Exception as error:
+        # Any transcriber failure must close the turn that turn_started opened:
+        # turn_error (C2) is the closing event; C1 defines no failure status yet.
+        if isinstance(error, WhisperServerError):
+            message = str(error)
+            logger.warning("turn %s: stt failed: %s", turn_id, error)
+        else:
+            # Unexpected errors keep their details in the log, not on the wire.
+            message = f"stt failed: {type(error).__name__}"
+            logger.exception("turn %s: unexpected stt failure", turn_id)
         await host_clients.broadcast(
             {
                 "type": "turn_error",
                 "turn_id": turn_id,
                 "stage": "stt",
-                "message": str(error),
+                "message": message,
                 "ts": time.time(),
             }
         )
-        raise HTTPException(status_code=502, detail=str(error)) from error
+        raise HTTPException(status_code=502, detail=message) from error
     stt_ms = round((time.perf_counter() - stt_started) * 1000, 1)
     logger.info("turn %s: stt %.1f ms: %r", turn_id, stt_ms, heard)
     await host_clients.broadcast(

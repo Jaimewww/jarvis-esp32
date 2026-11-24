@@ -113,3 +113,27 @@ def test_converse_stt_failure_ends_turn_with_turn_error(client, wav, monkeypatch
     error = events[types.index("turn_error")]
     assert error["stage"] == "stt" and URL in error["message"]
     assert error["turn_id"] == events[types.index("turn_started")]["turn_id"]
+
+
+class _BrokenTranscriber:
+    """A transcriber that fails with something other than WhisperServerError."""
+
+    async def transcribe(self, audio: bytes) -> str:
+        raise RuntimeError("decoder exploded")
+
+
+def test_converse_unexpected_stt_error_still_ends_turn_with_one_turn_error(
+    client, wav, monkeypatch
+):
+    monkeypatch.setattr(main, "transcriber", _BrokenTranscriber())
+    resp, events = _turn_events(client, wav)
+    assert resp.status_code == 502
+    assert resp.json()["detail"] == "stt failed: RuntimeError"
+    types = [e["type"] for e in events]
+    assert types.count("turn_started") == 1
+    assert types.count("turn_error") == 1
+    assert "turn_done" not in types and "action" not in types and "turn_stage" not in types
+    error = events[types.index("turn_error")]
+    assert error["stage"] == "stt"
+    assert error["message"] == "stt failed: RuntimeError"
+    assert error["turn_id"] == events[types.index("turn_started")]["turn_id"]
