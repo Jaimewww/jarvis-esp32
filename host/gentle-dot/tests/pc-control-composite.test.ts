@@ -100,7 +100,7 @@ describe("runInApp", () => {
 		]);
 		assert.equal(out.opened, true);
 	});
-	it("after opening, accepts the single new window even if its app_id differs from the desktop id", async () => {
+	it("after opening, matches the new window by the desktop id's last dotted part", async () => {
 		const notes: Win = { id: 12, app_id: "notepad", title: "Notas", focused: false };
 		const h = fakeHelper([[term], [term, notes]]);
 		const out = await runInApp(
@@ -110,6 +110,33 @@ describe("runInApp", () => {
 		);
 		assert.deepEqual(h.sent.at(-1), { op: "type", text: "x", intent: "i", window_id: 12 });
 		assert.equal(out.window.id, 12);
+	});
+	it("never types into a new window of another app_id; names it in the error instead", async () => {
+		let t = 0;
+		const dialog: Win = { id: 13, app_id: "xdg-desktop-portal-gtk", title: "Abrir archivo", focused: true };
+		const h = fakeHelper([[term], [term, dialog]]);
+		await assert.rejects(
+			runInApp(h.call, compositeRequest("pc_write_in", { app: "code", text: "x", intent: "i" }), {
+				sleep: async (ms: number) => {
+					t += ms;
+				},
+				now: () => t,
+				waitMs: 1000,
+				pollMs: 500,
+			}),
+			/no window.*13 · xdg-desktop-portal-gtk · Abrir archivo.*pc_type\/pc_key/,
+		);
+		assert.equal(h.sent.filter((r) => r.op === "type" || r.op === "key").length, 0);
+	});
+	it("an aborted signal stops the chain before typing", async () => {
+		const ctl = new AbortController();
+		const h = fakeHelper([[term], [term]]);
+		const run = runInApp(h.call, compositeRequest("pc_write_in", { app: "code", text: "x", intent: "i" }), {
+			signal: ctl.signal,
+			sleep: async () => ctl.abort(),
+		});
+		await assert.rejects(run, { message: "cancelled" });
+		assert.deepEqual(h.sent, [{ op: "windows" }, { op: "open", app: "code" }, { op: "windows" }]);
 	});
 	it("gives up when no window shows up in time, without typing", async () => {
 		let t = 0;
@@ -166,7 +193,7 @@ describe("T10 declarations and agent rules", () => {
 	it("registers pc_write_in and pc_run", () => {
 		assert.match(block("pc_write_in"), /composite\("pc_write_in"/);
 		assert.match(block("pc_run"), /composite\("pc_run"/);
-		assert.match(src, /runInApp\(\(req\) => callRequest\(req, signal\), compositeRequest\(tool, params\)\)/);
+		assert.match(src, /runInApp\(\(req\) => callRequest\(req, signal\), compositeRequest\(tool, params\), \{ signal \}\)/);
 	});
 	it("pc_screenshot is for failures or when the user asks, not to verify every action", () => {
 		const b = block("pc_screenshot");

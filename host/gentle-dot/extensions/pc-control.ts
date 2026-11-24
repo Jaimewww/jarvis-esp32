@@ -184,7 +184,7 @@ export default function pcControl(pi: ExtensionAPI) {
 	const APP =
 		"Desktop id of the app (e.g. code, brave-browser, org.gnome.Nautilus). If unsure, call pc_list_apps with a query first.";
 	const composite = async (tool: string, params: Record<string, unknown>, signal?: AbortSignal) => {
-		const { window, opened } = await runInApp((req) => callRequest(req, signal), compositeRequest(tool, params));
+		const { window, opened } = await runInApp((req) => callRequest(req, signal), compositeRequest(tool, params), { signal });
 		return `${opened ? "Opened " + String(params.app) + "; " : ""}window ${window.id} · ${window.app_id} · ${window.title}`;
 	};
 

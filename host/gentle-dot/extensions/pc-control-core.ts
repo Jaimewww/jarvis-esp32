@@ -159,16 +159,34 @@ export const APP_WINDOW_POLL_MS = 400;
 /**
  * T10 (S9): one tool call instead of list windows → list apps → open → list windows → type.
  * Finds the app's window (focused one first); if there is none, opens the app and polls `windows`
- * until a matching window, or the single new window, appears. Then sends the type/key request with
- * that window_id, so every helper check (permission, blocklist, terminals, confirmation, focus
- * return) still applies. Any helper refusal stops the chain and is thrown verbatim.
+ * until a window whose app_id matches appears. It never guesses: a new window of another app_id
+ * (a dialog, another app) is not a target; it is named in the error so the agent can pick it with
+ * pc_type/pc_key and its window_id. Then sends the type/key request with that window_id, so every
+ * helper check (permission, blocklist, terminals, confirmation, focus return) still applies. Any
+ * helper refusal stops the chain and is thrown verbatim; an aborted signal stops it between steps.
  */
 export async function runInApp(
 	call: HelperCall,
 	req: CompositeRequest,
-	opts: { sleep?: (ms: number) => Promise<void>; now?: () => number; waitMs?: number; pollMs?: number } = {},
+	opts: {
+		sleep?: (ms: number) => Promise<void>;
+		now?: () => number;
+		waitMs?: number;
+		pollMs?: number;
+		signal?: AbortSignal;
+	} = {},
 ): Promise<{ window: AppWindow; opened: boolean; result: Record<string, unknown> }> {
-	const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+	const signal = opts.signal;
+	const checkAbort = () => {
+		if (signal?.aborted) throw new Error("cancelled");
+	};
+	const sleep =
+		opts.sleep ??
+		((ms: number) =>
+			new Promise<void>((r) => {
+				const t = setTimeout(r, ms);
+				signal?.addEventListener("abort", () => (clearTimeout(t), r()), { once: true });
+			}));
 	const now = opts.now ?? Date.now;
 	const waitMs = opts.waitMs ?? APP_WINDOW_WAIT_MS;
 	const pollMs = opts.pollMs ?? APP_WINDOW_POLL_MS;
@@ -180,18 +198,23 @@ export async function runInApp(
 		await call({ op: "open", app: req.app });
 		const known = new Set(before.map((w) => w.id));
 		const deadline = now() + waitMs;
+		let fresh: AppWindow[] = [];
 		for (;;) {
+			checkAbort();
 			const windows = parseWindowList(await call({ op: "windows" }));
-			const fresh = windows.filter((w) => !known.has(w.id));
-			target = pickAppWindow(windows, req.app) ?? (fresh.length === 1 ? fresh[0] : undefined);
+			fresh = windows.filter((w) => !known.has(w.id));
+			target = pickAppWindow(windows, req.app);
 			if (target || now() >= deadline) break;
 			await sleep(pollMs);
 		}
-		if (!target)
-			throw new Error(
-				`Opened ${req.app}, but no window for it appeared within ${Math.round(waitMs / 1000)} s. Check with pc_list_windows, then use pc_type/pc_key with its window_id.`,
-			);
+		if (!target) {
+			const seen = fresh.length
+				? ` New windows: ${fresh.map((w) => `${w.id} · ${w.app_id || "?"} · ${w.title}`).join("; ")}; if one is the app, use pc_type/pc_key with its window_id.`
+				: " Check with pc_list_windows, then use pc_type/pc_key with its window_id.";
+			throw new Error(`Opened ${req.app}, but no window for it appeared within ${Math.round(waitMs / 1000)} s.${seen}`);
+		}
 	}
+	checkAbort();
 	const result = await call({ ...req.input, window_id: target.id });
 	return { window: target, opened, result };
 }
