@@ -162,3 +162,18 @@ lands on `feat/stt-whisper` (worktree `pi-stt`).
   Agent decisions: web chat/mail in a browser counts as chat/mail by window title, so WhatsApp
   Web or Gmail in Brave still ask on Enter; a `\n` in typed text counts as Enter; the rule
   table lives in code. Recorded as S10a.
+- L17 (2026-11-24, evidence, T11): commits d4f92f6 (code+tests) and b6b2990 (docs, D23) on
+  feat/confirm-by-action. Native review approved (risk+reliability, item 2) with advisories;
+  independent verify PASS on S10a 1-4 and Unchanged (222 helper tests, 114 node tests). Residual
+  gaps in the same intent, to harden in a follow-up commit (agent decision, within S10a):
+  (a) rules see one call only: `ctrl+a` then `Delete` in the next call, `g g` then `d shift+g`,
+  or `ctrl+a` then pc_type over the selection clear with no prompt; (b) typed text "ggdG" or
+  ":%d" in Vim normal mode clears with no prompt; (c) the browser title is read once before
+  focusing: a tab switch inside the sequence (`ctrl+Tab Return`, `ctrl+2 Return`) or a title
+  change before wtype can reach web chat without a prompt; (d) more equivalents: `Tab space` to
+  press Send in chat/mail, `ctrl+a KP_Delete`, `ctrl+Home ctrl+shift+End Delete`, `ctrl+F4`,
+  and the niri binds `super+w`, `super+shift+e`, `ctrl+alt+Delete` (close/quit); (e) no server
+  test proves the target window's title is used; e2e `words_back_to_back` ignores the reply;
+  host/README.md:410 still says "las palabras de riesgo". Not changed (fail-safe or user
+  choice): common words in the title pattern over-ask; web chats outside the title list
+  (Google Chat, LinkedIn) do not ask.
