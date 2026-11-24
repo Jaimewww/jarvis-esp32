@@ -25,22 +25,26 @@ import {
 	agentSocketPath,
 	bashBlockReason,
 	buildRequest,
+	clockContext,
+	compositeRequest,
 	controlDirPath,
 	formatApps,
 	formatWindows,
 	isProtectedPath,
 	requestHelper,
+	runInApp,
 } from "./pc-control-core.ts";
 
 function uid(): number {
 	return typeof process.getuid === "function" ? process.getuid() : -1;
 }
 
+function callRequest(req: Parameters<typeof requestHelper>[1], signal?: AbortSignal) {
+	return requestHelper(agentSocketPath(process.env, uid()), req, { timeoutMs: HELPER_TIMEOUT_MS, signal });
+}
+
 function call(tool: string, params: Record<string, unknown>, signal?: AbortSignal) {
-	return requestHelper(agentSocketPath(process.env, uid()), buildRequest(tool, params), {
-		timeoutMs: HELPER_TIMEOUT_MS,
-		signal,
-	});
+	return callRequest(buildRequest(tool, params), signal);
 }
 
 function text(t: string) {
@@ -177,6 +181,49 @@ export default function pcControl(pi: ExtensionAPI) {
 		},
 	});
 
+	const APP =
+		"Desktop id of the app (e.g. code, brave-browser, org.gnome.Nautilus). If unsure, call pc_list_apps with a query first.";
+	const composite = async (tool: string, params: Record<string, unknown>, signal?: AbortSignal) => {
+		const { window, opened } = await runInApp((req) => callRequest(req, signal), compositeRequest(tool, params));
+		return `${opened ? "Opened " + String(params.app) + "; " : ""}window ${window.id} · ${window.app_id} · ${window.title}`;
+	};
+
+	pi.registerTool({
+		name: "pc_write_in",
+		label: "Escribir en una app",
+		description:
+			"Types text into an app's window in ONE call: finds the app's window (opening the app when it has none and waiting for its window), types there, and gives focus back to the user's window. Prefer it over pc_list_windows + pc_open_app + pc_type. Same permission, blocklist and confirmation rules as pc_type. Report the result as done; take no screenshot unless the user asks or the result is in doubt.",
+		promptSnippet: "pc_write_in: type text into an app (opens it if needed), one call",
+		parameters: Type.Object({
+			app: Type.String({ description: APP }),
+			text: Type.String({ description: "Text to type (max 2000 characters)." }),
+			intent: INTENT,
+		}),
+		executionMode: "sequential",
+		async execute(_id, params, signal) {
+			const where = await composite("pc_write_in", params, signal);
+			return { content: [text(`Typed ${[...params.text].length} characters in ${where}.`)], details: {} };
+		},
+	});
+
+	pi.registerTool({
+		name: "pc_run",
+		label: "Teclas en una app",
+		description:
+			'Presses keys or shortcuts in an app\'s window in ONE call (e.g. app "code", keys "ctrl+s" or "ctrl+a Delete"): finds the app\'s window (opening the app when it has none), presses the keys there, and gives focus back to the user\'s window. Prefer it over pc_list_windows + pc_key. Same rules as pc_key; for volume and media use pc_media.',
+		promptSnippet: "pc_run: press keys in an app (opens it if needed), one call",
+		parameters: Type.Object({
+			app: Type.String({ description: APP }),
+			keys: Type.String({ description: 'Key combo(s), e.g. "ctrl+s" or "Return".' }),
+			intent: INTENT,
+		}),
+		executionMode: "sequential",
+		async execute(_id, params, signal) {
+			const where = await composite("pc_run", params, signal);
+			return { content: [text(`Pressed ${params.keys} in ${where}.`)], details: {} };
+		},
+	});
+
 	pi.registerTool({
 		name: "pc_media",
 		label: "Música y volumen",
@@ -197,7 +244,7 @@ export default function pcControl(pi: ExtensionAPI) {
 		name: "pc_screenshot",
 		label: "Captura de pantalla",
 		description:
-			"Takes a screenshot and returns it as an image (scale 0.5 by default). Pass window_id (from pc_list_windows) to see a given window: the helper focuses it, captures the monitor showing it, and focus returns to the user's window afterwards. Use it to verify after pc_type/pc_key on that window. Without window_id it captures the whole screen as it is now (focus may already be back on the user's window). Needs the user's /control on permission.",
+			"Takes a screenshot and returns it as an image (scale 0.5 by default). Pass window_id (from pc_list_windows) to see a given window: the helper focuses it, captures the monitor showing it, and focus returns to the user's window afterwards. Use it only when an action failed, its result is in doubt, or the user asks to see the screen; never after every action. Without window_id it captures the whole screen as it is now (focus may already be back on the user's window). Needs the user's /control on permission.",
 		promptSnippet: "pc_screenshot: see the user's screen or a given window (pass window_id)",
 		parameters: Type.Object({
 			scale: Type.Optional(Type.Number({ minimum: 0.1, maximum: 1, description: "Scale factor, default 0.5." })),
@@ -215,6 +262,12 @@ export default function pcControl(pi: ExtensionAPI) {
 				details: rest,
 			};
 		},
+	});
+
+	// T10: the current date and time before each user turn, so date/time questions need no tool.
+	pi.on("before_agent_start", (event) => {
+		if (event.messageType === "custom") return undefined;
+		return { message: { customType: "jarvis-clock", content: clockContext(new Date()), display: false } };
 	});
 
 	// Defense in depth only (see the header): steer the agent to the pc_* tools and away from the
