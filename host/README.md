@@ -561,28 +561,48 @@ stop and transcription included. `ended_by`: `idle`, `error`, `stopped`, `next_p
 (they may carry what was typed), only `chars`, kinds and times. Prompts from other
 windows are not timed.
 
-## Timing the typed path: `python -m jarvis.bench`
+## Benchmark: `python -m jarvis.bench`
 
 ```bash
 cd host
+python -m jarvis.bench --dry-run               # list the fixed set; connects to nothing
+python -m jarvis.bench                         # the questions only, 3 runs each
+python -m jarvis.bench -n 5 --json baseline.json
+python -m jarvis.bench --only hora --only catalog --include-pc   # ids or kinds; desktop needs the flag
+python -m jarvis.bench --include-pc            # everything, PC tasks included (REAL desktop)
+python -m jarvis.bench -n 5 --prompt "Di hola" # one prompt: echo, first text, total, medians
 python -m jarvis.bench --list                  # running model, its thinking levels, all models
-python -m jarvis.bench                         # 3 x "Responde solo: ok": echo, first text, total, medians
-python -m jarvis.bench -n 5 --prompt "Di hola"
 python -m jarvis.bench --thinking low          # model_set on the running model first (PERSISTS)
 python -m jarvis.bench --model openai/gpt-6-luna --thinking off
 python -m jarvis.bench --model openai/gpt-6.1-sol --thinking medium --list   # switch back, no prompt
 ```
 
+The fixed set lives in [`jarvis/bench_requests.json`](jarvis/bench_requests.json) (`--set
+FILE` reads another): 5 short questions, 6 catalog commands (`Abrí Spotify.`, volume,
+pause, next song, browser) and 3 PC tasks. **Requests marked `desktop` act on the real
+desktop and run only with `--include-pc`** (PC control must also be on, `/control on`);
+naming one in `--only` without the flag is a usage error. With `--include-pc` each
+confirmation the agent asks is asked at this terminal (`[y/N]`, no terminal denies) and
+its time is reported as a person's wait, apart from the agent's; without it, any
+confirmation is denied.
+
+Each run goes through the window's own code (`JarvisClient`, `HostModel` and the turn
+trace of [Turn log](#turn-log-every-stage-of-a-whole-turn)), from sending to `idle`. Per
+run it prints total, first text and `2 calls 3.8s · 1 tool · wait 0.0s`; then, per
+request, the **median / worst** total and model calls, the median wait and the failed
+runs. `--json FILE` writes all of it: `model`, `thinking`, `runs`, `include_pc` and per
+request `total_s`, `active_s` (total minus the person's wait), `model_calls` and
+`human_wait_s` as `{median, worst}`, `errors`, and every run's turn record.
+
 It connects like the window (`--url`, `--host`, `--port`, `--token-file`; the token is
-read from the file and never printed) and sends prompts into the daemon's active
-conversation. Per run it prints the seconds from sending to the echo (`user_message`),
-to the first non-empty `message_delta` and to `message_done`, then the medians.
-**`--model` / `--thinking` send `model_set`, which the daemon saves as its default**:
-note the `model:` line first and pass it back to restore. Exit codes: 0 ok, 2 usage,
-3 cannot connect (no daemon, token missing or refused), 4 the daemon answered an error
+read from the file and never printed) and sends prompts into the daemon's **active
+conversation**. **`--model` / `--thinking` send `model_set`, which the daemon saves as
+its default**: note the `model:` line first and pass it back to restore. Exit codes: 0
+ok, 2 usage (bad flags, unknown `--only`, a desktop request without `--include-pc`), 3
+cannot connect (no daemon, token missing or refused), 4 the daemon answered an error
 (printed as `code: message`, e.g. `thinking_unavailable`, `model_unavailable`,
-`no_account`, or a failed reply), 5 timed out (`--timeout`, default 120 s; the prompt
-is aborted).
+`no_account`; with `--prompt` also a failed reply), 5 timed out (`--timeout`, default
+120 s per run; the prompt is aborted).
 
 ## Tests
 

@@ -40,6 +40,8 @@ class FakeDaemon:
     tool_call: bool = False
     #: Send ``agent_state`` idle after the reply (off: the daemon never says it is idle).
     idle: bool = True
+    #: Ask a ``confirm`` after the echo and wait for its ``ui_response`` before the reply.
+    confirm: bool = False
     received: list[dict[str, Any]] = field(default_factory=list)
     _seq: int = 0
     _socket: Any = None
@@ -110,6 +112,15 @@ class FakeDaemon:
                 await emit({"type": "agent_state", "state": "working"})
                 await asyncio.sleep(echo)
                 await emit({"type": "user_message", "messageId": f"u{n}", "text": message["text"]})
+                if self.confirm:
+                    await emit({"type": "ask", "ask": {"requestId": f"r{n}", "method": "confirm",
+                                                       "title": "Run it?", "timeoutMs": 5000}})
+                    while True:  # this loop holds the socket: read the answer here
+                        answer = json.loads(await socket.recv())
+                        self.received.append(answer)
+                        if answer.get("type") == "ui_response" and answer.get("requestId") == f"r{n}":
+                            break
+                    await emit({"type": "ask_resolved", "requestId": f"r{n}"})
                 if self.tool_call:
                     await emit({"type": "message_delta", "messageId": f"t{n}", "delta": ""})
                     await asyncio.sleep(first)

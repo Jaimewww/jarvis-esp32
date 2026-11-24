@@ -44,9 +44,9 @@ def test_list_prints_models_and_levels_and_sends_nothing(tmp_path: Path) -> None
     assert "send" not in kinds and "model_set" not in kinds
 
 
-def test_default_runs_three_prompts_and_prints_medians(tmp_path: Path) -> None:
+def test_one_prompt_runs_three_times_and_prints_medians(tmp_path: Path) -> None:
     daemon = FakeDaemon(delays=(0.0, 0.05, 0.05))
-    code, out, err = _run(tmp_path, daemon)
+    code, out, err = _run(tmp_path, daemon, "--prompt", bench.DEFAULT_PROMPT)
     assert code == 0, err
     sends = [m for m in daemon.received if m["type"] == "send"]
     assert sends == [{"type": "send", "text": bench.DEFAULT_PROMPT}] * 3
@@ -61,7 +61,7 @@ def test_default_runs_three_prompts_and_prints_medians(tmp_path: Path) -> None:
 
 def test_thinking_flag_sets_the_level_on_the_current_model_first(tmp_path: Path) -> None:
     daemon = FakeDaemon()
-    code, out, err = _run(tmp_path, daemon, "--thinking", "low", "-n", "1")
+    code, out, err = _run(tmp_path, daemon, "--thinking", "low", "-n", "1", "--prompt", "hola")
     assert code == 0, err
     kinds = [m["type"] for m in daemon.received]
     assert kinds.index("model_set") < kinds.index("send")
