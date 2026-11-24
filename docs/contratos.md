@@ -98,11 +98,13 @@ Unix, decimal).
 | `type` | Campos propios | Cuándo | Estado |
 |---|---|---|---|
 | `turn_started` | `device_id` | Al recibir el audio | implementado |
-| `turn_stage` | `stage`: `stt`, `route`, `agent` o `tts`; `ms`; `text` opcional | Al terminar cada etapa | pendiente |
+| `turn_stage` | `stage`: `stt`, `route`, `agent` o `tts`; `ms`; `text` opcional; `warning` opcional | Al terminar cada etapa | pendiente |
 | `turn_done` | `lane`: `fast`, `chat` o `task`; `total_ms`; `reply_text` | Al terminar el turno | implementado (siempre `lane: "chat"` y la frase de prueba) |
 | `turn_error` | `stage`, `message` | Si una etapa falla | pendiente |
 
-`text` en `turn_stage` lleva lo transcrito (`stt`) o lo respondido (`agent`). Un turno
+`text` en `turn_stage` lleva lo transcrito (`stt`) o lo respondido (`agent`). `warning`
+va solo en un `stt` lento (desde `JARVIS_STT_SLOW_MS`, 3000 ms por defecto): un texto
+que dice que whisper-server parece correr en CPU; el cliente lo muestra como aviso. Un turno
 termina con un solo `turn_done` o un solo `turn_error`.
 
 ## C3 — Interfaz de agente

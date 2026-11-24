@@ -237,6 +237,10 @@ token is sent in the URL query and is never shown in the window or the log. A re
 token shows `✗ backend unauthorized` in the developer view and stops retrying; restart
 with the right token.
 
+When the backend flags a slow speech-to-text stage (`warning` on `turn_stage`, sent
+when whisper-server seems to run on CPU: ~15 s per turn against ~0.35 s on a Vulkan
+GPU), the window shows it once as a warning notification and writes it to the log.
+
 To see it without a board, start the backend and run the simulator from the repo root:
 
 ```bash

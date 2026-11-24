@@ -161,6 +161,7 @@ JARVIS_STT=whisper .venv/bin/uvicorn app.main:app --port 8000
 | `JARVIS_STT_URL` | `http://127.0.0.1:8080/inference` |
 | `JARVIS_STT_LANGUAGE` | `es` (también `auto`) |
 | `JARVIS_STT_TIMEOUT_S` | `30` |
+| `JARVIS_STT_SLOW_MS` | `3000`: desde este tiempo de STT se avisa que whisper-server parece ir en CPU |
 
 En cada turno el backend emite `turn_stage` con `stage: "stt"`, `ms` y `text` (lo
 escuchado) entre `turn_started` y `turn_done`, y lo registra en su log
@@ -174,6 +175,17 @@ mensaje. Errores (subclases de `WhisperServerError`):
 | `WhisperServerTimeout` | Sin respuesta en `JARVIS_STT_TIMEOUT_S` |
 | `WhisperServerHTTPError` | Estado distinto de 200 (`status`); p. ej. `400 Invalid request` si no es WAV |
 | `WhisperServerBadResponse` | 200 sin JSON, sin `text` de tipo texto, o con `error` |
+
+**Aviso de STT en CPU.** En CPU whisper-server tarda ~40 veces más (Jaime midió
+14,85 s por turno en CPU contra ~350 ms en GPU Vulkan). whisper.cpp 1.9.5 dice qué
+dispositivo usa solo en su propia salida al arrancar (`no GPU found` o
+`using Vulkan0 backend`); `/health` responde siempre `{"status":"ok"}` y `/inference`
+solo el texto. Por eso el backend juzga por el tiempo que mide (`app/stt/speed.py`):
+si el STT tarda `JARVIS_STT_SLOW_MS` o más, escribe un `WARNING` en su log una sola vez
+por proceso (`STT lento (14850 ms): whisper-server parece correr en CPU (~15 s por
+turno en CPU vs ~0,35 s en GPU Vulkan). …`) y agrega ese texto como `warning` al
+`turn_stage` de `stt` de cada turno lento; la TUI lo muestra como aviso una vez por
+ventana. Con GPU no hay aviso.
 
 **3. Un WAV en español.** El repositorio no trae uno (no hay TTS instalado para
 generarlo de forma reproducible). Grabar unos segundos con PipeWire o ALSA, o convertir

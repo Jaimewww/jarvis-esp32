@@ -112,6 +112,28 @@ def test_connects_with_token_and_parses_every_contract_event() -> None:
     ]
 
 
+def test_stt_stage_carries_the_cpu_warning_when_the_backend_sends_one() -> None:
+    warning = "STT lento (14850 ms): whisper-server parece correr en CPU"
+    frames: list[bytes | str] = [
+        frame(
+            {
+                "type": "turn_stage",
+                "turn_id": "t1",
+                "stage": "stt",
+                "ms": 14850.0,
+                "text": "hola",
+                "ts": 1.0,
+                "warning": warning,
+            }
+        ),
+    ]
+
+    events, _ = asyncio.run(_collect(frames, expected=1))
+
+    assert events == [TurnStage("t1", "stt", 14850.0, "hola", 1.0, warning)]
+    assert TurnStage("t1", "stt", 350.0).warning is None
+
+
 def test_ignores_unknown_types_unknown_fields_and_bad_frames() -> None:
     frames: list[bytes | str] = [
         frame({"type": "something_new", "x": 1}),

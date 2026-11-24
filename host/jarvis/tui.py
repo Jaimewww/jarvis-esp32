@@ -43,6 +43,7 @@ from .backend import (
     TOKEN_ENV,
     BackendClient,
     BackendEvent,
+    TurnStage,
 )
 from .client import (
     DEFAULT_HOST,
@@ -206,6 +207,7 @@ class JarvisApp(App[None]):
             raise ValueError(f"unknown thinking level {typed_thinking!r}")
         self._wanted_thinking = typed_thinking
         self._wanted_checked = False
+        self._stt_cpu_warned = False  # the STT-on-CPU warning is said once per window
         # What both views show; every event goes through it.
         self._host = HostModel()
         #: Animation of the user view (spinner, pulse, voice meter); off for stable tests.
@@ -343,6 +345,11 @@ class JarvisApp(App[None]):
     def _on_backend_event(self, event: BackendEvent) -> None:
         self._host.apply_backend(event)
         self._refresh_views()
+        if isinstance(event, TurnStage) and event.warning and not self._stt_cpu_warned:
+            # The backend flags an STT slow enough to be on CPU (~15 s vs ~0.35 s on GPU).
+            self._stt_cpu_warned = True
+            logger.warning(event.warning)
+            self.notify(event.warning, severity="warning", timeout=30)
 
     def _on_event(self, event: Event) -> None:
         self._host.apply_daemon(event)

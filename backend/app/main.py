@@ -46,6 +46,7 @@ from pydantic import BaseModel
 
 from app.ports import Transcriber
 from app.stt import make_transcriber
+from app.stt.speed import SttSpeedWatch
 from app.stt.whisper_server import WhisperServerError
 
 logger = logging.getLogger("uvicorn.error")
@@ -128,6 +129,8 @@ host_clients = HostRegistry()
 
 # The STT stage (C3). Fails at import on an unknown JARVIS_STT value.
 transcriber: Transcriber = make_transcriber()
+# Warns (log once, turn_stage every time) when STT is slow enough to be on CPU (S5).
+stt_watch = SttSpeedWatch.from_env()
 
 # Created at import time so StaticFiles and the module import never fail on a
 # fresh checkout.
@@ -273,16 +276,18 @@ async def converse(audio: UploadFile) -> ConverseResponse:
         raise HTTPException(status_code=502, detail=message) from error
     stt_ms = round((time.perf_counter() - stt_started) * 1000, 1)
     logger.info("turn %s: stt %.1f ms: %r", turn_id, stt_ms, heard)
-    await host_clients.broadcast(
-        {
-            "type": "turn_stage",
-            "turn_id": turn_id,
-            "stage": "stt",
-            "ms": stt_ms,
-            "text": heard,
-            "ts": time.time(),
-        }
-    )
+    stt_stage: dict = {
+        "type": "turn_stage",
+        "turn_id": turn_id,
+        "stage": "stt",
+        "ms": stt_ms,
+        "text": heard,
+        "ts": time.time(),
+    }
+    stt_warning = stt_watch.observe(stt_ms)
+    if stt_warning is not None:
+        stt_stage["warning"] = stt_warning
+    await host_clients.broadcast(stt_stage)
 
     actions = [Action(type="media_key", value="play_pause")]
     await host_clients.broadcast(
