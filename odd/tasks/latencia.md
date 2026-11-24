@@ -114,3 +114,6 @@ lands on `feat/stt-whisper` (worktree `pi-stt`).
   volumen-baja 12.33/13.05 (2) 3/3, pausa 12.38/15.83 (2) 3/3, siguiente 12.75/13.24 (2) 3/3,
   navegador 14.43/14.66 (2) 3/3. pc_media fixes correctness (0/3 → 3/3). Each catalog order still
   costs ~10-15 s, two model calls of ~5-7 s each: only P1 (no model) reaches the 1.5 s goal.
+- L10 (2026-11-23, user): "ya no usare openia usare models de claude". P3 compares Claude models
+  (Haiku 5.5 for chat, Sonnet 5.5 for PC tasks, Opus 5.5 as reference) instead of gpt-6.1-sol;
+  the OpenAI baseline (L8/L9) remains the "before" reference.
