@@ -59,6 +59,7 @@ lands on `feat/stt-whisper` (worktree `pi-stt`).
 - [ ] T11 S10 — Confirmation by action (security, own PR, native review). Route: TBD.
 - [ ] T12 S11 — P5 local AI measurement. Route: TBD.
 - [ ] T13 S12 — Cleanup of worktrees and branches. Route: inline.
+- [ ] T14 S5 — Find out why the bench's catalog and PC tools fail (L6), and make the bench flag a request that did not do its job (failed tool or no tool) as an error. Re-run the PC baseline. Route: TBD.
 
 ## Log
 
@@ -74,3 +75,16 @@ lands on `feat/stt-whisper` (worktree `pi-stt`).
 - L5 (2026-11-23, user): basic catalog = multimedia (pausá/seguí/siguiente/anterior), volume
   (subí/bajá/silencio), "abrí X" with a closed list, and "qué hora es"/"qué día es". P1 is
   written by "Jaime, con la lista y los tests que armemos".
+- L6 (2026-11-23, baseline, `python -m jarvis.bench --include-pc -n 3`, openai/gpt-6.1-sol
+  thinking low, run by the user). Total median / worst, model calls:
+  hora 12.08/12.62 (2), dia 10.59/11.56 (2), cuenta 4.83/6.32 (1), traduci 5.02/5.05 (1),
+  capital 4.89/5.39 (1), spotify 14.51/15.77 (2), volumen-sube 10.41/14.31 (2),
+  volumen-baja 10.89/11.81 (2), pausa 12.34/12.47 (2), siguiente 11.82/12.38 (2),
+  navegador 11.58/12.48 (2), pc-vscode 10.76/11.18 (2), pc-buscar 10.31/10.43 (2),
+  pc-terminal 5.28/5.29 (1). Human wait 0 everywhere. Findings from the first run of each:
+  each model call takes 4-7 s (~5 s); tools take < 0.5 s; daemon echo 0.03-0.55 s; the first
+  text arrives ~0.4 s before the end, so nothing is gained from streaming today. hora/dia
+  spend one extra call on a `run` tool (the clock). The volume, pausa, siguiente and pc-vscode
+  tools end `failed`, and pc-terminal used no tool. The bench reports 0 errors because it only
+  counts protocol errors, so the catalog and PC rows do not measure a completed task yet
+  (T14).
