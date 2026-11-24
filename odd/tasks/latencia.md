@@ -48,11 +48,11 @@ lands on `feat/stt-whisper` (worktree `pi-stt`).
 
 - [x] T1 S1 — #13: catch any transcriber error and emit exactly one turn_error, with a test. Route: inline (pi-stt). Commit 651496d on feat/stt-whisper (backend 54 passed, 6 skipped; RED observed first). Replied on #13.
 - [x] T2 S2 — Review and approve #31/#32 with the two notes. Route: inline (gh). Both approved 2026-11-23.
-- [ ] T3 S3,S4 — Latency proposal PR with decisions A-D in docs/decisiones.md (D22). Route: inline.
+- [x] T3 S3,S4 — Latency proposal PR with decisions A-D in docs/decisiones.md (D22). Route: inline. Commit eff5b6b, PR #33.
 - [ ] T4 S5 — Per-stage turn timing plus `jarvis.bench` baseline. Route: TBD.
 - [ ] T5 S5 — STT CPU-fallback warning. Route: inline.
-- [ ] T6 S4B,S6 — Define and test the basic catalog (proposal for the user). Route: inline.
-- [ ] T7 S6 — P1 fast path in the backend. Route: TBD (coordinate with Jaime: backend is S1).
+- [x] T6 S4B,S6 — Define the basic catalog: docs/catalogo-basico.md (phrase table = test cases, with "no entran" rows). Route: inline.
+- [ ] T7 S6 — P1 fast path in the backend. Route: Jaime (L5); we review.
 - [ ] T8 S7 — P3 model per request type. Route: TBD.
 - [ ] T9 S8 — P4 first signal plus sentence TTS on Piper. Route: TBD (after #31/#32).
 - [ ] T10 S9 — P2 composite tools, no screenshot by default. Route: TBD.
@@ -71,3 +71,6 @@ lands on `feat/stt-whisper` (worktree `pi-stt`).
   the backend; the TUI talks to the daemon directly.
 - L4 (evidence): D21 assigns the fast path and the catalog to S1 (Jaime, `backend/`). T6/T7
   need his agreement, or an explicit handover, before code.
+- L5 (2026-11-23, user): basic catalog = multimedia (pausá/seguí/siguiente/anterior), volume
+  (subí/bajá/silencio), "abrí X" with a closed list, and "qué hora es"/"qué día es". P1 is
+  written by "Jaime, con la lista y los tests que armemos".
