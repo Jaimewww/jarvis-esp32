@@ -17,10 +17,11 @@
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Type } from "@earendil-works/pi-ai";
+import { StringEnum, Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	HELPER_TIMEOUT_MS,
+	MEDIA_ACTIONS,
 	agentSocketPath,
 	bashBlockReason,
 	buildRequest,
@@ -162,7 +163,7 @@ export default function pcControl(pi: ExtensionAPI) {
 		name: "pc_key",
 		label: "Teclas en la PC",
 		description:
-			'Presses keys or shortcuts on the user\'s desktop, e.g. "ctrl+l", "super+1", "Return", or a space-separated sequence "ctrl+a Delete". Modifiers: ctrl, shift, alt, altgr, super. Pass window_id (from pc_list_windows) whenever the target window is known: the helper focuses it, presses the keys, and focus returns to the user\'s window afterwards. Without window_id the keys go to the focused window. Same permission, blocklist and confirmation rules as pc_type.',
+			'Presses keys or shortcuts on the user\'s desktop, e.g. "ctrl+l", "super+1", "Return", or a space-separated sequence "ctrl+a Delete". Modifiers: ctrl, shift, alt, altgr, super. Pass window_id (from pc_list_windows) whenever the target window is known: the helper focuses it, presses the keys, and focus returns to the user\'s window afterwards. Without window_id the keys go to the focused window. Same permission, blocklist and confirmation rules as pc_type. For volume and media (play/pause, next, previous, mute) use pc_media, never XF86Audio* keys.',
 		promptSnippet: "pc_key: press keys or shortcuts in a desktop window (pass window_id)",
 		parameters: Type.Object({
 			keys: Type.String({ description: 'Key combo(s), e.g. "ctrl+l" or "Return".' }),
@@ -173,6 +174,22 @@ export default function pcControl(pi: ExtensionAPI) {
 		async execute(_id, params, signal) {
 			const res = await call("pc_key", params, signal);
 			return { content: [text(`Pressed ${params.keys}.${helperNote(res)}`)], details: res };
+		},
+	});
+
+	pi.registerTool({
+		name: "pc_media",
+		label: "Música y volumen",
+		description:
+			"Controls music and volume on the user's PC: play_pause, next, previous (the active player, via playerctl), volume_up / volume_down (5% steps, capped at 100%) and mute (toggles mute), via wpctl. Use it instead of pc_key for volume and media; never send XF86Audio* keys, which go to the focused window and are refused in terminals. Needs no focused window and no /control on permission. If it says there is no active player, tell the user to start the music first.",
+		promptSnippet: "pc_media: play/pause, next, previous, volume up/down, mute",
+		parameters: Type.Object({
+			action: StringEnum(MEDIA_ACTIONS, { description: "Media or volume action." }),
+		}),
+		executionMode: "sequential",
+		async execute(_id, params, signal) {
+			const res = await call("pc_media", params, signal);
+			return { content: [text(`Done: ${params.action}.${helperNote(res)}`)], details: res };
 		},
 	});
 

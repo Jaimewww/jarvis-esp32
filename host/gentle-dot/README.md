@@ -52,6 +52,7 @@ agente (pc_*) ── agent.sock ────┘   la pantalla)  └── (argv,
 | `pc_open_url{url}` | `{"op":"open","url":"https://…"}` | no (etapa a) |
 | `pc_type{text,intent,window_id?}` | `{"op":"type","text":…,"intent":…,"window_id":42}` (S16: con `window_id` el ayudante enfoca esa ventana, teclea y devuelve el foco; sin él, la enfocada) | `/control on` |
 | `pc_key{keys,intent,window_id?}` | `{"op":"key","keys":"ctrl+l","intent":…,"window_id":42}` (igual que `pc_type`) | `/control on` |
+| `pc_media{action}` | `{"op":"media","action":"volume_up"}`; `action` ∈ `play_pause`, `next`, `previous` (playerctl), `volume_up`, `volume_down` (±5 %, tope 100 %), `mute` (alterna) (wpctl); no depende del foco (T15) | no (catálogo, D8) |
 | `pc_screenshot{scale?,window_id?}` | `{"op":"screenshot","scale":0.5,"window_id":42}` (0,1–1) → `png_base64` (S17: con `window_id` el ayudante enfoca esa ventana, captura su monitor y devuelve el foco; sin él, la pantalla tal cual) | `/control on` |
 
 Los errores del ayudante (`{"ok":false,"error":"…"}`) vuelven tal cual como error de la

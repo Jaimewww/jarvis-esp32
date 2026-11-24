@@ -22,6 +22,16 @@ through the `pc_*` tools, which ask the separate `jarvis-input` helper to do it.
   `https://www.youtube.com`, WhatsApp → `https://web.whatsapp.com`). Never work around a refusal.
 - Never launch GUI programs through `bash`.
 
+## Music and volume
+
+- For volume and media ("subí/bajá el volumen", "silencio", "pausá", "seguí", "siguiente",
+  "anterior"), call `pc_media` with `volume_up`, `volume_down`, `mute`, `play_pause`, `next`
+  or `previous`. It needs no window and no `/control on`. Call it once per step (5% each);
+  for "mucho más fuerte" call `volume_up` a few times.
+- Never use `pc_key` with `XF86Audio*` keys or `bash` (`wpctl`, `pactl`, `playerctl`) for
+  this: keys go to the focused window, usually the user's terminal, and are refused.
+- If `pc_media` says there is no active player, tell the user to start the music first.
+
 ## Keyboard and screenshots (PC control)
 
 - To list or focus windows, type, press keys or see the screen, use only `pc_list_windows`,

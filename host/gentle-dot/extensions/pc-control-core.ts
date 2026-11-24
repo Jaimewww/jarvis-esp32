@@ -36,7 +36,19 @@ export type HelperRequest =
 	| { op: "screenshot"; scale: number; window_id?: number }
 	| { op: "apps" }
 	| { op: "windows" }
-	| { op: "focus"; window_id: number };
+	| { op: "focus"; window_id: number }
+	| { op: "media"; action: MediaAction };
+
+/** T15: the closed media/volume set of jarvis-input's `media` op (C4: playerctl and wpctl). */
+export const MEDIA_ACTIONS = ["play_pause", "next", "previous", "volume_up", "volume_down", "mute"] as const;
+export type MediaAction = (typeof MEDIA_ACTIONS)[number];
+
+function mediaAction(params: Record<string, unknown>): MediaAction {
+	const v = params.action;
+	if (typeof v !== "string" || !(MEDIA_ACTIONS as readonly string[]).includes(v))
+		throw new Error(`action must be one of: ${MEDIA_ACTIONS.join(", ")}`);
+	return v as MediaAction;
+}
 
 /** Most lines `formatApps` returns (plus one "… more" line), to keep the tool result small. */
 export const MAX_APP_LINES = 60;
@@ -82,6 +94,8 @@ export function buildRequest(tool: string, params: Record<string, unknown>): Hel
 			return { op: "windows" };
 		case "pc_focus_window":
 			return { op: "focus", window_id: windowId(params) };
+		case "pc_media":
+			return { op: "media", action: mediaAction(params) };
 		default:
 			throw new Error(`unknown pc-control tool: ${tool}`);
 	}
