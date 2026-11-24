@@ -94,3 +94,18 @@ lands on `feat/stt-whisper` (worktree `pi-stt`).
   volume, media and pc-vscode failed. There is no volume or media tool, and the agent improvised
   `pc_key XF86Audio*`. pc-terminal is refused by design (checks.py:217-238; pc-control.ts:147).
   `open` needs no permission, which is why spotify, navegador and pc-buscar worked.
+- L8 (2026-11-23, second baseline with `/control on`, `-n 3`, /tmp/jarvis-baseline-2.json).
+  Total median / worst, model calls, done:
+  hora 11.03/12.52 (2) 3/3, dia 14.96/16.15 (2) 3/3, cuenta 5.33/5.51 (1) 3/3,
+  traduci 5.13/6.11 (1) 3/3, capital 4.75/6.24 (1) 3/3, spotify 10.42/11.41 (2) 3/3,
+  volumen-sube 11.20/14.78 (2) 0/3, volumen-baja 10.54/11.27 (2) 0/3, pausa 10.68/10.78 (2) 0/3,
+  siguiente 12.09/13.08 (2) 0/3, navegador 11.47/13.23 (2) 3/3, pc-vscode 56.47/66.60 (4-6) 0/3,
+  pc-buscar 11.40/12.24 (2) 3/3, pc-archivos 42.45/54.36 (7-8) 3/3.
+  Causes from the jarvis-input journal:
+  - The XF86Audio* keys go to the focused window, which was the ghostty terminal running the
+    bench, so they were refused by the terminal blocklist (12 times). Media keys must not depend
+    on focus (T15).
+  - In pc-vscode, a `key` needed a jarvis-input confirmation, which is asked in the TUI and not
+    in the bench's y/N. It went unanswered, was denied after ~30 s (3 times), and the bench shows
+    wait 0. Until T11, keep the TUI visible during the bench and answer there.
+  - pc-archivos takes 7-8 calls and ~42 s for an open-and-navigate task: the P2 target case.
