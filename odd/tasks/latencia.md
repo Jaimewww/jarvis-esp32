@@ -121,3 +121,11 @@ lands on `feat/stt-whisper` (worktree `pi-stt`).
   Claude subscription is refused), so "hasta solucionar usemos OPENIA". P3 compares OpenAI
   models first: gpt-6.1-sol low (current), gpt-6-luna off, gpt-6.1-terra off, gpt-5.4-mini off,
   gpt-5.4-nano off. Claude models get the same bench once a key is connected.
+- L12 (2026-11-23, P3 bench, `--only question -n 3`, total median s for hora/dia/cuenta/traduci/capital):
+  gpt-6.1-sol low 12.26/12.99/7.11/5.41/5.77; gpt-6-luna off 13.18/13.72/4.39/5.61/6.87;
+  gpt-6.1-terra off 14.19/12.26/6.71/5.47/6.64. gpt-5.4-mini off and gpt-5.4-nano off failed
+  every run in ~1.2 s with "Something went wrong while answering" (probably not served by this
+  account; not investigated). Conclusion: with OpenAI, turning thinking off or picking a lighter
+  model gains nothing; each call costs ~5 s regardless. P3 stays open for Claude (Haiku) once a
+  key is connected. Real wins remain fewer calls: P1, P2, and giving the agent the current date
+  and time so hora/dia stop spending an extra call on the clock (~12 s → ~5 s).
