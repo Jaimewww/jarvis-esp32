@@ -59,7 +59,8 @@ lands on `feat/stt-whisper` (worktree `pi-stt`).
 - [ ] T11 S10 — Confirmation by action (security, own PR, native review). Route: TBD.
 - [ ] T12 S11 — P5 local AI measurement. Route: TBD.
 - [ ] T13 S12 — Cleanup of worktrees and branches. Route: inline.
-- [ ] T14 S5 — Find out why the bench's catalog and PC tools fail (L6), and make the bench flag a request that did not do its job (failed tool or no tool) as an error. Re-run the PC baseline. Route: TBD.
+- [ ] T14 S5 — Find out why the bench's catalog and PC tools fail (L6), and make the bench flag a request that did not do its job (failed tool or no tool) as an error. Re-run the PC baseline. Route: gentle-ai-worker. Bench now has a `done k/n` column (53371d7); pc-terminal was replaced by pc-archivos (9443579); host 243 passed, 6 skipped. Pending: the user re-runs with `/control on`.
+- [ ] T15 S5,S6 — Add a `pc_media(action)` tool to jarvis-input/pc-control (wpctl/playerctl, needs no focused window), so volume and media work through the agent until P1 lands. Route: TBD (host/S2).
 
 ## Log
 
@@ -88,3 +89,8 @@ lands on `feat/stt-whisper` (worktree `pi-stt`).
   tools end `failed`, and pc-terminal used no tool. The bench reports 0 errors because it only
   counts protocol errors, so the catalog and PC rows do not measure a completed task yet
   (T14).
+- L7 (evidence, T14): the PC permission was off during the run. jarvis-input logged `key
+  denegado: sin permiso` x12 and `windows denegado: sin permiso` x3 (server.py:417-419), so
+  volume, media and pc-vscode failed. There is no volume or media tool, and the agent improvised
+  `pc_key XF86Audio*`. pc-terminal is refused by design (checks.py:217-238; pc-control.ts:147).
+  `open` needs no permission, which is why spotify, navegador and pc-buscar worked.
