@@ -15,6 +15,6 @@
     {"id": "navegador", "kind": "catalog", "desktop": true, "text": "Abrí el navegador."},
     {"id": "pc-vscode", "kind": "pc", "desktop": true, "text": "Abrí VS Code y escribí «hola mundo» en un archivo nuevo, sin guardarlo."},
     {"id": "pc-buscar", "kind": "pc", "desktop": true, "text": "Abrí el navegador y buscá el clima de hoy en Quito."},
-    {"id": "pc-terminal", "kind": "pc", "desktop": true, "text": "Abrí una terminal y escribí «echo hola», sin presionar Enter."}
+    {"id": "pc-archivos", "kind": "pc", "desktop": true, "text": "Abrí el explorador de archivos y entrá a la carpeta Descargas."}
   ]
 }
