@@ -61,9 +61,11 @@ Gentle Dot as the default; a machine opts into the bridge. Branch `feat/pi-bridg
 
 ## Tasks
 
-- [ ] T1 S2,S3,S4,S5 — Bridge core: server, auth, one turn with deltas, abort, Pi process
+- [x] T1 S2,S3,S4,S5 — Bridge core: server, auth, one turn with deltas, abort, Pi process
   lifecycle, tested against a fake Pi process and with the unchanged `GentleDotAgent`. Route:
-  gentle-ai-worker. Own commit: security guard (token).
+  gentle-ai-worker. Commits 715494e (hello and token guard), 6295ce9 (turns on the Pi child)
+  and the hardening fix after verify (L5). Host 291 passed, 6 skipped; backend 82 passed, 7
+  skipped; pyright 0 errors on `host/jarvis/pibridge`. Independent verify: S2-S5 pass (L5).
 - [ ] T2 S6,S7,S8,S9 — Activities, questions, models, several clients and history, tested with
   the unchanged `JarvisClient`. Route: gentle-ai-worker, after T1.
 - [ ] T3 S10 — systemd unit, installer, README and decision entry. Route: gentle-ai-worker,
@@ -95,3 +97,15 @@ Gentle Dot as the default; a machine opts into the bridge. Branch `feat/pi-bridg
   `new_session`, `abort` (stops in 0.01 s) and `set_model` work. Under the daemon's systemd
   hardening Pi needs `ReadWritePaths=%h/.pi`. The Claude subscription models need the extra
   extension `~/.pi/agent/npm/node_modules/pi-claude-bridge`.
+- L5 (2026-11-25, evidence, T1). Smoke with the real `pi` on port 4391 and a temporary token
+  file: a question and volume up / down completed (5.25 s and 4.36 s for the tool turns), no
+  orphan process. Independent verify on 715494e + 6295ce9: S2-S5 pass, no blocker; about 20
+  bad first frames closed with 4401 / 4400 / 1009 and leaked no frame; the token never reached
+  the logs. Fixed afterwards, RED first: a lone-surrogate token closed with 1011 (now 4401), no
+  warning on a bind outside loopback, no warning on a token file other users can read. Open
+  notes: no `Origin` check (the token is still required); a slow client holds the broadcast
+  lock; unsupported frames are dropped silently until T2 (S9). Protocol fact that T2 must keep:
+  Gentle Dot emits an empty `message_done` for an assistant message that only calls tools
+  (`host/jarvis/turntrace.py:4-5`) and the bridge does the same. Follow-up outside this feature
+  (backend, Jaime): `GentleDotAgent.reply` returns at the first `message_done`, so a tool turn
+  gives it an empty reply with either daemon.
