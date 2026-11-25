@@ -56,25 +56,47 @@ lands on `feat/stt-whisper` (worktree `pi-stt`).
   intent with parameters and short chat. Measure only; adopting one is a separate decision.
 - S12: Remove merged worktrees and branches (pi-ctl, pi-e2e, pi-rev, pi-key, pi-next, and pi-stt
   after #13).
+- S13 (L21, STT hardening; the reviewer's own claims from the native review of the #13 range,
+  lineage review-4c361318ab958e14, plus the open S2 note):
+  1. R3-001, `backend/app/stt/whisper_server.py:80`: "from_env parses JARVIS_STT_TIMEOUT_S
+     with a bare float(). A non-numeric value raises a ValueError whose message does not name
+     the variable. Because backend/app/main.py builds the transcriber at import time when
+     JARVIS_STT=whisper, the backend then fails to start with an unhelpful traceback. Zero or
+     negative values are accepted silently and would make every turn time out. No test covers
+     invalid timeout values. Only the unknown-JARVIS_STT path has a clear error and a test."
+  2. R3-002, `backend/app/stt/whisper_server.py:85-87`: "httpx applies timeout=self.timeout_s
+     separately to each phase (connect, write, read, pool), not as one total deadline per
+     transcription. The README describes WhisperServerTimeout as no answer within
+     JARVIS_STT_TIMEOUT_S. A server that is slow in several phases, or that sends the response
+     in pieces, can keep a turn open longer than the documented limit. The timeout test only
+     injects a ReadTimeout, so the total-time behavior is not proved."
+  3. R3-003, `backend/app/stt/__main__.py:66-68`: "The CLI quietly changes an explicit --runs
+     value of 0 or less to 1 and still exits 0. It neither rejects the value nor warns. This is
+     an out-of-domain input to a new developer tool, so it is not a regression, but argparse
+     validation would make the option behave as stated."
+  4. S2 note: `tools/probe-piper.sh:17` `ffmpeg -n` fails on a second run to the same path.
+     Repeating the README command with the same output must succeed.
 
 ## Tasks
 
 - [x] T1 S1 — #13: catch any transcriber error and emit exactly one turn_error, with a test. Route: inline (pi-stt). Commit 651496d on feat/stt-whisper (backend 54 passed, 6 skipped; RED observed first). Replied on #13.
 - [x] T2 S2 — Review and approve #31/#32 with the two notes. Route: inline (gh). Both approved 2026-11-23.
 - [x] T3 S3,S4 — Latency proposal PR with decisions A-D in docs/decisiones.md (D22). Route: inline. Commit eff5b6b, PR #33.
-- [ ] T4 S5 — Per-stage turn timing plus `jarvis.bench` baseline. Route: gentle-ai-worker. Code done on feat/turn-timing (turntrace.py, bench.py with 14 fixed requests, PC/desktop behind --include-pc; host 240 passed, 6 skipped). Pending: baseline run with the user.
+- [ ] T4 S5 — Per-stage turn timing plus `jarvis.bench` baseline. Route: gentle-ai-worker. Code done on feat/turn-timing (turntrace.py, bench.py with 14 fixed requests, PC/desktop behind --include-pc; host 240 passed, 6 skipped). In main since 2026-11-25 (#34, L21). Pending: baseline run with the user (waits for P1, L15).
 - [x] T5 S5 — STT CPU-fallback warning. Route: gentle-ai-worker, branch feat/stt-cpu-warning (worktree pi-sttwarn) on feat/stt-whisper, PR #38: c4df873. whisper-server reports its device only on its stderr, so an STT stage slower than JARVIS_STT_SLOW_MS (3000 ms) counts as CPU: one log WARNING per process, an optional `warning` on the slow turn_stage{stt} (additive contract field), and a TUI notification. Backend 60 passed/6 skipped, host 124 passed/4 skipped. Native assess: medium, review not due.
 - [x] T6 S4B,S6 — Define the basic catalog: docs/catalogo-basico.md (phrase table = test cases, with "no entran" rows). Route: inline.
 - [ ] T7 S6 — P1 fast path in the backend. Route: Jaime (L5); we review.
 - [x] T8 S7 — P3 model per request type. Closed by L12/L13: the user stays on OpenAI (ChatGPT), and no OpenAI model or thinking level beats gpt-6.1-sol low; no Claude comparison.
-- [ ] T9 S8 — P4 first signal plus sentence TTS on Piper. Route: TBD (after #31/#32).
-- [ ] T10 S9 — P2 composite tools, no screenshot by default, clock in the agent context. Route: inline, branch feat/pc-composite (worktree pi-comp, on feat/pc-media), PR #36: af91b89 (pc_write_in/pc_run, AGENTS.md, before_agent_start clock), f84ee4d (review advisories: no unmatched-window fallback, abort). Native review approved (risk+reliability, item 2); node tests 114 passed, test_install 201 passed. Installed live 2026-11-24. Pending: re-bench `question` + `pc` with the user.
+- [ ] T9 S8 — P4 first signal plus sentence TTS on Piper. Route: TBD. Piper is in main since 2026-11-25 (L21). Blocked on a decision by the user and Jaime: how sentence audio reaches the ESP32 (contract change).
+- [ ] T10 S9 — P2 composite tools, no screenshot by default, clock in the agent context. Route: inline, branch feat/pc-composite (worktree pi-comp, on feat/pc-media), PR #36: af91b89 (pc_write_in/pc_run, AGENTS.md, before_agent_start clock), f84ee4d (review advisories: no unmatched-window fallback, abort). Native review approved (risk+reliability, item 2); node tests 114 passed, test_install 201 passed. Installed live 2026-11-24. In main since 2026-11-25 (#36, L21). Pending: re-bench `question` + `pc` with the user (waits for P1, L15).
 - [x] T11 S10 — Confirmation by action (security, own PR, native review). Route: explore → user decisions (L16) → gentle-ai-worker, branch feat/confirm-by-action (worktree pi-confirm) on feat/pc-composite, PR #37: d4f92f6, b6b2990 (D23), 7c8edb1 (L17 hardening). Native review approved both candidates; independent verify PASS on S10a and L17 (a)-(e); helper 247 OK, node 114 pass. Installed live 2026-11-24. Desktop e2e (L18): pi-confirm 17/17 on the rerun. Follow-up: per-window cross-call memory, ctrl+a ctrl+v.
 - [ ] T12 S11 — P5 local AI measurement. Route: TBD. Deferred by the user (L19).
 - [x] T16 S10a — T11 follow-up: per-window cross-call memory (bounded), and paste/Return/Tab over a pending select-all asks (clear-all). Route: gentle-ai-worker on feat/confirm-by-action (PR #37): a05a8fe (8-window map, 60 s TTL; ctrl+v/shift+Insert/Return/Tab/typed \n \t over select-all ask; tail per wtype run). Native review approved (item 2); independent verify PASS; helper 255 OK, node 114 pass. Pushed and installed live 2026-11-24. Desktop e2e 17/17 (L20).
 - [x] T13 S12 — Cleanup of worktrees and branches. Route: inline. 2026-11-24: removed the merged, clean worktrees pi-ctl, pi-e2e, pi-key, pi-next, pi-rev and their branches, plus 7 local branches already merged into origin/main; local main equals origin/main. Kept: pi-stt (#13 open), pi-arch (docs/latency-architecture, unpushed PDF guide), local-only feat/pc-control-stage-b (15 commits not in main by ancestry) and docs/guia-pantalla (1 commit) for the user to decide.
-- [ ] T14 S5 — Find out why the bench's catalog and PC tools fail (L6), and make the bench flag a request that did not do its job (failed tool or no tool) as an error. Re-run the PC baseline. Route: gentle-ai-worker. Bench now has a `done k/n` column (53371d7); pc-terminal was replaced by pc-archivos (9443579); host 243 passed, 6 skipped. Pending: the user re-runs with `/control on`.
+- [ ] T14 S5 — Find out why the bench's catalog and PC tools fail (L6), and make the bench flag a request that did not do its job (failed tool or no tool) as an error. Re-run the PC baseline. Route: gentle-ai-worker. Bench now has a `done k/n` column (53371d7); pc-terminal was replaced by pc-archivos (9443579); host 243 passed, 6 skipped. The flagging is in main since 2026-11-25 (#34, L21): `run_problem` marks a run `error`, `tool failed` or no-tool. Pending: the user re-runs with `/control on`.
 - [x] T15 S5,S6 — Add a `pc_media(action)` tool to jarvis-input/pc-control (wpctl/playerctl, needs no focused window), so volume and media work through the agent until P1 lands. Route: gentle-ai-worker, branch feat/pc-media (e9f1933, e53ad62, 6676f69 explicit mute/unmute). Native review approved (risk+reliability, item 2). Pending: live check after reinstall.
+- [ ] T17 S13 — STT hardening: validate JARVIS_STT_TIMEOUT_S, one total deadline per transcription, reject `--runs` <= 0, and a rerunnable tools/probe-piper.sh. Route: gentle-ai-worker, branch fix/stt-hardening (worktree pi-stt) from main.
+- [ ] T18 S12 — Cleanup after the 2026-11-25 merges: remove the merged remote branches and the clean pi-* worktrees. Keep pi-arch (3 unpushed commits), feat/pc-control-stage-b and docs/guia-pantalla for the user to decide. Route: inline, last.
 
 ## Log
 
@@ -192,3 +214,18 @@ lands on `feat/stt-whisper` (worktree `pi-stt`).
   Clears asked 5/5 in Vim plus ctrl+a Delete in the browser; Return on a plain page, the "sin
   borrar" intent and typing "borrar todo, enviar y pagar" did not ask. The intermittent
   MetaLeft typing failure (L18) did not reappear.
+- L21 (2026-11-25, user): "pero hagamos nosotros todo lo de merge, hazlo en orden y resuleve
+  conflictos", then "Sí, todos hasta main". Every open PR was merged to main without Jaime's
+  review of #13 and #33-#38: #32 822f551 → #31 9352cbe → #30 d2eeca2 (out of draft) → #13
+  fcd8958 → #38 6432d71 (retargeted to main) → #37 dedbe60 → #36 5833915 → #35 66f4116 → #34
+  55696cc → #33 df865c3. The only conflict was #13 against Piper in `backend/app/main.py` and
+  `backend/README.md`, resolved in e3e182f; that also replaced the README link pinned to
+  `blob/036a6d1` (S2) with the same-file anchor. Native review of the #13 range approved
+  (lineage review-4c361318ab958e14) with three non-blocking findings, now S13. Independent
+  verify PASS on main df865c3: backend 72 passed, 7 skipped; CI green on main after each merge.
+- L22 (2026-11-25, user): "armame el plan que puedas hacer en autmotico", then "dale". Approved
+  automatic plan: record the merges here, harden STT (S13, T17) in one small PR, clean up
+  merged branches and worktrees (T18). Checked against main: the bench already flags a run that
+  did not do its job (T14), so no code is left there. Not automatic: the T14 baseline re-run
+  (model calls and the user's desktop), T9 (contract decision), pi-arch's unpushed commits.
+  PRs stay open for the user to merge.
