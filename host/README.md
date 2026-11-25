@@ -287,19 +287,19 @@ backend no cambian. Medido el 2026-11-25 con el mismo modelo: las preguntas baja
 
 **Carpeta propia de Pi.** Pi necesita escribir en su carpeta de agente (configuración,
 `trust.json` y su `.lock`, cuentas, caché de modelos; sin eso no arranca). El Pi del
-puente no usa la tuya (`~/.pi/agent`) sino una suya,
-`${XDG_STATE_HOME:-~/.local/state}/jarvis/pi-agent` (0700, y 0700 también las carpetas
-de arriba que cree el script), que la unidad le pasa en `PI_CODING_AGENT_DIR` y es lo
+puente no usa la tuya (`~/.pi/agent`) sino una suya, fija,
+`~/.local/state/jarvis/pi-agent` (0700, y 0700 también las carpetas de arriba que cree
+el script), que la unidad le pasa en `PI_CODING_AGENT_DIR` y es lo
 único de Pi donde el servicio puede escribir. `~/.pi` queda de **solo lectura** para el
 puente: si pudiera escribirla, el agente podría dejar ahí una extensión o tocar un
 paquete y tu `pi` de la terminal, que corre sin aislamiento, la ejecutaría al arrancar.
 La carpeta tampoco está dentro de `~/.gentle-dot` ni de `~/Jarvis`, donde también escribe
-`gentle-dot.service`: su agente podría cambiarla por un enlace a `~/.pi`. Se cambia con
-`--pi-agent-dir DIR` (o `JARVIS_PIBRIDGE_AGENT_DIR`); el script rechaza, antes de
-escribir nada, una que sea `~/.pi`, `~/.gentle-dot` o `~/Jarvis`, que esté dentro de
-alguna o que contenga alguna (`$HOME`, `/`, un enlace a `$HOME`), mirando la ruta ya
-resuelta; y una que ya exista con permisos para el grupo u otros (dice el
-`chmod 700` que la arregla). Si quedó `~/.gentle-dot/pi-agent` de una versión anterior
+`gentle-dot.service`: su agente podría cambiarla por un enlace a `~/.pi`. No se puede
+cambiar de lugar, y la unidad la nombra tal cual. Antes de escribir nada, el script se
+niega a instalar si algo de esa ruta bajo `~` es un enlace simbólico (`~/.local`,
+`~/.local/state`, `~/.local/state/jarvis` o la propia carpeta; dice la ruta y adónde
+apunta), si existe pero no es una carpeta, o si ya existe con permisos para el grupo u
+otros (dice el `chmod 700` que la arregla). Si quedó `~/.gentle-dot/pi-agent` de una versión anterior
 del script, no la mueve ni la borra: avisa que ya no se usa (no corras Pi en ella). El
 home sigue visible, así que las extensiones extra de `~/.pi/agent/npm/...` que nombres en
 `JARVIS_PI_EXTENSIONS` se siguen cargando (solo lectura).
@@ -327,9 +327,9 @@ env PI_CODING_AGENT_DIR=$HOME/.local/state/jarvis/pi-agent "$(command -v pi)" -n
 systemctl --user enable --now jarvis-input.service jarvis-pibridge.service
 ```
 
-Con `--enable` sobre una carpeta vacía el script habilita y arranca el servicio igual,
-pero avisa que el agente no puede hacer nada hasta que exista la sesión (sin cuenta no
-hay modelo): inicia sesión con la línea de arriba y luego
+Con `--enable` sobre una carpeta vacía el script habilita y arranca el servicio igual
+(Pi ya arrancó en esa carpeta) y avisa que es inofensivo: sin sesión no corre ningún
+modelo, así que ninguna herramienta puede actuar. Inicia sesión con la línea de arriba y luego
 `systemctl --user restart jarvis-pibridge.service`.
 
 *Volver a iniciar sesión* (otra cuenta, sesión vencida; la carpeta ya tiene contenido):
@@ -366,8 +366,8 @@ y crea la carpeta propia de Pi (0700) si falta; `--check` dice si esa carpeta ex
 mira si tiene una sesión). Con `--enable`, si `gentle-dot.service` está instalado,
 primero corre `systemctl --user disable --now gentle-dot.service` y después habilita y
 arranca el puente; la unidad de Gentle Dot queda en su lugar. Si ese `disable --now` o el
-arranque del puente fallan, puede no quedar ninguno de los dos corriendo: el script lo
-dice y da los comandos para ver el error y volver a Gentle Dot. Sin `--enable` no habilita, arranca ni detiene nada:
+arranque del puente fallan, puede no quedar ninguno de los dos corriendo: el script dice
+qué paso falló (el `disable` de Gentle Dot o el `enable`, `start` o `restart` del puente) y da los comandos para ver el error y volver a Gentle Dot. Sin `--enable` no habilita, arranca ni detiene nada:
 solo corre `systemctl --user daemon-reload` si la unidad cambió, y avisa qué correr.
 
 ### Volver a Gentle Dot

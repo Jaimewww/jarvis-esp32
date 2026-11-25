@@ -444,8 +444,7 @@ por default», «Puente con protocolo de Gentle Dot»).
   máquina con `host/systemd/install.sh --pi-bridge`, que instala
   `jarvis-pibridge.service` con el mismo aislamiento que `gentle-dot.service` más
   escritura en una carpeta de agente propia del Pi del puente
-  (`PI_CODING_AGENT_DIR`, por defecto `${XDG_STATE_HOME:-~/.local/state}/jarvis/pi-agent`,
-  0700). Las dos unidades
+  (`PI_CODING_AGENT_DIR`, fija: `~/.local/state/jarvis/pi-agent`, 0700). Las dos unidades
   se excluyen (`Conflicts=`) y el instalador deshabilita una al habilitar la otra.
 - **`~/.pi` queda de solo lectura** para el servicio (S10 y S15.1, L9). Con escritura
   ahí, el agente podría dejar una extensión en `~/.pi/agent/extensions/` o tocar
@@ -454,13 +453,17 @@ por default», «Puente con protocolo de Gentle Dot»).
   de `~/.pi` se siguen leyendo. El costo es iniciar sesión una vez en esa carpeta
   (`/login`, con el comando que imprime el instalador); el instalador no copia ni lee
   credenciales.
-- **La carpeta de agente queda fuera de todo lo que alguna unidad puede escribir** (S16.1
-  y S16.2, L10). Antes estaba en `~/.gentle-dot/pi-agent`, que `gentle-dot.service`
-  puede escribir: su agente podía cambiarla por un enlace a `~/.pi`, y systemd resuelve
-  los enlaces de `ReadWritePaths=`. El instalador rechaza, sobre la ruta resuelta, una
-  carpeta que sea `~/.pi`, `~/.gentle-dot` o `~/Jarvis`, que esté dentro de alguna o que
-  contenga alguna (`$HOME`, `/`), y una que ya exista con permisos para el grupo u otros.
-  La carpeta vieja, si existe, no se mueve ni se borra.
+- **La carpeta de agente es fija y queda fuera de todo lo que alguna unidad puede
+  escribir** (S16.2, L10; S17, L11). Antes estaba en `~/.gentle-dot/pi-agent`, que
+  `gentle-dot.service` puede escribir: su agente podía cambiarla por un enlace a `~/.pi`,
+  y systemd resuelve los enlaces de `ReadWritePaths=`. Ahora es siempre
+  `~/.local/state/jarvis/pi-agent`, sin forma de cambiarla: tres verificaciones seguidas
+  encontraron un camino nuevo a través de una ubicación configurable, que nadie había
+  pedido. La unidad la nombra tal cual en `PI_CODING_AGENT_DIR` y en `ReadWritePaths=`,
+  y el instalador se niega a instalar si esa ruta, resuelta, no es la misma que escrita
+  (un enlace simbólico en `~/.local`, `~/.local/state`, `~/.local/state/jarvis` o en la
+  propia carpeta), o si ya existe con permisos para el grupo u otros. La carpeta vieja,
+  si existe, no se mueve ni se borra.
 - **Pi corre fuera del aislamiento solo en una carpeta que el agente nunca escribió**
   (S16.3, L10). Para `/login` Pi corre sin aislamiento en esa carpeta y ejecuta lo que
   haya: paquetes y `npmCommand` de `settings.json`, entradas `!comando` de `auth.json` o
