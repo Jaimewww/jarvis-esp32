@@ -3,6 +3,7 @@
 #
 #   host/systemd/install.sh --gentle-dot-dir DIR [--node PATH] [--agent-home DIR] [--bin-dir DIR] [--headless] [--dry-run] [--enable]
 #   host/systemd/install.sh --gentle-dot-dir DIR [--node PATH] [--agent-home DIR] [--bin-dir DIR] --check
+#   host/systemd/install.sh --pi-bridge [--pi PATH] [--node PATH] [--agent-home DIR] [--bin-dir DIR] [--headless] [--dry-run|--check] [--enable]
 #   host/systemd/install.sh --uninstall [--dry-run]
 #
 # It only writes ${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/gentle-dot.service, its
@@ -24,17 +25,25 @@
 # (--bin-dir; backup jarvis.bak); when missing, ~/.gentle-dot and the agent's work folder
 # ~/Jarvis (0700; the daemon's only writable folders in a read-only home); and only calls
 # `systemctl --user`.
+# --pi-bridge (odd/tasks/pi-bridge.md S10) writes jarvis-pibridge.service (+ .bak) instead of
+# gentle-dot.service, the same files otherwise, and ~/.pi (0700) when missing; it needs no
+# Gentle Dot checkout. --enable disables and stops whichever of the two units it is not
+# installing (both listen on 127.0.0.1:4317) and leaves its file in place; --uninstall
+# removes both.
 # It never runs as root, never enables linger, never installs, builds or downloads
 # Gentle Dot, and touches nothing else under ~/.gentle-dot (data, token).
 # See host/README.md, section "Daemon de Gentle Dot como servicio".
 set -euo pipefail
 
 readonly UNIT_NAME="gentle-dot.service"
+# Pi bridge (S10): the alternative to gentle-dot.service, same port; --pi-bridge picks it.
+readonly BRIDGE_UNIT_NAME="jarvis-pibridge.service"
 # Upstream commit the decisions pin (docs/decisiones.md D1 and D8).
 readonly PINNED_COMMIT="f97d56d884b1d3c178f415b95d486464e7b220bf"
 readonly NODE_MIN_MAJOR=24
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly TEMPLATE="${SCRIPT_DIR}/${UNIT_NAME}.in"
+readonly BRIDGE_TEMPLATE="${SCRIPT_DIR}/${BRIDGE_UNIT_NAME}.in"
 # Rules the daemon's agent reads when the engine starts (e.g. launch GUI apps detached).
 readonly RULES_SRC="$(cd -- "${SCRIPT_DIR}/.." && pwd)/gentle-dot/AGENTS.md"
 # Jarvis PC control (S12): Pi extension (entry + pure core) and the emergency stop.
@@ -68,7 +77,12 @@ Uso: install.sh [opciones]
   --agent-home DIR      carpeta del agente del daemon, donde van AGENTS.md y la extensión
                         (también por GENTLE_DOT_AGENT_HOME; por defecto ~/.gentle-dot/agent)
   --bin-dir DIR         donde va jarvis-stop (también por JARVIS_BIN_DIR; por defecto ~/.local/bin)
-  --enable              además habilita y arranca el servicio (enable --now)
+  --pi-bridge           instala el puente de Pi (jarvis-pibridge.service) en lugar de
+                        Gentle Dot; no necesita --gentle-dot-dir. Gentle Dot sigue siendo
+                        lo predeterminado: sin esta opción se instala Gentle Dot
+  --pi PATH             binario de pi para --pi-bridge (por defecto: `command -v pi`)
+  --enable              además habilita y arranca el servicio (enable --now); antes
+                        detiene y deshabilita el otro (Gentle Dot o el puente)
   --headless            sin sesión gráfica: arranca con default.target en vez de
                         graphical-session.target (el agente no podrá abrir ventanas)
   --check               solo verifica los requisitos; no escribe ni llama a systemctl
@@ -95,14 +109,18 @@ sin red conserva el entorno anterior) y el lanzador jarvis junto a jarvis-stop (
 jarvis.bak). Crea ~/Jarvis (0700): la carpeta de trabajo, lo único del home, además de
 ~/.gentle-dot, donde el daemon puede escribir.
 Tras instalar, el aislamiento rige desde el siguiente arranque del daemon (--enable lo reinicia).
+Con --pi-bridge escribe jarvis-pibridge.service (y su copia .bak) en lugar de gentle-dot.service
+y crea ~/.pi (0700) si falta; el puente corre con el entorno de Python de la TUI. Gentle Dot y el
+puente usan el mismo puerto: --enable detiene y deshabilita el otro y deja su unidad instalada,
+así que volver es correr este script con la otra opción y --enable. --uninstall quita las dos.
 EOF
 }
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 say() { printf '%s\n' "$*"; }
 
-DRY_RUN=0 ENABLE=0 CHECK=0 UNINSTALL=0 ALLOW_UNPINNED=0 ALLOW_DIRTY=0 HEADLESS=0
-GD_DIR="${GENTLE_DOT_DIR:-}" NODE_BIN="" AGENT_HOME="${GENTLE_DOT_AGENT_HOME:-}" BIN_DIR="${JARVIS_BIN_DIR:-}"
+DRY_RUN=0 ENABLE=0 CHECK=0 UNINSTALL=0 ALLOW_UNPINNED=0 ALLOW_DIRTY=0 HEADLESS=0 PI_BRIDGE=0
+GD_DIR="${GENTLE_DOT_DIR:-}" NODE_BIN="" PI_BIN="" AGENT_HOME="${GENTLE_DOT_AGENT_HOME:-}" BIN_DIR="${JARVIS_BIN_DIR:-}"
 
 while (($#)); do
 	case "$1" in
@@ -117,6 +135,8 @@ while (($#)); do
 	--allow-unpinned) ALLOW_UNPINNED=1; shift ;;
 	--allow-dirty) ALLOW_DIRTY=1; shift ;;
 	--headless) HEADLESS=1; shift ;;
+	--pi-bridge) PI_BRIDGE=1; shift ;;
+	--pi) [[ $# -ge 2 ]] || die "--pi necesita un valor"; PI_BIN="$2"; shift 2 ;;
 	-h | --help) usage; exit 0 ;;
 	*) usage >&2; die "opción desconocida: $1" ;;
 	esac
@@ -135,6 +155,18 @@ readonly UNIT_PATH="${UNIT_DIR}/${UNIT_NAME}"
 readonly BACKUP_PATH="${UNIT_PATH}.bak"
 # Exists while systemd has not loaded the last change: a later run reloads again.
 readonly PENDING_PATH="${UNIT_PATH}.reload-pending"
+readonly BRIDGE_UNIT_PATH="${UNIT_DIR}/${BRIDGE_UNIT_NAME}"
+# The unit this run installs (SVC_*) and the other one on the same port (ALT_*). One reload
+# marker for both: it means "a daemon-reload is owed", whichever unit changed.
+if ((PI_BRIDGE)); then
+	SVC_NAME="${BRIDGE_UNIT_NAME}" SVC_PATH="${BRIDGE_UNIT_PATH}" SVC_TEMPLATE="${BRIDGE_TEMPLATE}"
+	ALT_NAME="${UNIT_NAME}" ALT_PATH="${UNIT_PATH}"
+else
+	SVC_NAME="${UNIT_NAME}" SVC_PATH="${UNIT_PATH}" SVC_TEMPLATE="${TEMPLATE}"
+	ALT_NAME="${BRIDGE_UNIT_NAME}" ALT_PATH="${BRIDGE_UNIT_PATH}"
+fi
+readonly SVC_NAME SVC_PATH SVC_TEMPLATE ALT_NAME ALT_PATH
+readonly SVC_BAK="${SVC_PATH}.bak"
 AGENT_HOME="${AGENT_HOME:-${HOME}/.gentle-dot/agent}"
 [[ "${AGENT_HOME}" == /* ]] || die "--agent-home (o GENTLE_DOT_AGENT_HOME) debe ser una ruta absoluta: ${AGENT_HOME}"
 readonly AGENT_HOME
@@ -160,6 +192,8 @@ readonly APPS_DIR="${HOME}/.local/share/applications"
 # S15: the daemon's only writable folders in the home (ReadWritePaths=, no "-").
 readonly GD_DATA="${HOME}/.gentle-dot"
 readonly WORK_DIR="${HOME}/Jarvis"
+# S10: Pi's own data, writable for the bridge only (ReadWritePaths=, no "-").
+readonly PI_DATA="${HOME}/.pi"
 readonly TUI_ROOT="${JARVIS_DATA}/tui"
 readonly TUI_DIR="${TUI_ROOT}/jarvis"
 readonly TUI_BAK="${TUI_ROOT}/jarvis.bak"
@@ -200,14 +234,17 @@ need_systemctl() {
 PENDING_MSG="Recarga pendiente: un daemon-reload anterior falló; se reintenta."
 
 if ((UNINSTALL)); then
-	if [[ ! -e "${UNIT_PATH}" && ! -e "${INPUT_UNIT_PATH}" && ! -e "${PENDING_PATH}" ]]; then
+	if [[ ! -e "${UNIT_PATH}" && ! -e "${INPUT_UNIT_PATH}" && ! -e "${BRIDGE_UNIT_PATH}" && ! -e "${PENDING_PATH}" ]]; then
 		say "No hay unidad en ${UNIT_PATH}; nada que desinstalar."
 		keep_rules
 		exit 0
 	fi
 	need_systemctl
 	removed=0
-	for pair in "${UNIT_NAME}:${UNIT_PATH}" "${INPUT_UNIT_NAME}:${INPUT_UNIT_PATH}"; do
+	# The bridge's unit is reset too only when it was installed (S10).
+	reset_units=("${UNIT_NAME}" "${INPUT_UNIT_NAME}")
+	[[ ! -e "${BRIDGE_UNIT_PATH}" ]] || reset_units+=("${BRIDGE_UNIT_NAME}")
+	for pair in "${UNIT_NAME}:${UNIT_PATH}" "${INPUT_UNIT_NAME}:${INPUT_UNIT_PATH}" "${BRIDGE_UNIT_NAME}:${BRIDGE_UNIT_PATH}"; do
 		[[ -e "${pair#*:}" ]] || continue
 		# disable --now fails when the manager no longer knows the unit; removal goes on.
 		run systemctl --user disable --now "${pair%%:*}" || say "aviso: disable --now de ${pair%%:*} falló; se sigue"
@@ -219,8 +256,9 @@ if ((UNINSTALL)); then
 	run systemctl --user daemon-reload ||
 		die "systemctl --user daemon-reload falló; ${UNIT_PATH} ya se borró pero systemd no recargó. Vuelve a ejecutar --uninstall para reintentar la recarga."
 	((DRY_RUN)) || rm -f -- "${PENDING_PATH}"
-	run systemctl --user reset-failed "${UNIT_NAME}" "${INPUT_UNIT_NAME}" 2>/dev/null || true
+	run systemctl --user reset-failed "${reset_units[@]}" 2>/dev/null || true
 	[[ ! -e "${BACKUP_PATH}" ]] || say "Se conserva la copia ${BACKUP_PATH}."
+	[[ ! -e "${BRIDGE_UNIT_PATH}.bak" ]] || say "Se conserva la copia ${BRIDGE_UNIT_PATH}.bak."
 	[[ ! -e "${INPUT_UNIT_BAK}" ]] || say "Se conserva la copia ${INPUT_UNIT_BAK}."
 	keep_rules
 	say "Desinstalado. Los datos del daemon (~/.gentle-dot, con su token) no se tocaron."
@@ -229,62 +267,99 @@ fi
 
 # --- Prerequisites -------------------------------------------------------------
 
-[[ -n "${GD_DIR}" ]] || die "falta --gentle-dot-dir (o GENTLE_DOT_DIR): la ruta del checkout de Gentle Dot"
-[[ -d "${GD_DIR}" ]] || die "no existe el directorio ${GD_DIR}"
-GD_DIR="$(cd -- "${GD_DIR}" && pwd -P)"
-# Characters that would need escaping in a unit file are refused instead.
-[[ "${GD_DIR}" =~ ^[A-Za-z0-9._/+@-]+$ ]] ||
-	die "ruta de Gentle Dot con caracteres no admitidos (espacios, %, comillas…): ${GD_DIR}"
-readonly CLI="${GD_DIR}/packages/daemon/src/cli.ts"
-[[ -f "${CLI}" ]] || die "no es un checkout de Gentle Dot: falta ${CLI}"
-
-if [[ -e "${GD_DIR}/.git" ]]; then
-	command -v git >/dev/null 2>&1 || die "hace falta git para comprobar el commit fijado"
-	head_commit="$(git -C "${GD_DIR}" rev-parse HEAD 2>/dev/null)" || die "no se pudo leer el commit de ${GD_DIR}"
-	if [[ "${head_commit}" != "${PINNED_COMMIT}" ]]; then
-		((ALLOW_UNPINNED)) || die "el checkout está en ${head_commit}, no en el commit fijado ${PINNED_COMMIT} (git -C ${GD_DIR} switch --detach ${PINNED_COMMIT:0:7}; o --allow-unpinned)"
-		say "aviso: checkout en ${head_commit}, no en el commit fijado ${PINNED_COMMIT}"
+if ((PI_BRIDGE)); then
+	# S10: the bridge runs pi (a `#!/usr/bin/env node` script) with the TUI's Python; no
+	# Gentle Dot checkout. Both binaries go into the unit verbatim, so they must be real
+	# files, not version-manager shims (a service has no shell to pick the version).
+	if [[ -z "${PI_BIN}" ]]; then
+		PI_BIN="$(command -v pi 2>/dev/null)" || die "no se encontró pi; indica --pi /ruta/a/pi"
 	fi
-	# Uncommitted or untracked files mean the service would not run the reviewed commit.
-	dirty="$(git -C "${GD_DIR}" status --porcelain 2>/dev/null)" || die "no se pudo leer git status de ${GD_DIR}"
-	if [[ -n "${dirty}" ]]; then
-		((ALLOW_DIRTY)) || die "el checkout ${GD_DIR} tiene cambios sin commitear (git -C ${GD_DIR} status); el servicio no correría el commit revisado. Haz commit o descártalos, o usa --allow-dirty."
-		say "aviso: el checkout ${GD_DIR} tiene cambios sin commitear; se sigue por --allow-dirty"
+	if [[ -z "${NODE_BIN}" ]]; then
+		NODE_BIN="$(command -v node 2>/dev/null)" || die "no se encontró node; indica --node /ruta/a/node"
 	fi
+	for pair in "--pi:${PI_BIN}" "--node:${NODE_BIN}"; do
+		opt="${pair%%:*}" bin="${pair#*:}"
+		[[ "${bin}" == /* ]] || die "${opt} debe ser una ruta absoluta: ${bin}"
+		[[ -x "${bin}" && -f "${bin}" ]] || die "no es ejecutable: ${bin}"
+		[[ "${bin}" =~ ${UNIT_SAFE_RE} ]] || die "ruta de ${opt#--} con caracteres no admitidos: ${bin}"
+		case "${bin}" in
+		*/shims/*) die "${bin} es un shim de un gestor de versiones; indica el binario real con ${opt}" ;;
+		esac
+	done
+	node_version="$("${NODE_BIN}" --version 2>/dev/null)" || die "no se pudo ejecutar ${NODE_BIN} --version"
+	# pi's and node's directories first: pi finds node through PATH.
+	SEARCH_PATH="$(dirname -- "${PI_BIN}")"
+	node_dir="$(dirname -- "${NODE_BIN}")"
+	[[ "${node_dir}" == "${SEARCH_PATH}" ]] || SEARCH_PATH="${SEARCH_PATH}:${node_dir}"
+	SEARCH_PATH="${SEARCH_PATH}:/usr/local/bin:/usr/bin"
+	[[ -f "${TUI_SRC_DIR}/pibridge/__main__.py" ]] ||
+		die "falta el puente ${TUI_SRC_DIR}/pibridge/__main__.py (paquete jarvis de host/, se arranca con python -m jarvis.pibridge)"
+	[[ ! -e "${PI_DATA}" || -d "${PI_DATA}" ]] || die "${PI_DATA} existe pero no es una carpeta; muévelo"
 else
-	((ALLOW_UNPINNED)) || die "${GD_DIR} no es un repositorio git; no se puede comprobar el commit fijado (o --allow-unpinned)"
-	say "aviso: sin git en ${GD_DIR}; no se comprobó el commit fijado"
-fi
-[[ -d "${GD_DIR}/node_modules" ]] || die "faltan las dependencias de Gentle Dot: cd ${GD_DIR} && pnpm install --frozen-lockfile"
-[[ -d "${GD_DIR}/packages/ui/dist/app" ]] ||
-	say "aviso: sin interfaz web compilada (packages/ui/dist/app); la TUI funciona igual. Para tenerla: cd ${GD_DIR} && pnpm build"
+	[[ -n "${GD_DIR}" ]] || die "falta --gentle-dot-dir (o GENTLE_DOT_DIR): la ruta del checkout de Gentle Dot"
+	[[ -d "${GD_DIR}" ]] || die "no existe el directorio ${GD_DIR}"
+	GD_DIR="$(cd -- "${GD_DIR}" && pwd -P)"
+	# Characters that would need escaping in a unit file are refused instead.
+	[[ "${GD_DIR}" =~ ^[A-Za-z0-9._/+@-]+$ ]] ||
+		die "ruta de Gentle Dot con caracteres no admitidos (espacios, %, comillas…): ${GD_DIR}"
+	readonly CLI="${GD_DIR}/packages/daemon/src/cli.ts"
+	[[ -f "${CLI}" ]] || die "no es un checkout de Gentle Dot: falta ${CLI}"
 
-if [[ -z "${NODE_BIN}" ]]; then
-	NODE_BIN="$(command -v node 2>/dev/null)" || die "no se encontró node; indica --node /ruta/a/node (Node ${NODE_MIN_MAJOR}+)"
-fi
-[[ "${NODE_BIN}" == /* ]] || die "--node debe ser una ruta absoluta: ${NODE_BIN}"
-[[ -x "${NODE_BIN}" ]] || die "no es ejecutable: ${NODE_BIN}"
-[[ "${NODE_BIN}" =~ ^[A-Za-z0-9._/+@-]+$ ]] || die "ruta de node con caracteres no admitidos: ${NODE_BIN}"
-# A version-manager shim (mise, asdf, volta…) picks the version from the working
-# directory and the shell, which a service does not have: the real binary is required.
-case "${NODE_BIN}" in
-*/shims/*) die "${NODE_BIN} es un shim de un gestor de versiones; indica el binario real con --node (por ejemplo, \$(mise where node@24)/bin/node)" ;;
-esac
-node_version="$("${NODE_BIN}" --version 2>/dev/null)" || die "no se pudo ejecutar ${NODE_BIN} --version"
-node_major="${node_version#v}"
-node_major="${node_major%%.*}"
-[[ "${node_major}" =~ ^[0-9]+$ ]] || die "versión de node no reconocida: ${node_version}"
-((node_major >= NODE_MIN_MAJOR)) || die "Gentle Dot necesita Node ${NODE_MIN_MAJOR}+; ${NODE_BIN} es ${node_version}"
+	if [[ -e "${GD_DIR}/.git" ]]; then
+		command -v git >/dev/null 2>&1 || die "hace falta git para comprobar el commit fijado"
+		head_commit="$(git -C "${GD_DIR}" rev-parse HEAD 2>/dev/null)" || die "no se pudo leer el commit de ${GD_DIR}"
+		if [[ "${head_commit}" != "${PINNED_COMMIT}" ]]; then
+			((ALLOW_UNPINNED)) || die "el checkout está en ${head_commit}, no en el commit fijado ${PINNED_COMMIT} (git -C ${GD_DIR} switch --detach ${PINNED_COMMIT:0:7}; o --allow-unpinned)"
+			say "aviso: checkout en ${head_commit}, no en el commit fijado ${PINNED_COMMIT}"
+		fi
+		# Uncommitted or untracked files mean the service would not run the reviewed commit.
+		dirty="$(git -C "${GD_DIR}" status --porcelain 2>/dev/null)" || die "no se pudo leer git status de ${GD_DIR}"
+		if [[ -n "${dirty}" ]]; then
+			((ALLOW_DIRTY)) || die "el checkout ${GD_DIR} tiene cambios sin commitear (git -C ${GD_DIR} status); el servicio no correría el commit revisado. Haz commit o descártalos, o usa --allow-dirty."
+			say "aviso: el checkout ${GD_DIR} tiene cambios sin commitear; se sigue por --allow-dirty"
+		fi
+	else
+		((ALLOW_UNPINNED)) || die "${GD_DIR} no es un repositorio git; no se puede comprobar el commit fijado (o --allow-unpinned)"
+		say "aviso: sin git en ${GD_DIR}; no se comprobó el commit fijado"
+	fi
+	[[ -d "${GD_DIR}/node_modules" ]] || die "faltan las dependencias de Gentle Dot: cd ${GD_DIR} && pnpm install --frozen-lockfile"
+	[[ -d "${GD_DIR}/packages/ui/dist/app" ]] ||
+		say "aviso: sin interfaz web compilada (packages/ui/dist/app); la TUI funciona igual. Para tenerla: cd ${GD_DIR} && pnpm build"
 
-[[ -f "${TEMPLATE}" ]] || die "falta la plantilla ${TEMPLATE}"
+	if [[ -z "${NODE_BIN}" ]]; then
+		NODE_BIN="$(command -v node 2>/dev/null)" || die "no se encontró node; indica --node /ruta/a/node (Node ${NODE_MIN_MAJOR}+)"
+	fi
+	[[ "${NODE_BIN}" == /* ]] || die "--node debe ser una ruta absoluta: ${NODE_BIN}"
+	[[ -x "${NODE_BIN}" ]] || die "no es ejecutable: ${NODE_BIN}"
+	[[ "${NODE_BIN}" =~ ^[A-Za-z0-9._/+@-]+$ ]] || die "ruta de node con caracteres no admitidos: ${NODE_BIN}"
+	# A version-manager shim (mise, asdf, volta…) picks the version from the working
+	# directory and the shell, which a service does not have: the real binary is required.
+	case "${NODE_BIN}" in
+	*/shims/*) die "${NODE_BIN} es un shim de un gestor de versiones; indica el binario real con --node (por ejemplo, \$(mise where node@24)/bin/node)" ;;
+	esac
+	node_version="$("${NODE_BIN}" --version 2>/dev/null)" || die "no se pudo ejecutar ${NODE_BIN} --version"
+	node_major="${node_version#v}"
+	node_major="${node_major%%.*}"
+	[[ "${node_major}" =~ ^[0-9]+$ ]] || die "versión de node no reconocida: ${node_version}"
+	((node_major >= NODE_MIN_MAJOR)) || die "Gentle Dot necesita Node ${NODE_MIN_MAJOR}+; ${NODE_BIN} es ${node_version}"
+fi
+
+[[ -f "${SVC_TEMPLATE}" ]] || die "falta la plantilla ${SVC_TEMPLATE}"
 # Paths the sandboxed unit names verbatim (ReadOnlyPaths=, the wrapper).
 # The TUI paths also go verbatim, quoted, into its sh launcher.
 for p in "${UNIT_DIR}" "${STOP_PATH}" "${AGENT_HOME}" "${SBX_PATH}" "${TUI_LAUNCHER}" "${TUI_ROOT}" "${WORK_DIR}"; do
 	[[ "${p}" =~ ${UNIT_SAFE_RE} ]] || die "ruta con caracteres no admitidos en una unidad (espacios, %, comillas…): ${p}"
 done
-unit_text="$(sed -e "s|@NODE@|${NODE_BIN}|g" -e "s|@GENTLE_DOT_DIR@|${GD_DIR}|g" -e "s|@SANDBOX_EXEC@|${SBX_PATH}|g" \
-	-e "s|@UNIT_DIR@|${UNIT_DIR}|g" -e "s|@STOP_PATH@|${STOP_PATH}|g" -e "s|@TUI_LAUNCHER@|${TUI_LAUNCHER}|g" \
-	-e "s|@AGENT_HOME@|${AGENT_HOME}|g" "${TEMPLATE}")"
+if ((PI_BRIDGE)); then
+	unit_text="$(sed -e "s|@PI@|${PI_BIN}|g" -e "s|@SEARCH_PATH@|${SEARCH_PATH}|g" -e "s|@TUI_VENV@|${TUI_VENV}|g" \
+		-e "s|@TUI_ROOT@|${TUI_ROOT}|g" -e "s|@SANDBOX_EXEC@|${SBX_PATH}|g" \
+		-e "s|@UNIT_DIR@|${UNIT_DIR}|g" -e "s|@STOP_PATH@|${STOP_PATH}|g" -e "s|@TUI_LAUNCHER@|${TUI_LAUNCHER}|g" \
+		-e "s|@AGENT_HOME@|${AGENT_HOME}|g" "${SVC_TEMPLATE}")"
+else
+	unit_text="$(sed -e "s|@NODE@|${NODE_BIN}|g" -e "s|@GENTLE_DOT_DIR@|${GD_DIR}|g" -e "s|@SANDBOX_EXEC@|${SBX_PATH}|g" \
+		-e "s|@UNIT_DIR@|${UNIT_DIR}|g" -e "s|@STOP_PATH@|${STOP_PATH}|g" -e "s|@TUI_LAUNCHER@|${TUI_LAUNCHER}|g" \
+		-e "s|@AGENT_HOME@|${AGENT_HOME}|g" "${SVC_TEMPLATE}")"
+fi
 ! grep -q '@[A-Z_]*@' <<<"${unit_text}" || die "la plantilla dejó variables sin reemplazar"
 # The template starts with the graphical session; --headless installs into default.target.
 WANTED_TARGET="graphical-session.target" OTHER_TARGET="default.target"
@@ -296,7 +371,7 @@ fi
 grep -qxF "WantedBy=${WANTED_TARGET}" <<<"${unit_text}" || die "la plantilla no tiene WantedBy=${WANTED_TARGET}"
 # A link left by an earlier install under the other target (e.g. default.target before the
 # unit moved to the graphical session) keeps starting the service there: reenable drops it.
-STALE_LINK="${UNIT_DIR}/${OTHER_TARGET}.wants/${UNIT_NAME}"
+STALE_LINK="${UNIT_DIR}/${OTHER_TARGET}.wants/${SVC_NAME}"
 stale=0
 [[ -L "${STALE_LINK}" ]] && stale=1
 
@@ -459,7 +534,12 @@ if ((CHECK)); then
 	missing) say "Reglas del agente: faltan en ${RULES_PATH} (install.sh las instala)" ;;
 	different) say "Reglas del agente desactualizadas: ${RULES_PATH} (install.sh las reemplaza y guarda la anterior en ${RULES_BAK})" ;;
 	esac
-	say "OK: Gentle Dot en ${GD_DIR}, node ${node_version} (${NODE_BIN}); la unidad iría a ${UNIT_PATH}"
+	if ((PI_BRIDGE)); then
+		if [[ -d "${PI_DATA}" ]]; then say "Datos de Pi: ${PI_DATA}"; else say "Datos de Pi: falta ${PI_DATA} (install.sh la crea, 0700)"; fi
+		say "OK: puente de Pi con ${PI_BIN} y node ${node_version} (${NODE_BIN}); la unidad iría a ${SVC_PATH}"
+	else
+		say "OK: Gentle Dot en ${GD_DIR}, node ${node_version} (${NODE_BIN}); la unidad iría a ${UNIT_PATH}"
+	fi
 	exit 0
 fi
 
@@ -468,31 +548,31 @@ fi
 need_systemctl
 changed=1 pending=0
 [[ -e "${PENDING_PATH}" ]] && pending=1
-if [[ -f "${UNIT_PATH}" ]] && [[ "$(<"${UNIT_PATH}")" == "${unit_text}" ]]; then
+if [[ -f "${SVC_PATH}" ]] && [[ "$(<"${SVC_PATH}")" == "${unit_text}" ]]; then
 	changed=0
-	((pending)) || say "Sin cambios: ${UNIT_PATH} ya está al día."
+	((pending)) || say "Sin cambios: ${SVC_PATH} ya está al día."
 fi
 
 if ((changed)); then
 	if ((DRY_RUN)); then
 		say "[dry-run] mkdir -p ${UNIT_DIR}"
-		[[ ! -f "${UNIT_PATH}" ]] || say "[dry-run] copia de la unidad anterior en ${BACKUP_PATH}"
-		say "[dry-run] escribir ${UNIT_PATH}:"
+		[[ ! -f "${SVC_PATH}" ]] || say "[dry-run] copia de la unidad anterior en ${SVC_BAK}"
+		say "[dry-run] escribir ${SVC_PATH}:"
 		printf '%s\n' "${unit_text}" | sed 's/^/    | /'
 	else
 		mkdir -p -- "${UNIT_DIR}"
-		if [[ -f "${UNIT_PATH}" ]]; then
-			cp -f -- "${UNIT_PATH}" "${BACKUP_PATH}"
-			chmod 0644 -- "${BACKUP_PATH}"
-			say "Copia de la unidad anterior: ${BACKUP_PATH}"
+		if [[ -f "${SVC_PATH}" ]]; then
+			cp -f -- "${SVC_PATH}" "${SVC_BAK}"
+			chmod 0644 -- "${SVC_BAK}"
+			say "Copia de la unidad anterior: ${SVC_BAK}"
 		fi
 		# Marker first: if anything below fails, the next run still reloads.
 		: >"${PENDING_PATH}"
-		tmp="${UNIT_PATH}.tmp.$$"
+		tmp="${SVC_PATH}.tmp.$$"
 		printf '%s\n' "${unit_text}" >"${tmp}"
 		chmod 0644 -- "${tmp}"
-		mv -f -- "${tmp}" "${UNIT_PATH}"
-		say "Escrito ${UNIT_PATH}"
+		mv -f -- "${tmp}" "${SVC_PATH}"
+		say "Escrito ${SVC_PATH}"
 	fi
 fi
 
@@ -765,6 +845,10 @@ if [[ ! -d "${WORK_DIR}" ]]; then
 		say "Carpeta de trabajo del agente: ${WORK_DIR}"
 	fi
 fi
+# S10: Pi's data folder, writable for the bridge (ReadWritePaths=, no "-"); private like ~/.gentle-dot.
+if ((PI_BRIDGE)) && [[ ! -d "${PI_DATA}" ]]; then
+	if ((DRY_RUN)); then say "[dry-run] mkdir -m 0700 ${PI_DATA}"; else mkdir -m 0700 -- "${PI_DATA}"; fi
+fi
 input_changed=0
 [[ "${input_state}" == current && "${input_unit_state}" == current ]] || input_changed=1
 
@@ -772,7 +856,7 @@ input_changed=0
 if ((changed || input_unit_changed || pending)); then
 	((pending)) && say "${PENDING_MSG}"
 	run systemctl --user daemon-reload ||
-		die "systemctl --user daemon-reload falló; ${UNIT_PATH} quedó escrita pero systemd no la cargó. Vuelve a ejecutar este script para reintentar la recarga."
+		die "systemctl --user daemon-reload falló; ${SVC_PATH} quedó escrita pero systemd no la cargó. Vuelve a ejecutar este script para reintentar la recarga."
 	((DRY_RUN)) || rm -f -- "${PENDING_PATH}"
 	# A pending reload may be owed for either unit: restart both.
 	((pending)) && changed=1 input_changed=1
@@ -786,24 +870,31 @@ if ((ENABLE)); then
 		((input_changed)) && run systemctl --user try-restart "${INPUT_UNIT_NAME}"
 		run systemctl --user enable --now "${INPUT_UNIT_NAME}"
 	fi
+	# S10: Gentle Dot and the bridge listen on the same port. The other one, when installed,
+	# is stopped and disabled first (its unit file stays, so switching back is one more run);
+	# Conflicts= in the bridge's unit also stops it if something starts it later.
+	if [[ -e "${ALT_PATH}" ]]; then
+		run systemctl --user disable --now "${ALT_NAME}"
+	fi
 	# A running service picks up a changed unit, agent rules or extension (read when the
 	# engine starts); then enable at login and start it.
-	((changed || rules_changed || ext_changed)) && run systemctl --user try-restart "${UNIT_NAME}"
+	((changed || rules_changed || ext_changed)) && run systemctl --user try-restart "${SVC_NAME}"
 	if ((stale)); then
 		# reenable = disable (removes every link to the unit) + enable (the current [Install]).
 		say "La unidad seguía habilitada en ${OTHER_TARGET}; se vuelve a habilitar en ${WANTED_TARGET}."
-		run systemctl --user reenable "${UNIT_NAME}"
-		run systemctl --user start "${UNIT_NAME}"
+		run systemctl --user reenable "${SVC_NAME}"
+		run systemctl --user start "${SVC_NAME}"
 	else
-		run systemctl --user enable --now "${UNIT_NAME}"
+		run systemctl --user enable --now "${SVC_NAME}"
 	fi
 else
-	((stale)) && say "aviso: la unidad sigue habilitada en ${OTHER_TARGET}; para pasarla a ${WANTED_TARGET}: systemctl --user reenable ${UNIT_NAME} (o este script con --enable)."
-	((ext_changed)) && say "La extensión de control de la PC se carga al arrancar el motor: si el servicio ya corre, reinícialo para aplicarla: systemctl --user try-restart ${UNIT_NAME} (o este script con --enable)."
-	((rules_changed)) && say "Las reglas del agente se leen al arrancar el motor: si el servicio ya corre, reinícialo para aplicarlas: systemctl --user try-restart ${UNIT_NAME} (o este script con --enable)."
-	((changed)) && say "El aislamiento de ${UNIT_NAME} se aplica al arrancar el daemon: si ya corre, reinícialo: systemctl --user try-restart ${UNIT_NAME} (o este script con --enable)."
+	((stale)) && say "aviso: la unidad sigue habilitada en ${OTHER_TARGET}; para pasarla a ${WANTED_TARGET}: systemctl --user reenable ${SVC_NAME} (o este script con --enable)."
+	((ext_changed)) && say "La extensión de control de la PC se carga al arrancar el motor: si el servicio ya corre, reinícialo para aplicarla: systemctl --user try-restart ${SVC_NAME} (o este script con --enable)."
+	((rules_changed)) && say "Las reglas del agente se leen al arrancar el motor: si el servicio ya corre, reinícialo para aplicarlas: systemctl --user try-restart ${SVC_NAME} (o este script con --enable)."
+	((changed)) && say "El aislamiento de ${SVC_NAME} se aplica al arrancar el daemon: si ya corre, reinícialo: systemctl --user try-restart ${SVC_NAME} (o este script con --enable)."
+	[[ ! -e "${ALT_PATH}" ]] || say "aviso: ${ALT_NAME} sigue instalado y usa el mismo puerto; para dejar solo ${SVC_NAME}: systemctl --user disable --now ${ALT_NAME} (o este script con --enable)."
 	((input_changed && !HEADLESS)) && say "El ayudante jarvis-input cambió: si ya corre, reinícialo para aplicarlo: systemctl --user try-restart ${INPUT_UNIT_NAME} (o este script con --enable)."
-	say "No se habilitó ni arrancó. Para hacerlo: systemctl --user enable --now ${INPUT_UNIT_NAME} ${UNIT_NAME} (o este script con --enable)."
+	say "No se habilitó ni arrancó. Para hacerlo: systemctl --user enable --now ${INPUT_UNIT_NAME} ${SVC_NAME} (o este script con --enable)."
 fi
 if ((HEADLESS)); then
 	say "Para que arranque sin iniciar sesión (opcional, no lo hace este script): loginctl enable-linger \"\$USER\""

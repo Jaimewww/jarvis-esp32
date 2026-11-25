@@ -1,0 +1,150 @@
+# Jarvis Pi bridge as a systemd user service (odd/tasks/pi-bridge.md S10; docs/decisiones.md D24).
+#
+# Template: host/systemd/install.sh --pi-bridge replaces @PI@, @SEARCH_PATH@, @TUI_VENV@,
+# @TUI_ROOT@, @SANDBOX_EXEC@, @UNIT_DIR@, @STOP_PATH@, @TUI_LAUNCHER@ and @AGENT_HOME@ and
+# writes the result to ~/.config/systemd/user/jarvis-pibridge.service. Do not install this
+# file by hand.
+#
+# The bridge (host/jarvis/pibridge, `python -m jarvis.pibridge`) speaks Gentle Dot's
+# WebSocket protocol v1 on 127.0.0.1:4317 with the same token file (~/.gentle-dot/token), so
+# the TUI, the bench and the backend do not change, and drives one `pi --mode rpc` process
+# with the Jarvis extension and AGENTS.md that install.sh puts in the agent home. It replaces
+# gentle-dot.service on this machine; Gentle Dot stays the repo's default.
+#
+# Same sandbox as gentle-dot.service (S13, S15; docs: host/systemd/README.md). Every line
+# below that differs from gentle-dot.service.in says why.
+#
+# No secrets live here. The model, the thinking level and extra Pi extensions come from
+# JARVIS_PI_* variables; set them in a drop-in, not in this file:
+#   systemctl --user edit jarvis-pibridge.service
+#   [Service]
+#   Environment=JARVIS_PI_MODEL=openai/gpt-6.1-terra
+#   Environment=JARVIS_PI_THINKING=low
+#   Environment=JARVIS_PI_EXTENSIONS=%h/.pi/agent/npm/node_modules/pi-claude-bridge
+
+[Unit]
+Description=Jarvis Pi bridge (Gentle Dot protocol on top of pi --mode rpc)
+# Both daemons listen on 127.0.0.1:4317. Conflicts= works both ways (systemd.unit(5)):
+# starting this unit stops gentle-dot.service and starting gentle-dot.service stops this
+# one, so gentle-dot.service.in needs no line of its own. install.sh also disables the
+# other unit when it enables one, so only one of them starts with the session.
+Conflicts=gentle-dot.service
+# At most 10 starts in 10 minutes; then the unit stays failed until `reset-failed`.
+StartLimitIntervalSec=10min
+StartLimitBurst=10
+# Start and stop with the graphical session (the helper the agent talks to lives there);
+# the bridge itself does not get the display, see the sandbox below.
+# `install.sh --headless` drops these two lines and installs into default.target.
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+# The agent's work folder (writable, below). Gentle Dot runs in its checkout; the bridge
+# has none to run in, and Pi starts without context files (-nc), so the folder adds none.
+WorkingDirectory=%h/Jarvis
+# Same values as the TUI's defaults (host/jarvis/client.py) and Gentle Dot's unit.
+Environment=JARVIS_PI_HOST=127.0.0.1
+Environment=JARVIS_PI_PORT=4317
+# Pi, the Jarvis extension and the agent rules that install.sh installs for Gentle Dot
+# (the bridge's own defaults point into a checkout, which the installed copy is not).
+Environment=JARVIS_PI_EXECUTABLE=@PI@
+Environment=JARVIS_PI_PC_CONTROL=@AGENT_HOME@/extensions/jarvis-pc-control/index.ts
+Environment=JARVIS_PI_AGENTS_MD=@AGENT_HOME@/AGENTS.md
+# Not in gentle-dot.service, which starts node by its absolute path: pi is a
+# `#!/usr/bin/env node` script, so the directories of pi and node (often a version
+# manager's, unknown to the user manager) go first; the rest is the system's.
+Environment=PATH=@SEARCH_PATH@
+# The installer's Python environment (the TUI's venv and its copy of host/jarvis, which
+# holds jarvis.pibridge), isolated: -I ignores PYTHON* variables, the user site and the
+# current directory, so the copy's directory is named explicitly; -B writes no bytecode
+# (the copy is read-only here). Through jarvis-sandbox-exec, which adds the Landlock scopes
+# below and exec()s python (MainPID stays the bridge).
+ExecStart=/usr/bin/python3 -I "@SANDBOX_EXEC@" "@TUI_VENV@/bin/python" -I -B -c "import runpy, sys; sys.path.insert(0, '@TUI_ROOT@'); runpy.run_module('jarvis.pibridge', run_name='__main__', alter_sys=True)"
+# The bridge stops Pi on SIGTERM (SIGTERM, then SIGKILL after a grace period); anything
+# left is killed after the timeout.
+KillMode=mixed
+TimeoutStopSec=20s
+
+# Restart on failure with back-off: 2 s growing to 1 min over 5 steps.
+Restart=on-failure
+RestartSec=2s
+RestartSteps=5
+RestartMaxDelaySec=1min
+
+# Journal: journalctl --user -u jarvis-pibridge
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=jarvis-pibridge
+
+# Hardening that leaves the agent's shell usable. NoNewPrivileges also stops `sudo` from
+# the agent's shell (and jarvis-sandbox-exec needs it for Landlock).
+UMask=0077
+NoNewPrivileges=yes
+LockPersonality=yes
+RestrictRealtime=yes
+
+# --- S13 sandbox: no display, no session bus, no control plane ----------------------
+# A user manager is unprivileged: mount namespaces (everything below) only work inside a
+# user namespace (systemd.exec(5), "SANDBOXING"). It also makes /proc/<pid>/root of
+# processes outside the unit (niri, the helper) unreachable, so the hidden sockets cannot
+# be reached through another process's view of the filesystem. Our own uid stays the same.
+PrivateUsers=yes
+# An empty, private $XDG_RUNTIME_DIR (%t): hides wayland-*, niri.*.sock, bus, pipewire,
+# at-spi (can synthesize keys), gnupg/ssh agents, systemd/private (`systemctl --user`
+# and `systemd-run --user` would start an unsandboxed process) and whatever socket a
+# future compositor adds, whatever its name. The bridge and Pi use nothing in %t.
+TemporaryFileSystem=%t:mode=0700
+# The helper's agent socket directory, created by systemd before the namespace is set up
+# so the bind below always has a source; shared with jarvis-input.service, which owns the
+# socket. Preserved on stop: removing it would leave a stale bind in the other unit.
+RuntimeDirectory=jarvis
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+# The only part of %t the bridge sees: agent.sock. Read-only so the agent cannot replace
+# the socket with its own (connect() to a socket still works on a read-only mount).
+BindReadOnlyPaths=%t/jarvis
+# Defense in depth if a drop-in resets TemporaryFileSystem=: the session bus, the
+# helper's control socket (grant/revoke: TUI and jarvis-stop only) and the user manager;
+# outside %t, the X11 socket directory and the Docker socket (docker group = root and
+# a way around every directive here). "-": skipped where they do not exist.
+# Also the system bus (S15): logind, NetworkManager, udisks and polkit prompts live there.
+InaccessiblePaths=-%t/bus -%t/jarvis-control -%t/systemd -/tmp/.X11-unix -/run/docker.sock -/run/dbus/system_bus_socket
+# A private /dev with only null, zero, random, tty, pts, shm…: no /dev/uinput (logind
+# gives the seat user an ACL on it, enough to create a virtual keyboard), no /dev/input,
+# no /dev/dri.
+PrivateDevices=yes
+# Private /tmp and /var/tmp, and an empty /dev/shm (third verifier, L18): the host's /tmp
+# holds the jiti cache of unsandboxed pi processes (code they trust and run), Chromium's
+# SingletonSocket (drives Brave without the helper) and other user sockets.
+# "disconnected" = a tmpfs not shared with any other unit (works in user units).
+PrivateTmp=disconnected
+# /dev/shm is the host's even under PrivateDevices (shared memory of other programs).
+TemporaryFileSystem=/dev/shm
+# S15: the whole home (and /root, /run/user) is read-only for the bridge and its agent:
+# anything the helper may start (~/.local/bin, AppImages, ~/.local/share/applications,
+# mimeapps.list, ~/.config/fish), the helper, wrapper, TUI and this bridge's Python under
+# ~/.local/share/jarvis, systemd drop-ins (~/.config/systemd/user, ~/.local/share/systemd,
+# environment.d) and the niri config. %t is replaced by the tmpfs above, so this does not
+# touch the agent socket.
+ProtectHome=read-only
+# The only writable places in the home: ~/.gentle-dot (the token file the clients share,
+# S3), the user's work folder ~/Jarvis and, unlike gentle-dot.service, Pi's own ~/.pi
+# (settings, auth, sessions and locks: under a read-only ~/.pi, Pi fails on
+# ~/.pi/agent/trust.json.lock, odd/tasks/pi-bridge.md L4). No "-": install.sh creates all
+# three, and a missing one fails the start (226/NAMESPACE) instead of silently dropping it.
+ReadWritePaths=%h/.gentle-dot %h/Jarvis %h/.pi
+# Read-only on top: the user units, the stop key and the TUI launcher (named here because
+# XDG_CONFIG_HOME or --bin-dir may point outside the home), and the agent's own extensions
+# and rules inside its writable ~/.gentle-dot. No "-": install.sh creates every path first,
+# and a missing one stops the bridge from starting instead of leaving it creatable.
+ReadOnlyPaths=@UNIT_DIR@ @STOP_PATH@ @TUI_LAUNCHER@ @AGENT_HOME@/extensions @AGENT_HOME@/AGENTS.md
+# Inherited from the graphical session by the user manager; without them programs do not
+# even try the display (the sockets are hidden anyway).
+UnsetEnvironment=WAYLAND_DISPLAY DISPLAY NIRI_SOCKET DBUS_SESSION_BUS_ADDRESS
+# Not expressible here, done by jarvis-sandbox-exec (Landlock): no connect() to abstract
+# Unix sockets created outside the unit (Xwayland's unauthenticated @/tmp/.X11-unix/X0,
+# which lives in the network namespace) and no signals to processes outside it.
+
+[Install]
+WantedBy=graphical-session.target
