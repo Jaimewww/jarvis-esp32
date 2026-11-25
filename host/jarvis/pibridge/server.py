@@ -24,6 +24,7 @@ from websockets.asyncio.server import Server, ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
 
 from .history import Conversation
+from .models import ModelError
 from .token import token_matches
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,14 @@ class TurnAgent(Protocol):
     async def send(self, text: str) -> None: ...
 
     async def abort(self) -> None: ...
+
+    async def answer(self, request_id: str, response: dict[str, Any]) -> None: ...
+
+    async def models(self) -> dict[str, Any]: ...
+
+    async def set_model(self, provider: str, model_id: str, thinking: str | None) -> dict[str, Any]: ...
+
+    async def clients_changed(self, count: int) -> None: ...
 
 
 def _decode(raw: str | bytes) -> dict[str, Any] | None:
@@ -206,6 +215,7 @@ class BridgeServer:
             return
         logger.info("client admitted")
         await self._hub.admit(ws, self._ready())
+        await self._agent.clients_changed(self._hub.size)
         try:
             async for raw_frame in ws:
                 await self._dispatch(ws, raw_frame)
@@ -214,6 +224,7 @@ class BridgeServer:
         finally:
             self._hub.remove(ws)
             logger.info("client left")
+            await self._agent.clients_changed(self._hub.size)
 
     async def _dispatch(self, ws: ServerConnection, raw: str | bytes) -> None:
         payload = _decode(raw)
@@ -227,6 +238,19 @@ class BridgeServer:
                 await self._agent.send(text)
         elif kind == "abort":
             await self._agent.abort()
+        elif kind == "ui_response":
+            request_id = payload.get("requestId")
+            if isinstance(request_id, str) and request_id:
+                await self._agent.answer(request_id, payload)
+            else:
+                await self._error(ws, "bad_request", "A ui_response needs its requestId.")
+        elif kind == "models_list":
+            try:
+                await self._hub.send_to(ws, await self._agent.models())
+            except ModelError as error:
+                await self._error(ws, error.code, error.message)
+        elif kind == "model_set":
+            await self._model_set(ws, payload)
         elif kind == "get_history":
             await self._hub.send_to(ws, self._conversation.history_frame())
         elif kind == "list_conversations":
@@ -239,6 +263,20 @@ class BridgeServer:
             name = kind[:40] if isinstance(kind, str) else "that request"
             logger.debug("refused an unsupported client frame")
             await self._error(ws, "unsupported", f"The Pi bridge does not support {name}.")
+
+    async def _model_set(self, ws: ServerConnection, payload: dict[str, Any]) -> None:
+        provider, model_id, thinking = payload.get("provider"), payload.get("id"), payload.get("thinking")
+        if not isinstance(provider, str) or not isinstance(model_id, str) or not (
+            thinking is None or isinstance(thinking, str)
+        ):
+            await self._error(ws, "model_unavailable", "A model_set needs a provider and a model id.")
+            return
+        try:
+            frame = await self._agent.set_model(provider, model_id, thinking)
+        except ModelError as error:
+            await self._error(ws, error.code, error.message)
+            return
+        await self._hub.broadcast(frame)
 
     def _accounts(self) -> dict[str, Any]:
         """Pi signs in on its own: the running model's provider is the one, ready, account."""

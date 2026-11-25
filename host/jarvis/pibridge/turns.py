@@ -12,6 +12,11 @@ it. That message ends first, empty when it only calls tools, as Gentle Dot does,
 clients count one model call per assistant message and one tool per activity. A tool still
 running when the turn ends is reported ``failed``.
 
+Besides prompts, the bridge sends Pi commands and waits for their ``response`` by ``id``
+(models, S8), and relays the extension's questions (S7, ``questions``): a dialog is an
+``ask`` to every client, the first ``ui_response`` answers it and ``ask_resolved`` goes to
+every client; with no client connected, the dialog is denied at once.
+
 One turn at a time (D14): a ``send`` during a turn waits in a queue (reported with the
 ``queue`` frame) and runs when the turn ends; ``abort`` drops it too. If Pi exits, the
 turn ends with an ``error`` frame and the next ``send`` starts Pi again.
@@ -28,11 +33,17 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from . import models as model_frames
+from . import questions
+from .models import ModelError
 from .pi import PiLauncher, PiProcess
 
 logger = logging.getLogger(__name__)
 
 Emit = Callable[[dict[str, Any]], Awaitable[None]]
+
+#: How long a Pi command (not a prompt) may take to answer.
+COMMAND_TIMEOUT_S = 10.0
 
 #: Pi events that belong to a run: the echo goes out before any of them is relayed.
 _RUN_EVENTS = frozenset({
@@ -85,6 +96,10 @@ class Bridge:
         self._turn: _Turn | None = None
         self._queue: deque[str] = deque()
         self._state = "idle"
+        self._commands: dict[str, asyncio.Future[dict[str, Any]]] = {}
+        self._questions = questions.Questions()
+        self._clients = 0
+        self._launching = asyncio.Lock()
 
     @property
     def agent_state(self) -> str:
@@ -122,6 +137,115 @@ class Bridge:
             return
         with contextlib.suppress(OSError):
             await process.write({"id": f"abort-{next(self._ids)}", "type": "abort"})
+
+    # Questions (S7)
+
+    async def clients_changed(self, count: int) -> None:
+        """The number of connected clients; with none left, waiting questions are denied."""
+
+        self._clients = count
+        if count == 0:
+            for request_id in self._questions.drain():
+                await self._reply_ui(questions.denial(request_id))
+
+    async def answer(self, request_id: str, response: dict[str, Any]) -> None:
+        """A client's ``ui_response``; one to a question no longer waiting is ignored."""
+
+        method = self._questions.close(request_id)
+        if method is not None:
+            await self._reply_ui(questions.answer(request_id, method, response))
+
+    async def _reply_ui(self, record: dict[str, Any]) -> None:
+        process = self._process
+        if process is not None:
+            with contextlib.suppress(OSError):
+                await process.write(record)
+        await self._emit({"type": "ask_resolved", "requestId": record["id"]})
+
+    async def _on_ui_request(self, record: dict[str, Any]) -> None:
+        request_id, method = record.get("id"), record.get("method")
+        if not isinstance(request_id, str) or method not in questions.DIALOGS:
+            return  # fire and forget: nothing waits for an answer
+        if self._clients == 0:
+            process = self._process
+            if process is not None:
+                with contextlib.suppress(OSError):
+                    await process.write(questions.denial(request_id))
+            return
+        self._questions.open(request_id, str(method))
+        await self._emit(questions.ask_frame(record))
+
+    async def _resolve_questions(self) -> None:
+        for request_id in self._questions.drain():
+            await self._emit({"type": "ask_resolved", "requestId": request_id})
+
+    # Models (S8)
+
+    async def models(self) -> dict[str, Any]:
+        """The ``models`` frame: Pi's models, the running one and its thinking level."""
+
+        listed = await self._data({"type": "get_available_models"})
+        state = await self._data({"type": "get_state"})
+        levels = await self._data({"type": "get_available_thinking_levels"})
+        available = [m for m in listed.get("models") or [] if isinstance(m, dict)]
+        current = state.get("model")
+        raw_levels = levels.get("levels")
+        return model_frames.models_frame(
+            available,
+            current if isinstance(current, dict) else None,
+            state.get("thinkingLevel"),
+            [level for level in raw_levels if isinstance(level, str)] if isinstance(raw_levels, list) else [],
+        )
+
+    async def set_model(self, provider: str, model_id: str, thinking: str | None) -> dict[str, Any]:
+        """Switch Pi's model (and thinking level); the new ``models`` frame, or ``ModelError``."""
+
+        listed = await self._data({"type": "get_available_models"})
+        available = [m for m in listed.get("models") or [] if isinstance(m, dict)]
+        target = model_frames.find(available, provider, model_id)
+        if target is None:
+            raise ModelError("model_unavailable", f"Pi has no model {provider}/{model_id}.")
+        if thinking is not None and thinking not in model_frames.THINKING_LEVELS:
+            raise ModelError("thinking_unavailable", f"Unknown thinking level {thinking[:20]}.")
+        if thinking not in (None, "off") and not model_frames.reasons(target):
+            raise ModelError("thinking_unavailable", "That model does not support that thinking level.")
+        switched = await self._command({"type": "set_model", "provider": provider, "modelId": model_id})
+        if switched.get("success") is not True:
+            raise ModelError("model_switch_failed", _error_of(switched, "Pi could not switch the model."))
+        self._model = f"{provider}/{model_id}"
+        if thinking is not None:
+            levels = (await self._data({"type": "get_available_thinking_levels"})).get("levels")
+            if not isinstance(levels, list) or thinking not in levels:
+                raise ModelError("thinking_unavailable", "That model does not support that thinking level.")
+            done = await self._command({"type": "set_thinking_level", "level": thinking})
+            if done.get("success") is not True:
+                raise ModelError("thinking_unavailable", _error_of(done, "Pi refused that thinking level."))
+        return await self.models()
+
+    async def _data(self, record: dict[str, Any]) -> dict[str, Any]:
+        response = await self._command(record)
+        if response.get("success") is not True:
+            raise ModelError("agent_unavailable", _error_of(response, f"Pi refused {record['type']}."))
+        data = response.get("data")
+        return data if isinstance(data, dict) else {}
+
+    async def _command(self, record: dict[str, Any]) -> dict[str, Any]:
+        """Send one Pi command and wait for its ``response``."""
+
+        try:
+            process = await self._ensure_process()
+        except Exception as error:  # noqa: BLE001 - any launch failure is "unavailable"
+            raise ModelError("agent_unavailable", f"Pi did not start: {error}") from error
+        command_id = f"cmd-{next(self._ids)}"
+        future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
+        self._commands[command_id] = future
+        try:
+            await process.write({**record, "id": command_id})
+            return await asyncio.wait_for(future, COMMAND_TIMEOUT_S)
+        except (OSError, ConnectionError, TimeoutError) as error:
+            raise ModelError("agent_unavailable", "Pi did not answer.") from error
+        finally:
+            self._commands.pop(command_id, None)
 
     async def close(self) -> None:
         process, reader = self._process, self._reader
@@ -198,13 +322,14 @@ class Bridge:
     # Pi
 
     async def _ensure_process(self) -> PiProcess:
-        process = self._process
-        if process is not None and process.exit_code is None:
+        async with self._launching:
+            process = self._process
+            if process is not None and process.exit_code is None:
+                return process
+            process = await self._launcher()
+            self._process = process
+            self._reader = asyncio.ensure_future(self._read(process))
             return process
-        process = await self._launcher()
-        self._process = process
-        self._reader = asyncio.ensure_future(self._read(process))
-        return process
 
     async def _read(self, process: PiProcess) -> None:
         while True:
@@ -220,9 +345,16 @@ class Bridge:
             self._reader = None
             await self._on_exit(process)
 
+    def _fail_commands(self) -> None:
+        for future in self._commands.values():
+            if not future.done():
+                future.set_exception(ConnectionError("pi exited"))
+
     async def _on_exit(self, process: PiProcess) -> None:
         message = f"Pi exited (code {process.exit_code})."
         logger.warning("%s", message)
+        self._fail_commands()
+        await self._resolve_questions()
         turn = self._turn
         if turn is None:
             return
@@ -232,10 +364,19 @@ class Bridge:
         await self._finish(turn)
 
     async def _on_record(self, record: dict[str, Any]) -> None:
+        kind = record.get("type")
+        if kind == "response":
+            future = self._commands.get(str(record.get("id")))
+            if future is not None:
+                if not future.done():
+                    future.set_result(record)
+                return
+        elif kind == "extension_ui_request":
+            await self._on_ui_request(record)
+            return
         turn = self._turn
         if turn is None:
             return
-        kind = record.get("type")
         if kind == "response":
             if record.get("id") == turn.request_id:
                 await self._on_prompt_response(turn, record)
@@ -318,3 +459,8 @@ class Bridge:
             await self._emit({"type": "error", "code": "agent_error", "message": error})
             return
         await self._done(turn, text)
+
+
+def _error_of(response: dict[str, Any], fallback: str) -> str:
+    error = response.get("error")
+    return error if isinstance(error, str) and error else fallback
