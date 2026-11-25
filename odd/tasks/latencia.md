@@ -95,8 +95,8 @@ lands on `feat/stt-whisper` (worktree `pi-stt`).
 - [x] T13 S12 — Cleanup of worktrees and branches. Route: inline. 2026-11-24: removed the merged, clean worktrees pi-ctl, pi-e2e, pi-key, pi-next, pi-rev and their branches, plus 7 local branches already merged into origin/main; local main equals origin/main. Kept: pi-stt (#13 open), pi-arch (docs/latency-architecture, unpushed PDF guide), local-only feat/pc-control-stage-b (15 commits not in main by ancestry) and docs/guia-pantalla (1 commit) for the user to decide.
 - [ ] T14 S5 — Find out why the bench's catalog and PC tools fail (L6), and make the bench flag a request that did not do its job (failed tool or no tool) as an error. Re-run the PC baseline. Route: gentle-ai-worker. Bench now has a `done k/n` column (53371d7); pc-terminal was replaced by pc-archivos (9443579); host 243 passed, 6 skipped. The flagging is in main since 2026-11-25 (#34, L21): `run_problem` marks a run `error`, `tool failed` or no-tool. Pending: the user re-runs with `/control on`.
 - [x] T15 S5,S6 — Add a `pc_media(action)` tool to jarvis-input/pc-control (wpctl/playerctl, needs no focused window), so volume and media work through the agent until P1 lands. Route: gentle-ai-worker, branch feat/pc-media (e9f1933, e53ad62, 6676f69 explicit mute/unmute). Native review approved (risk+reliability, item 2). Pending: live check after reinstall.
-- [ ] T17 S13 — STT hardening: validate JARVIS_STT_TIMEOUT_S, one total deadline per transcription, reject `--runs` <= 0, and a rerunnable tools/probe-piper.sh. Route: gentle-ai-worker, branch fix/stt-hardening (worktree pi-stt) from main.
-- [ ] T18 S12 — Cleanup after the 2026-11-25 merges: remove the merged remote branches and the clean pi-* worktrees. Keep pi-arch (3 unpushed commits), feat/pc-control-stage-b and docs/guia-pantalla for the user to decide. Route: inline, last.
+- [x] T17 S13 — STT hardening: validate JARVIS_STT_TIMEOUT_S, one total deadline per transcription, reject `--runs` <= 0, and a rerunnable tools/probe-piper.sh. Route: gentle-ai-worker, branch fix/stt-hardening (worktree pi-stt) from main, PR #40: 26461da. RED observed for items 1-3; backend 82 passed, 7 skipped; pyright 0 errors; CI green. Native review approved (item 3, lineage review-3d3069f425f2d0a7); independent verify PASS on S13.1-S13.4 (L23). Follow-up: `inf` is still accepted as a timeout.
+- [x] T18 S12 — Cleanup after the 2026-11-25 merges. Route: inline. GitHub had already deleted the merged remote branches; removed the clean worktrees pi-bench, pi-comp, pi-confirm, pi-media, pi-sttwarn and the 7 merged local feat/* branches. Kept: pi-lat and pi-stt (PRs #39, #40 open), pi-arch (3 unpushed commits), feat/pc-control-stage-b and docs/guia-pantalla for the user to decide.
 
 ## Log
 
@@ -229,3 +229,13 @@ lands on `feat/stt-whisper` (worktree `pi-stt`).
   did not do its job (T14), so no code is left there. Not automatic: the T14 baseline re-run
   (model calls and the user's desktop), T9 (contract decision), pi-arch's unpushed commits.
   PRs stay open for the user to merge.
+- L23 (2026-11-25, evidence, T17): independent verify on 26461da (Python 3.14.10): PASS on
+  S13.1-S13.4. Differential against df865c3: a response sent in pieces over ~3 s with a 1.0 s
+  limit now raises `WhisperServerTimeout` at 1.00 s (before: success after 2.97 s), and
+  `/converse` then answers 502 with one `turn_error` and no `turn_done`; outer cancellation is
+  not swallowed. Two side effects nobody asked for, neither harmful: a built-in `TimeoutError`
+  from a custom transport now maps to `WhisperServerTimeout` (`whisper_server.py:102`), and
+  `--runs x` reports "must be an integer of 1 or more" instead of argparse's "invalid int
+  value". `inf` is accepted (review advisory R3-002) and ` 5 ` parses as 5.0, as before. Not
+  run: the probe with a real Piper voice (run twice with a stand-in: exit 0 both times), and a
+  real whisper-server.
