@@ -1,0 +1,3 @@
+-r requirements.txt
+# Local TTS. The Piper voice, FFmpeg and whisper-server are installed separately.
+piper-tts==1.8.0
