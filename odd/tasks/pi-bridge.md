@@ -197,6 +197,24 @@ Gentle Dot as the default; a machine opts into the bridge. Branch `feat/pi-bridg
      (`JARVIS_PI_EXTENSIONS`)"; "A failing `disable --now` of the other unit (`install.sh:918`)
      exits without the S15.2 message"; "The mode of an existing agent directory is not
      checked" (an existing one that group or others can enter is refused).
+- S17 (L11, replaces the configurable part of S16.1 and S16.2). Verify, blocker
+  (`install.sh:345-355`, `:422`): the installer "checks overlap only on `realpath -m`, but
+  [...] writes `${PI_AGENT_DIR}` as typed into both `PI_CODING_AGENT_DIR` and
+  `ReadWritePaths`. A path that is literally inside `~/Jarvis` or `~/.gentle-dot`, or an
+  `XDG_STATE_HOME` there, passes when a symlink component exists." Should-fix: "An option or
+  `XDG_STATE_HOME` outside `$HOME` in a folder the user owns [...] has a parent both units can
+  write. That allows the same symlink swap". Three verifies in a row found a new way through
+  the configurable location, and nobody asked for it to be configurable, so it is removed:
+  1. The agent directory is fixed: `$HOME/.local/state/jarvis/pi-agent`. There is no
+     `--pi-agent-dir` option, no `JARVIS_PIBRIDGE_AGENT_DIR`, and `XDG_STATE_HOME` is not
+     read. Passing `--pi-agent-dir` is an unknown option.
+  2. The installer refuses to install the bridge when that path, resolved, differs from the
+     path as written (a symlink in any component below `$HOME`), and the unit carries that
+     same literal path in `PI_CODING_AGENT_DIR` and `ReadWritePaths`.
+  3. Notes from the same verify: with `--enable` on an empty directory the message must not
+     say the agent never wrote there (Pi has started in it; it is harmless because without a
+     login no tool runs: say that instead); the neither-is-running message names the step
+     that actually failed (`disable` of the other unit or `enable`/`start` of this one).
 
 ## Tasks
 
@@ -218,7 +236,11 @@ Gentle Dot as the default; a machine opts into the bridge. Branch `feat/pi-bridg
   findings. Route: gentle-ai-worker, same branch: 4dc0e0f. Installer suite 264 passed; host
   346 passed, 6 skipped. Native review approved (lineage review-e031df68a5d3e6b2).
   Independent verify: FAIL on one option (S16.1); default install closed (L10).
-- [ ] T8 S16 — Close the agent-directory gaps found by the T7 verify. Route:
+- [x] T8 S16 — Close the agent-directory gaps found by the T7 verify. Route:
+  gentle-ai-worker, same branch: 1a8d289. Installer suite 287 passed; host 347 passed, 6
+  skipped. Native review approved (lineage review-5704c7e2a62b42c3). Independent verify:
+  S16.3 and S16.4 pass, S16.2 fails through a symlinked component (L11).
+- [ ] T9 S17 — Make the agent directory fixed instead of configurable. Route:
   gentle-ai-worker, same branch.
 - [x] T5 S13 — Fix pass after the T2 verify and review. Route: gentle-ai-worker, same branch: bde49a8. Host 335 passed, 6 skipped; backend 82 passed, 7 skipped; pyright 0 errors. Native review approved (lineage review-03ea5a3391aa7fc2); independent verify: S13.1-S13.6 pass, S13.7 partial (L8).
 - [ ] T6 S14 — Second hardening pass on model switching and backlog. Route: gentle-ai-worker, after the bridge is in use.
@@ -305,3 +327,14 @@ Gentle Dot as the default; a machine opts into the bridge. Branch `feat/pi-bridg
   ancestor of `~/.pi` (S16.1), plus two residual exposures (S16.2, S16.3). Native review of
   the same commit approved with four non-blocking findings, two of them the same as S16.1 and
   S16.3. Nothing of T3 is pushed until T8 lands and verifies.
+- L11 (2026-11-25, evidence and decision, T8). Independent verify of 1a8d289: 31 option
+  values, 7 `XDG_STATE_HOME` values and 6 symlinked-`HOME` cases refused as required; the
+  default unit writes only `~/.gentle-dot`, `~/Jarvis`, `~/.local/state/jarvis/pi-agent` and
+  private tmp, and neither unit can write an ancestor of that directory; the default install
+  is byte-identical to the previous installer over 8 steps; the first-login and re-login
+  procedures behave as printed and never run Pi outside the sandbox in a directory the agent
+  has written; with `--enable` on an empty directory nothing an agent decides can run before
+  the login (no model, the bridge never sends Pi's RPC `bash`). FAIL on a symlinked component
+  inside `~/Jarvis` or `~/.gentle-dot` in the option value. Decision: the option is the
+  recurring hole and was never requested (the T7 handoff asked for it by mistake), so S17
+  removes it. The F1 exposure (the unit writing `~/.pi`) is closed for the default install.
