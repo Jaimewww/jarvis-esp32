@@ -536,28 +536,84 @@ What it deliberately does not do:
 * No file attachments, no attachments upload, no conversation switching, no sign-out
   (`/login` signs in only), and no paging back past the first history page.
 
-## Timing the typed path: `python -m jarvis.bench`
+## Turn log: every stage of a whole turn
+
+Each prompt typed or said (f4) in the window is timed from sending to the agent going
+back to `idle`, stage by stage, and appended as **one JSON line** to
+`$XDG_STATE_HOME/jarvis/turns.jsonl` (default `~/.local/state/jarvis/turns.jsonl`, mode
+`0600`). `JARVIS_TURN_LOG=/path/file.jsonl` moves it; `JARVIS_TURN_LOG=off` turns it off.
+A write that fails is logged once as a warning and never stops the turn. The developer
+view's `turn` row shows the last one: `2 calls 3.8s · 1 tool · wait 3.0s` (model calls
+and their time, tools, time a person took on confirmation cards).
+
+```json
+{"v": 1, "at": "2026-11-23T20:30:00.123+00:00", "source": "tui", "spoken": false,
+ "chars": 12, "stt_s": null, "echo_s": 0.1, "first_text_s": 7.0, "total_s": 7.6,
+ "ended_by": "idle", "error": null, "stopped": false, "model_calls_n": 2, "tools_n": 1,
+ "model_s": 3.8, "tool_s": 3.5, "human_wait_s": 3.0,
+ "model_calls": [{"start_s": 0.1, "end_s": 2.0, "first_text_s": null, "error": null}, …],
+ "tools": [{"kind": "open_app", "status": "done", "start_s": 2.1, "end_s": 5.6, "call": 0}],
+ "waits": [{"start_s": 2.2, "end_s": 5.2}]}
+```
+
+Every time is in seconds from sending, measured on this host (the daemon's frames carry
+no time). A model call ends at its `message_done`; it starts at the latest boundary
+before its first frame (the echo, the previous `message_done`, the end of a tool or of a
+confirmation), since the daemon sends no "call started" frame. A tool runs from its first
+`activity` to a status other than `running` (`call` is the index of the model call that
+asked for it). `stt_s` (spoken prompts) runs from releasing f4 to sending, recording
+stop and transcription included. `ended_by`: `idle`, `error`, `stopped`, `next_prompt`,
+`disconnect` or `reconnect`. The record holds **no prompt text and no tool titles**
+(they may carry what was typed), only `chars`, kinds and times. Prompts from other
+windows are not timed.
+
+## Benchmark: `python -m jarvis.bench`
 
 ```bash
 cd host
+python -m jarvis.bench --dry-run               # list the fixed set; connects to nothing
+python -m jarvis.bench                         # the questions only, 3 runs each
+python -m jarvis.bench -n 5 --json baseline.json
+python -m jarvis.bench --only hora --only catalog --include-pc   # ids or kinds; desktop needs the flag
+python -m jarvis.bench --include-pc            # everything, PC tasks included (REAL desktop)
+python -m jarvis.bench -n 5 --prompt "Di hola" # one prompt: echo, first text, total, medians
 python -m jarvis.bench --list                  # running model, its thinking levels, all models
-python -m jarvis.bench                         # 3 x "Responde solo: ok": echo, first text, total, medians
-python -m jarvis.bench -n 5 --prompt "Di hola"
 python -m jarvis.bench --thinking low          # model_set on the running model first (PERSISTS)
 python -m jarvis.bench --model openai/gpt-6-luna --thinking off
 python -m jarvis.bench --model openai/gpt-6.1-sol --thinking medium --list   # switch back, no prompt
 ```
 
+The fixed set lives in [`jarvis/bench_requests.json`](jarvis/bench_requests.json) (`--set
+FILE` reads another): 5 short questions, 6 catalog commands (`Abrí Spotify.`, volume,
+pause, next song, browser) and 3 PC tasks. **Requests marked `desktop` act on the real
+desktop and run only with `--include-pc`** (PC control must also be on, `/control on`);
+naming one in `--only` without the flag is a usage error. With `--include-pc` each
+confirmation the agent asks is asked at this terminal (`[y/N]`, no terminal denies) and
+its time is reported as a person's wait, apart from the agent's; without it, any
+confirmation is denied.
+
+Each run goes through the window's own code (`JarvisClient`, `HostModel` and the turn
+trace of [Turn log](#turn-log-every-stage-of-a-whole-turn)), from sending to `idle`. Per
+run it prints total, first text and `2 calls 3.8s · 1 tool · wait 0.0s`; then, per
+request, the **median / worst** total and model calls, the median wait, **`done`** (`k/n`
+runs that did their job) and the protocol errors. A run is **not done** when the turn
+failed, a tool ended other than `done` (e.g. PC control off: `Control de la PC apagado`),
+or a catalog/PC request used no tool (the agent only answered that it cannot); its line
+ends in `not done: error | tool failed | no tool`, and it is still timed. `--json FILE`
+writes all of it: `model`, `thinking`, `runs`, `include_pc` and per request `total_s`,
+`active_s` (total minus the person's wait), `model_calls` and `human_wait_s` as
+`{median, worst}`, `done`, `not_done` (runs per reason), `errors`, and every run's turn
+record with `done` and `not_done`.
+
 It connects like the window (`--url`, `--host`, `--port`, `--token-file`; the token is
-read from the file and never printed) and sends prompts into the daemon's active
-conversation. Per run it prints the seconds from sending to the echo (`user_message`),
-to the first non-empty `message_delta` and to `message_done`, then the medians.
-**`--model` / `--thinking` send `model_set`, which the daemon saves as its default**:
-note the `model:` line first and pass it back to restore. Exit codes: 0 ok, 2 usage,
-3 cannot connect (no daemon, token missing or refused), 4 the daemon answered an error
+read from the file and never printed) and sends prompts into the daemon's **active
+conversation**. **`--model` / `--thinking` send `model_set`, which the daemon saves as
+its default**: note the `model:` line first and pass it back to restore. Exit codes: 0
+ok, 2 usage (bad flags, unknown `--only`, a desktop request without `--include-pc`), 3
+cannot connect (no daemon, token missing or refused), 4 the daemon answered an error
 (printed as `code: message`, e.g. `thinking_unavailable`, `model_unavailable`,
-`no_account`, or a failed reply), 5 timed out (`--timeout`, default 120 s; the prompt
-is aborted).
+`no_account`; with `--prompt` also a failed reply), 5 timed out (`--timeout`, default
+120 s per run; the prompt is aborted).
 
 ## Tests
 
