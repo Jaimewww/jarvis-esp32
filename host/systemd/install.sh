@@ -27,9 +27,10 @@
 # `systemctl --user`.
 # --pi-bridge (odd/tasks/pi-bridge.md S10) writes jarvis-pibridge.service (+ .bak) instead of
 # gentle-dot.service, the same files otherwise, and, when missing, the bridge's own Pi agent
-# directory (PI_CODING_AGENT_DIR, default ~/.gentle-dot/pi-agent, 0700; S10, S15.1): never
-# ~/.pi, which stays read-only for the service. It copies or reads no credentials: Pi is
-# logged in there once by the user (the command is printed). It needs no Gentle Dot
+# directory (PI_CODING_AGENT_DIR, default ${XDG_STATE_HOME:-~/.local/state}/jarvis/pi-agent, its
+# missing parents included, 0700; S10, S15.1, S16.2): never ~/.pi or a path either unit can
+# write. It copies or reads no credentials: Pi is logged in there once by the user, while the
+# directory is still empty (the steps are printed; S16.3). It needs no Gentle Dot
 # checkout. --enable disables and stops whichever of the two units it is not
 # installing (both listen on 127.0.0.1:4317) and leaves its file in place; --uninstall
 # removes both.
@@ -85,8 +86,10 @@ Uso: install.sh [opciones]
                         lo predeterminado: sin esta opción se instala Gentle Dot
   --pi PATH             binario de pi para --pi-bridge (por defecto: `command -v pi`)
   --pi-agent-dir DIR    carpeta propia del Pi del puente (PI_CODING_AGENT_DIR), lo único de
-                        Pi donde puede escribir; nunca dentro de ~/.pi (también por
-                        JARVIS_PIBRIDGE_AGENT_DIR; por defecto ~/.gentle-dot/pi-agent)
+                        Pi donde puede escribir; nunca ~/.pi, ~/.gentle-dot ni ~/Jarvis, ni
+                        dentro de ellas ni una que las contenga (también por
+                        JARVIS_PIBRIDGE_AGENT_DIR; por defecto
+                        ${XDG_STATE_HOME:-~/.local/state}/jarvis/pi-agent)
   --enable              además habilita y arranca el servicio (enable --now); antes
                         detiene y deshabilita el otro (Gentle Dot o el puente)
   --headless            sin sesión gráfica: arranca con default.target en vez de
@@ -117,7 +120,8 @@ jarvis.bak). Crea ~/Jarvis (0700): la carpeta de trabajo, lo único del home, ad
 Tras instalar, el aislamiento rige desde el siguiente arranque del daemon (--enable lo reinicia).
 Con --pi-bridge escribe jarvis-pibridge.service (y su copia .bak) en lugar de gentle-dot.service
 y crea la carpeta propia del Pi del puente (0700) si falta; ~/.pi queda de solo lectura para el
-servicio. No copia credenciales: después dice cómo iniciar sesión en Pi una vez en esa carpeta.
+servicio. No copia credenciales: si la carpeta está vacía dice cómo iniciar sesión en Pi una vez
+ahí, antes del primer arranque; si ya tiene contenido, cómo volver a hacerlo sin correr Pi en ella.
 El puente corre con el entorno de Python de la TUI. --gentle-dot-dir, --allow-unpinned y
 --allow-dirty no valen con --pi-bridge. Gentle Dot y el puente usan el mismo puerto: --enable
 detiene y deshabilita el otro y deja su unidad instalada, así que volver es correr este script
@@ -217,8 +221,14 @@ readonly WORK_DIR="${HOME}/Jarvis"
 # writable Pi path (ReadWritePaths=, no "-"). The user's ~/.pi stays read-only for the service:
 # a writable one would let the agent plant code the user's unsandboxed Pi runs.
 readonly USER_PI="${HOME}/.pi"
-PI_AGENT_DIR="${PI_AGENT_DIR:-${GD_DATA}/pi-agent}"
-readonly PI_AGENT_DIR
+# S16.2: the default sits outside every path either unit can write (gentle-dot.service writes
+# ~/.gentle-dot, where an earlier default lived and could be swapped for a symlink to ~/.pi).
+STATE_HOME="${XDG_STATE_HOME:-${HOME}/.local/state}"
+PI_AGENT_DEFAULT=0
+[[ -n "${PI_AGENT_DIR}" ]] || PI_AGENT_DEFAULT=1
+PI_AGENT_DIR="${PI_AGENT_DIR:-${STATE_HOME}/jarvis/pi-agent}"
+readonly STATE_HOME PI_AGENT_DEFAULT PI_AGENT_DIR
+readonly OLD_PI_AGENT_DIR="${GD_DATA}/pi-agent"
 readonly TUI_ROOT="${JARVIS_DATA}/tui"
 readonly TUI_DIR="${TUI_ROOT}/jarvis"
 readonly TUI_BAK="${TUI_ROOT}/jarvis.bak"
@@ -324,15 +334,32 @@ if ((PI_BRIDGE)); then
 	SEARCH_PATH="${SEARCH_PATH}:/usr/local/bin:/usr/bin"
 	[[ -f "${TUI_SRC_DIR}/pibridge/__main__.py" ]] ||
 		die "falta el puente ${TUI_SRC_DIR}/pibridge/__main__.py (paquete jarvis de host/, se arranca con python -m jarvis.pibridge)"
-	# The bridge's Pi agent directory: absolute, verbatim in the unit, never ~/.pi or inside it
-	# (checked on the resolved path, so ".." and symlinks do not get around it).
+	# The bridge's Pi agent directory: absolute, verbatim in the unit; never ~/.pi nor a path either
+	# unit can write (the ReadWritePaths= of the templates), inside one or an ancestor of one
+	# (S16.1, S16.2). Checked on resolved paths, as systemd resolves them: ".." and symlinks do
+	# not get around it.
+	((!PI_AGENT_DEFAULT)) || [[ "${STATE_HOME}" == /* ]] || die "XDG_STATE_HOME debe ser una ruta absoluta"
 	[[ "${PI_AGENT_DIR}" == /* ]] || die "--pi-agent-dir (o JARVIS_PIBRIDGE_AGENT_DIR) debe ser una ruta absoluta: ${PI_AGENT_DIR}"
 	[[ "${PI_AGENT_DIR}" =~ ${UNIT_SAFE_RE} ]] || die "ruta de --pi-agent-dir con caracteres no admitidos: ${PI_AGENT_DIR}"
-	pi_agent_real="$(realpath -m -- "${PI_AGENT_DIR}")" user_pi_real="$(realpath -m -- "${USER_PI}")"
-	case "${pi_agent_real}/" in
-	"${user_pi_real}/"*) die "la carpeta del Pi del puente no puede estar dentro de ${USER_PI} (queda de solo lectura para el servicio): ${PI_AGENT_DIR}" ;;
-	esac
+	# overlaps A B: resolved, A is B, inside it or an ancestor of it ("/" included).
+	overlaps() {
+		local a b
+		a="$(realpath -m -- "$1")" b="$(realpath -m -- "$2")"
+		[[ "${a%/}/" == "${b%/}/"* || "${b%/}/" == "${a%/}/"* ]]
+	}
+	! overlaps "${PI_AGENT_DIR}" "${USER_PI}" ||
+		die "la carpeta del Pi del puente no puede ser ${USER_PI}, estar dentro ni contenerla (debe quedar de solo lectura para el servicio): ${PI_AGENT_DIR}"
+	for p in "${GD_DATA}" "${WORK_DIR}"; do
+		! overlaps "${PI_AGENT_DIR}" "${p}" ||
+			die "la carpeta del Pi del puente no puede ser ${p}, estar dentro ni contenerla (gentle-dot.service o el puente pueden escribir ahí): ${PI_AGENT_DIR}"
+	done
 	[[ ! -e "${PI_AGENT_DIR}" || -d "${PI_AGENT_DIR}" ]] || die "${PI_AGENT_DIR} existe pero no es una carpeta; muévelo o indica otra con --pi-agent-dir"
+	# S16.4: Pi keeps its login there; only the mode is read, nothing in it is opened.
+	if [[ -d "${PI_AGENT_DIR}" ]]; then
+		pi_agent_mode="$(stat -L -c %a -- "${PI_AGENT_DIR}")" || die "no se pudo leer el modo de ${PI_AGENT_DIR}"
+		(((8#${pi_agent_mode} & 8#077) == 0)) ||
+			die "${PI_AGENT_DIR} tiene permisos ${pi_agent_mode}: el grupo u otros usuarios pueden entrar y Pi guarda ahí su inicio de sesión. Corrige con: chmod 700 ${PI_AGENT_DIR}"
+	fi
 else
 	[[ -n "${GD_DIR}" ]] || die "falta --gentle-dot-dir (o GENTLE_DOT_DIR): la ruta del checkout de Gentle Dot"
 	[[ -d "${GD_DIR}" ]] || die "no existe el directorio ${GD_DIR}"
@@ -886,6 +913,17 @@ if [[ ! -d "${WORK_DIR}" ]]; then
 fi
 # S10: the bridge's own Pi agent directory, writable for the bridge (ReadWritePaths=, no "-");
 # private like ~/.gentle-dot (Pi keeps its logins there). Created empty: no credentials are copied.
+# S16.3: "new" means created by this run or with no entries; only the listing is read (one
+# name at most), nothing in it is opened. A failed listing counts as not new.
+pi_agent_new=0
+if ((PI_BRIDGE)); then
+	if [[ ! -d "${PI_AGENT_DIR}" ]]; then
+		pi_agent_new=1
+	elif first_entry="$(find -H "${PI_AGENT_DIR}" -mindepth 1 -maxdepth 1 -printf x -quit 2>/dev/null)" && [[ -z "${first_entry}" ]]; then
+		pi_agent_new=1
+	fi
+fi
+# Its missing parents are made 0700 too (umask 077 applies to every directory mkdir -p makes).
 if ((PI_BRIDGE)) && [[ ! -d "${PI_AGENT_DIR}" ]]; then
 	if ((DRY_RUN)); then say "[dry-run] mkdir -m 0700 ${PI_AGENT_DIR}"; else (umask 077 && mkdir -p -- "${PI_AGENT_DIR}"); fi
 fi
@@ -914,16 +952,17 @@ if ((ENABLE)); then
 	# is stopped and disabled first (its unit file stays, so switching back is one more run);
 	# Conflicts= in the bridge's unit also stops it if something starts it later.
 	alt_off=0
-	if [[ -e "${ALT_PATH}" ]]; then
-		run systemctl --user disable --now "${ALT_NAME}"
-		alt_off=1
-	fi
 	# start_failed RC: a step below failed. Once the other unit is off, nothing listens on the
 	# port: say so and how to recover (S15.2); otherwise exit with the command's status, as before.
 	start_failed() {
 		((alt_off)) || exit "$1"
 		die "no se pudo arrancar ${SVC_NAME} y ${ALT_NAME} ya se detuvo y deshabilitó: ahora no corre ninguno de los dos. Para ver por qué: journalctl --user -u ${SVC_NAME}. Para volver a ${ALT_NAME}: systemctl --user enable --now ${ALT_NAME}. Para reintentar: este script con las mismas opciones."
 	}
+	if [[ -e "${ALT_PATH}" ]]; then
+		# S16.4: a failed disable --now may have stopped it already: same message.
+		alt_off=1
+		run systemctl --user disable --now "${ALT_NAME}" || start_failed $?
+	fi
 	# A running service picks up a changed unit, agent rules or extension (read when the
 	# engine starts); then enable at login and start it.
 	if ((changed || rules_changed || ext_changed)); then
@@ -951,10 +990,31 @@ if ((HEADLESS)); then
 else
 	say "Arranca con la sesión gráfica (graphical-session.target) y se detiene al cerrarla."
 fi
-# S10: the bridge's Pi has no login until the user makes one in its own directory. Printed on
-# every bridge run: the script cannot tell (it opens nothing there). Without discovered
-# extensions, skills, prompts, context files or themes, like the bridge: the sandboxed agent can
-# write that directory, and this Pi runs outside the sandbox.
+# S10, S16.3: the bridge's Pi has no login until the user makes one in its own directory, with a
+# Pi that runs outside the sandbox. It is safe only while the agent has never written there:
+# Pi would run what it found (packages and npmCommand of settings.json, "!command" entries of
+# auth.json or models.json, tools in bin/). So the login command is printed only for a new or
+# empty directory; otherwise the re-login procedure, which never runs Pi in the old one.
 if ((PI_BRIDGE)); then
-	say "Una sola vez, si todavía no lo hiciste: inicia sesión en el Pi del puente, que usa su propia carpeta (este script no copia ni lee credenciales). Corre: env PI_CODING_AGENT_DIR=${PI_AGENT_DIR} ${PI_BIN} -ne -ns -np -nc --no-themes y dentro escribe /login; después: systemctl --user restart ${SVC_NAME}"
+	login_step="env PI_CODING_AGENT_DIR=${PI_AGENT_DIR} ${PI_BIN} -ne -ns -np -nc --no-themes y dentro escribe /login; luego sal de Pi."
+	if ((pi_agent_new && ENABLE)); then
+		say "${SVC_NAME} quedó habilitado, pero el agente no puede actuar hasta que inicies sesión en el Pi del puente: ${PI_AGENT_DIR} estaba vacía y el agente nunca escribió en ella (este script no copia ni lee credenciales). Una sola vez, ahora:"
+		say "  1. ${login_step}"
+		say "  2. systemctl --user restart ${SVC_NAME}"
+	elif ((pi_agent_new)); then
+		say "Inicio de sesión del Pi del puente, una sola vez y ANTES del primer arranque del servicio: ${PI_AGENT_DIR} está vacía y el agente nunca escribió en ella (este script no copia ni lee credenciales)."
+		say "  1. ${login_step}"
+		say "  2. Arranca el servicio: systemctl --user enable --now ${INPUT_UNIT_NAME} ${SVC_NAME} (o este script con --enable)."
+	else
+		say "${PI_AGENT_DIR} ya tiene contenido: si el Pi del puente ya inició sesión, no hace falta nada más. Para volver a iniciar sesión no corras Pi en esa carpeta: el agente pudo escribir en ella y Pi ejecutaría fuera del aislamiento lo que hubiera dejado (paquetes y npmCommand de settings.json, comandos con ! de auth.json o models.json, herramientas de bin/). En su lugar:"
+		say "  1. systemctl --user stop ${SVC_NAME}"
+		say "  2. mv ${PI_AGENT_DIR} ${PI_AGENT_DIR}.old-$(date +%Y%m%d-%H%M%S)"
+		say "  3. Vuelve a correr este script con las mismas opciones, sin --enable: crea ${PI_AGENT_DIR} nueva, vacía y 0700."
+		say "  4. ${login_step}"
+		say "  5. systemctl --user start ${SVC_NAME}"
+	fi
+	# S16.2: the default of an earlier run of this script; only its existence is checked.
+	if [[ -e "${OLD_PI_AGENT_DIR}" && "${OLD_PI_AGENT_DIR}" != "${PI_AGENT_DIR}" ]]; then
+		say "Aviso: ${OLD_PI_AGENT_DIR} es la carpeta del Pi del puente de una versión anterior de este script y ya no se usa; ahora es ${PI_AGENT_DIR}. Este script no la mueve, no la borra ni mira lo que tiene; no corras Pi en ella (el agente pudo escribir ahí) y bórrala cuando quieras."
+	fi
 fi

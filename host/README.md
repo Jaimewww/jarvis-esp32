@@ -287,29 +287,65 @@ backend no cambian. Medido el 2026-11-25 con el mismo modelo: las preguntas baja
 
 **Carpeta propia de Pi.** Pi necesita escribir en su carpeta de agente (configuración,
 `trust.json` y su `.lock`, cuentas, caché de modelos; sin eso no arranca). El Pi del
-puente no usa la tuya (`~/.pi/agent`) sino una suya, `~/.gentle-dot/pi-agent` (0700),
-que la unidad le pasa en `PI_CODING_AGENT_DIR` y es lo único de Pi donde el servicio puede
-escribir. `~/.pi` queda de **solo lectura** para el puente: si pudiera escribirla, el
-agente podría dejar ahí una extensión o tocar un paquete y tu `pi` de la terminal, que
-corre sin aislamiento, la ejecutaría al arrancar. Se cambia con `--pi-agent-dir DIR` (o
-`JARVIS_PIBRIDGE_AGENT_DIR`); nunca puede estar dentro de `~/.pi`. El home sigue visible,
-así que las extensiones extra de `~/.pi/agent/npm/...` que nombres en
+puente no usa la tuya (`~/.pi/agent`) sino una suya,
+`${XDG_STATE_HOME:-~/.local/state}/jarvis/pi-agent` (0700, y 0700 también las carpetas
+de arriba que cree el script), que la unidad le pasa en `PI_CODING_AGENT_DIR` y es lo
+único de Pi donde el servicio puede escribir. `~/.pi` queda de **solo lectura** para el
+puente: si pudiera escribirla, el agente podría dejar ahí una extensión o tocar un
+paquete y tu `pi` de la terminal, que corre sin aislamiento, la ejecutaría al arrancar.
+La carpeta tampoco está dentro de `~/.gentle-dot` ni de `~/Jarvis`, donde también escribe
+`gentle-dot.service`: su agente podría cambiarla por un enlace a `~/.pi`. Se cambia con
+`--pi-agent-dir DIR` (o `JARVIS_PIBRIDGE_AGENT_DIR`); el script rechaza, antes de
+escribir nada, una que sea `~/.pi`, `~/.gentle-dot` o `~/Jarvis`, que esté dentro de
+alguna o que contenga alguna (`$HOME`, `/`, un enlace a `$HOME`), mirando la ruta ya
+resuelta; y una que ya exista con permisos para el grupo u otros (dice el
+`chmod 700` que la arregla). Si quedó `~/.gentle-dot/pi-agent` de una versión anterior
+del script, no la mueve ni la borra: avisa que ya no se usa (no corras Pi en ella). El
+home sigue visible, así que las extensiones extra de `~/.pi/agent/npm/...` que nombres en
 `JARVIS_PI_EXTENSIONS` se siguen cargando (solo lectura).
 
-**Iniciar sesión una vez.** La carpeta nace vacía: `install.sh` no copia ni lee
-credenciales. Después de instalar, entra una vez con el Pi del puente en su carpeta y usa
-`/login` (el script imprime la línea exacta, con tus rutas):
+**Iniciar sesión.** La carpeta nace vacía: `install.sh` no copia ni lee credenciales.
+Para iniciar sesión hay que correr Pi **fuera del aislamiento** en esa carpeta, y Pi
+ejecuta lo que encuentra ahí: instala los paquetes que liste `settings.json` y corre su
+`npmCommand`, ejecuta las entradas `!comando` de `auth.json` o `models.json` al resolver
+los proveedores, y prefiere las herramientas de `bin/` a las del sistema. Una carpeta en
+la que el agente ya escribió no es segura para eso, con o sin `-ne -ns -np -nc
+--no-themes` (esas opciones solo evitan cargar extensiones, skills, prompts, archivos de
+contexto y temas; no protegen de lo anterior). La única protección es la regla: **Pi
+corre fuera del aislamiento solo en una carpeta vacía, que el agente nunca escribió.**
+El script decide por la lista de la carpeta (si la creó en esta corrida o no tiene
+entradas; no abre nada de adentro) y según eso imprime uno de los dos procedimientos, con
+tus rutas.
+
+*Primera vez* (carpeta nueva o vacía), antes del primer arranque del servicio, así que
+conviene instalar sin `--enable`:
 
 ```bash
-env PI_CODING_AGENT_DIR=$HOME/.gentle-dot/pi-agent "$(command -v pi)" -ne -ns -np -nc --no-themes
+host/systemd/install.sh --pi-bridge --node "$(mise where node@24)/bin/node"
+env PI_CODING_AGENT_DIR=$HOME/.local/state/jarvis/pi-agent "$(command -v pi)" -ne -ns -np -nc --no-themes
 # dentro de Pi: /login, elegir el proveedor (el del modelo, por defecto openai) y salir
-systemctl --user restart jarvis-pibridge.service
+systemctl --user enable --now jarvis-input.service jarvis-pibridge.service
 ```
 
-Va sin extensiones, skills ni archivos de contexto descubiertos, como el puente: esa
-carpeta la puede escribir el agente, y este `pi` corre fuera del aislamiento. Si el
+Con `--enable` sobre una carpeta vacía el script habilita y arranca el servicio igual,
+pero avisa que el agente no puede hacer nada hasta que exista la sesión (sin cuenta no
+hay modelo): inicia sesión con la línea de arriba y luego
+`systemctl --user restart jarvis-pibridge.service`.
+
+*Volver a iniciar sesión* (otra cuenta, sesión vencida; la carpeta ya tiene contenido):
+nunca corras Pi en la carpeta vieja. El script imprime estos pasos:
+
+```bash
+systemctl --user stop jarvis-pibridge.service
+mv ~/.local/state/jarvis/pi-agent ~/.local/state/jarvis/pi-agent.old-AAAAMMDD-HHMMSS  # el script da el nombre con la hora
+host/systemd/install.sh --pi-bridge --node "$(mise where node@24)/bin/node"  # sin --enable: crea una carpeta nueva, vacía, 0700
+env PI_CODING_AGENT_DIR=$HOME/.local/state/jarvis/pi-agent "$(command -v pi)" -ne -ns -np -nc --no-themes  # /login y salir
+systemctl --user start jarvis-pibridge.service
+```
+
+La carpeta movida queda como está (no corras Pi en ella; bórrala cuando quieras). Si el
 proveedor lo trae una extensión (por ejemplo `pi-claude-bridge`), agrégala con
-`-e <ruta>`. La cuenta queda en esa carpeta y se conserva al desinstalar.
+`-e <ruta>`. La cuenta queda en la carpeta y se conserva al desinstalar.
 
 Requisitos: `pi` instalado, el **binario real** de Node 24+, como para Gentle Dot (un
 shim de mise no sirve), y la sesión de arriba. No hace falta el checkout de Gentle Dot.
@@ -329,9 +365,9 @@ extensión, parada, ayudante, TUI) salvo la unidad: escribe
 y crea la carpeta propia de Pi (0700) si falta; `--check` dice si esa carpeta existe (no
 mira si tiene una sesión). Con `--enable`, si `gentle-dot.service` está instalado,
 primero corre `systemctl --user disable --now gentle-dot.service` y después habilita y
-arranca el puente; la unidad de Gentle Dot queda en su lugar. Si el puente no arranca en
-ese punto, no queda ninguno de los dos corriendo: el script lo dice y da los comandos para
-ver el error y volver a Gentle Dot. Sin `--enable` no habilita, arranca ni detiene nada:
+arranca el puente; la unidad de Gentle Dot queda en su lugar. Si ese `disable --now` o el
+arranque del puente fallan, puede no quedar ninguno de los dos corriendo: el script lo
+dice y da los comandos para ver el error y volver a Gentle Dot. Sin `--enable` no habilita, arranca ni detiene nada:
 solo corre `systemctl --user daemon-reload` si la unidad cambió, y avisa qué correr.
 
 ### Volver a Gentle Dot

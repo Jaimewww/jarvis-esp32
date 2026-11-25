@@ -103,3 +103,12 @@ def test_pi_coding_agent_dir_reaches_the_pi_child(tmp_path: Path, monkeypatch: p
 
     record = asyncio.run(scenario())
     assert json.loads(json.dumps(record))["data"] == {"PI_CODING_AGENT_DIR": agent_dir}
+
+
+def test_the_help_names_the_two_options_whose_variable_is_not_jarvis_pi_name(capsys: pytest.CaptureFixture[str]) -> None:
+    # S16.4: "every option reads JARVIS_PI_<NAME>" is wrong for --pi and --extension.
+    with pytest.raises(SystemExit):
+        parse_config(["--help"], {})
+    description = " ".join(capsys.readouterr().out.split("options:")[0].split())
+    assert "--pi reads JARVIS_PI_EXECUTABLE" in description
+    assert "--extension adds to JARVIS_PI_EXTENSIONS" in description

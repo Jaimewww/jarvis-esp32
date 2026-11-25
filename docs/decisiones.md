@@ -444,7 +444,8 @@ por default», «Puente con protocolo de Gentle Dot»).
   máquina con `host/systemd/install.sh --pi-bridge`, que instala
   `jarvis-pibridge.service` con el mismo aislamiento que `gentle-dot.service` más
   escritura en una carpeta de agente propia del Pi del puente
-  (`PI_CODING_AGENT_DIR`, por defecto `~/.gentle-dot/pi-agent`, 0700). Las dos unidades
+  (`PI_CODING_AGENT_DIR`, por defecto `${XDG_STATE_HOME:-~/.local/state}/jarvis/pi-agent`,
+  0700). Las dos unidades
   se excluyen (`Conflicts=`) y el instalador deshabilita una al habilitar la otra.
 - **`~/.pi` queda de solo lectura** para el servicio (S10 y S15.1, L9). Con escritura
   ahí, el agente podría dejar una extensión en `~/.pi/agent/extensions/` o tocar
@@ -453,6 +454,24 @@ por default», «Puente con protocolo de Gentle Dot»).
   de `~/.pi` se siguen leyendo. El costo es iniciar sesión una vez en esa carpeta
   (`/login`, con el comando que imprime el instalador); el instalador no copia ni lee
   credenciales.
+- **La carpeta de agente queda fuera de todo lo que alguna unidad puede escribir** (S16.1
+  y S16.2, L10). Antes estaba en `~/.gentle-dot/pi-agent`, que `gentle-dot.service`
+  puede escribir: su agente podía cambiarla por un enlace a `~/.pi`, y systemd resuelve
+  los enlaces de `ReadWritePaths=`. El instalador rechaza, sobre la ruta resuelta, una
+  carpeta que sea `~/.pi`, `~/.gentle-dot` o `~/Jarvis`, que esté dentro de alguna o que
+  contenga alguna (`$HOME`, `/`), y una que ya exista con permisos para el grupo u otros.
+  La carpeta vieja, si existe, no se mueve ni se borra.
+- **Pi corre fuera del aislamiento solo en una carpeta que el agente nunca escribió**
+  (S16.3, L10). Para `/login` Pi corre sin aislamiento en esa carpeta y ejecuta lo que
+  haya: paquetes y `npmCommand` de `settings.json`, entradas `!comando` de `auth.json` o
+  `models.json`, herramientas de `bin/`. Las opciones `-ne -ns -np -nc --no-themes` no lo
+  evitan. Por eso el instalador imprime el comando de inicio de sesión solo cuando la
+  carpeta es nueva o está vacía (lo decide por la lista de la carpeta, sin abrir nada) y
+  pide hacerlo antes del primer arranque; si ya tiene contenido, imprime el procedimiento
+  para volver a iniciar sesión: detener el servicio, mover la carpeta a un costado sin
+  correr Pi en ella, volver a correr el instalador para crear una nueva vacía (0700),
+  iniciar sesión y arrancar el servicio. La primera sesión es segura porque sin cuenta el
+  agente no puede actuar.
 - **Los resguardos son otros que en D8.** En una máquina con el puente el agente ya no
   está «limitado por los resguardos de Gentle Dot» (el diálogo de permiso, la lista de
   bloqueo y el límite de acciones de D8): quedan solo los de la extensión de control de
