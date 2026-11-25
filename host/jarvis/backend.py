@@ -111,6 +111,8 @@ class TurnStage:
     ms: float | None = None
     text: str | None = None
     ts: float | None = None
+    # Set on a slow ``stt`` stage: the backend thinks whisper-server runs on CPU.
+    warning: str | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -194,6 +196,7 @@ def parse_backend_event(payload: dict[str, Any]) -> BackendEvent | None:
             _number(payload.get("ms")),
             _optional_text(payload.get("text")),
             ts,
+            _optional_text(payload.get("warning")),
         )
     if kind == "turn_done":
         return TurnDone(
