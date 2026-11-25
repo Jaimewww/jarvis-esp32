@@ -167,6 +167,36 @@ Gentle Dot as the default; a machine opts into the bridge. Branch `feat/pi-bridg
      longer 'limited by Gentle Dot's guardrails' (D8's permission dialog, blocklist, rate
      limit); only the pc-control extension's own guards (D20/D23) remain." D24 must say so, and
      that the bridge's Pi keeps Pi's default tools (read, bash, edit, write) inside the sandbox.
+- S16 (L10, findings of the T7 verify and native review, lineage review-e031df68a5d3e6b2):
+  1. Verify, blocker (`install.sh:331-334`): "the check only refuses paths *inside* `~/.pi`.
+     `$HOME`, `/` or `~/.gentle-dot/..` make all of `~/.pi` (or everything) writable and cancel
+     `ProtectHome`. Narrowest fix: also refuse when `"${user_pi_real}/"` starts with
+     `"${pi_agent_real}/"`, and add tests for `$HOME`, `/` and a symlink to `$HOME`."
+  2. Verify (inferred from systemd.exec(5), not run): "`gentle-dot.service` can also write
+     `~/.gentle-dot`, and in its namespace `pi-agent` is not a mount point. Its agent could
+     swap `pi-agent` for a symlink to `~/.pi`. systemd resolves symlinks in `ReadWritePaths`
+     [...]. Fix: keep the agent directory outside both units' writable paths, for example
+     `~/.local/state/jarvis/pi-agent`." The default agent directory moves outside every path
+     either service can write, and the installer refuses an agent directory that is inside,
+     or an ancestor of, any path the two units make writable (`~/.gentle-dot`, `~/Jarvis`).
+  3. Verify: "the 'safe' login Pi can still run code the agent planted in the agent directory.
+     `-ne` does not stop package resolution. Packages listed in the planted `settings.json` are
+     installed at startup, and `npmCommand` is an arbitrary command [...]. `"!command"` keys
+     in `auth.json` or `models.json` run when `/login` resolves providers [...]. `bin/fd` and
+     `bin/rg` in the agent directory are preferred over the system ones [...]. The first login,
+     done before any agent turn, is safe: the bridge has no credentials, so the agent cannot
+     act. A re-login after use is not, yet the installer prints the command on every run and
+     `host/README.md:309-310` presents the flags as the safeguard." The first login is done in
+     a directory the agent has never written; the installer and the README give a re-login
+     procedure that never runs Pi outside the sandbox in a directory the agent has written
+     (stop the service, move the old directory aside without running Pi in it, create a fresh
+     empty 0700 directory, log in, start), and the README no longer presents the flags as the
+     safeguard.
+  4. Verify, notes: `host/jarvis/pibridge/config.py:53-54` "the help says every option reads
+     `JARVIS_PI_<NAME>`, which is wrong for `--pi` (`JARVIS_PI_EXECUTABLE`) and `--extension`
+     (`JARVIS_PI_EXTENSIONS`)"; "A failing `disable --now` of the other unit (`install.sh:918`)
+     exits without the S15.2 message"; "The mode of an existing agent directory is not
+     checked" (an existing one that group or others can enter is refused).
 
 ## Tasks
 
@@ -184,8 +214,12 @@ Gentle Dot as the default; a machine opts into the bridge. Branch `feat/pi-bridg
   branch feat/pi-bridge-install on feat/pi-bridge-clients (PR #42): 4f5e270 (unit, installer,
   tests), ceaa832 (docs), 91c124d (review correction: refuse `--pi` without `--pi-bridge`).
   Installer suite 241 passed. Native review approved after the correction. Reopened by L9.
-- [ ] T7 S10,S15 — Give the bridge's Pi its own agent directory and fix the other T3
-  findings. Route: gentle-ai-worker, same branch.
+- [x] T7 S10,S15 — Give the bridge's Pi its own agent directory and fix the other T3
+  findings. Route: gentle-ai-worker, same branch: 4dc0e0f. Installer suite 264 passed; host
+  346 passed, 6 skipped. Native review approved (lineage review-e031df68a5d3e6b2).
+  Independent verify: FAIL on one option (S16.1); default install closed (L10).
+- [ ] T8 S16 — Close the agent-directory gaps found by the T7 verify. Route:
+  gentle-ai-worker, same branch.
 - [x] T5 S13 — Fix pass after the T2 verify and review. Route: gentle-ai-worker, same branch: bde49a8. Host 335 passed, 6 skipped; backend 82 passed, 7 skipped; pyright 0 errors. Native review approved (lineage review-03ea5a3391aa7fc2); independent verify: S13.1-S13.6 pass, S13.7 partial (L8).
 - [ ] T6 S14 — Second hardening pass on model switching and backlog. Route: gentle-ai-worker, after the bridge is in use.
 - [ ] T4 S11 — Run the bench and the TUI against the bridge on the user's machine; record the
@@ -263,3 +297,11 @@ Gentle Dot as the default; a machine opts into the bridge. Branch `feat/pi-bridg
   (technical, taken to keep the sandbox's guarantee): S10 is rewritten so the bridge's Pi gets
   its own agent directory and `~/.pi` stays read-only. Cost for the user: one login of Pi in
   that directory. The remaining findings are S15 (T7). T3 stays open until T7 lands.
+- L10 (2026-11-25, evidence, T7). Independent verify of 4dc0e0f: in the default install the
+  unit can no longer write `~/.pi` (writable paths: `~/.gentle-dot`, `~/Jarvis`, the agent
+  directory, private tmp); the default install is identical to the previous installer over 17
+  steps and 119 compared artifacts except the help text and the new refusals; switching never
+  leaves both units enabled; S15.2-S15.7 pass. FAIL because `--pi-agent-dir` accepts an
+  ancestor of `~/.pi` (S16.1), plus two residual exposures (S16.2, S16.3). Native review of
+  the same commit approved with four non-blocking findings, two of them the same as S16.1 and
+  S16.3. Nothing of T3 is pushed until T8 lands and verifies.
