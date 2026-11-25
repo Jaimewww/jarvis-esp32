@@ -1,0 +1,66 @@
+# Jarvis input helper as a systemd user service (S13, task T21).
+#
+# The only process with access to the screen and keyboard: it alone runs wtype, grim,
+# niri msg, gtk-launch and xdg-open, with the S12 safeguards, and keeps the PC-control
+# permission in memory (restarting it revokes the permission). Python stdlib package
+# host/input/jarvis_input/, installed by host/systemd/install.sh into
+# ~/.local/share/jarvis/input/jarvis_input/ and this file into
+# ~/.config/systemd/user/jarvis-input.service (copied verbatim; no placeholders).
+# Sockets (JSON lines):
+#   $XDG_RUNTIME_DIR/jarvis/agent.sock            the agent's extension (gentle-dot.service)
+#   $XDG_RUNTIME_DIR/jarvis-control/control.sock  only the TUI and jarvis-stop
+# Docs: host/systemd/README.md. Journal: journalctl --user -u jarvis-input
+
+[Unit]
+Description=Jarvis input helper (the only process that types, captures and opens apps)
+# Same cap as gentle-dot.service: at most 10 starts in 10 minutes.
+StartLimitIntervalSec=10min
+StartLimitBurst=10
+# Needs the compositor's WAYLAND_DISPLAY/NIRI_SOCKET in the user manager; stops with it.
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.local/share/jarvis/input
+# Root-owned directories only. The user manager's PATH starts with ~/.local/bin and
+# version-manager shims: a planted `wtype` there would run here, with the display. Apps
+# opened through the helper inherit this PATH.
+Environment=PATH=/usr/local/bin:/usr/bin
+# Minimal environment (S15): no dynamic-loader injection into python3 or the tools and apps
+# it starts, and no interpreter hooks (python3 -I ignores the PYTHON* ones itself; unset
+# so the apps the helper opens do not inherit them either).
+UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT PYTHONPATH PYTHONHOME PYTHONSTARTUP PYTHONUSERBASE PYTHONINSPECT NODE_OPTIONS
+# -I: isolated (no PYTHON* variables, no user site-packages, no cwd or script directory on
+# sys.path), so the package directory is put on sys.path explicitly; -B: no bytecode caches
+# in the installed copy. Same as `python3 -m jarvis_input`.
+ExecStart=/usr/bin/python3 -I -B -c "import runpy, sys; sys.path.insert(0, '%h/.local/share/jarvis/input'); runpy.run_module('jarvis_input', run_name='__main__', alter_sys=True)"
+# systemd creates both socket directories (0700) before the start. Preserved on stop:
+# gentle-dot.service bind-mounts %t/jarvis, and recreating it would leave that bind stale.
+RuntimeDirectory=jarvis jarvis-control
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+# Stop or restart (code update, revoke by restart) only kills the helper itself: apps it
+# started with gtk-launch/xdg-open live in this unit's cgroup and must survive it.
+KillMode=process
+
+# Restart on failure with back-off: 2 s growing to 1 min over 5 steps.
+Restart=on-failure
+RestartSec=2s
+RestartSteps=5
+RestartMaxDelaySec=1min
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=jarvis-input
+
+# Hardening that keeps the session reachable. No PrivateTmp=, PrivateUsers=,
+# TemporaryFileSystem= or ProtectHome=: wtype, grim and niri msg need the real Wayland and
+# niri sockets in $XDG_RUNTIME_DIR, and gtk-launch/xdg-open start the user's apps.
+UMask=0077
+NoNewPrivileges=yes
+LockPersonality=yes
+RestrictRealtime=yes
+
+[Install]
+WantedBy=graphical-session.target

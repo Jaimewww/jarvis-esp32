@@ -11,7 +11,8 @@ The daemon is the default one (``ws://127.0.0.1:4317/ws``, token from
 ``~/.gentle-dot/token``) unless ``JARVIS_DAEMON_URL`` / ``JARVIS_DAEMON_TOKEN_FILE``
 say otherwise. The token is opened by the client and never printed. Only the last
 test sends a message (one short prompt); without an AI account the daemon refuses it
-and the window must show the daemon's own message. Nothing here signs in.
+and the window must show the daemon's own message. Nothing here signs in: the
+``auth_list`` test only reads the account list.
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ from typing import Any
 import pytest
 from conftest import wait_for
 
-from jarvis.client import DEFAULT_TOKEN_PATH, ConnectionStatus, JarvisClient, Ready
+from jarvis.client import DEFAULT_TOKEN_PATH, AuthProvidersEvent, ConnectionStatus, JarvisClient, Ready
 from jarvis.devview import DeveloperView
 from jarvis.tui import JarvisApp
 from jarvis.userview import UserView
@@ -121,3 +122,26 @@ def test_real_window_typing_shows_the_answer_or_the_daemons_message() -> None:
         pytest.skip("Gentle Dot has an AI account connected: the prompt was accepted and echoed")
     assert notice == NO_ACCOUNT
     assert NO_ACCOUNT in user
+
+
+def test_real_daemon_lists_its_accounts_read_only() -> None:
+    """Only ``auth_list`` (sent on connect): no ``auth_login``, ``auth_reply`` or ``auth_logout``."""
+
+    events: list[Any] = []
+
+    async def scenario() -> None:
+        client = JarvisClient(events.append, url=URL, token_path=TOKEN_PATH)
+        task = asyncio.create_task(client.run())
+        try:
+            await wait_for(lambda: any(isinstance(e, AuthProvidersEvent) for e in events), timeout=10)
+        finally:
+            await client.close()
+            await asyncio.wait_for(task, 5)
+
+    asyncio.run(scenario())
+    listed = next(e for e in events if isinstance(e, AuthProvidersEvent))
+    assert all(p.id and p.name and p.methods for p in listed.providers)
+    # Upstream offers Anthropic with an API key only.
+    for provider in listed.providers:
+        if provider.id == "anthropic":
+            assert "oauth" not in provider.methods

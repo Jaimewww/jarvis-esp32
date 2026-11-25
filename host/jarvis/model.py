@@ -32,9 +32,16 @@ from .backend import (
     TurnStarted,
 )
 from .client import (
+    AUTH_ERRORS,
     Activity,
     ActivityEvent,
     AgentStateEvent,
+    AuthDoneEvent,
+    AuthFlowEvent,
+    AuthPrompt,
+    AuthPromptEvent,
+    AuthProvider,
+    AuthProvidersEvent,
     ConnectionStatus,
     ConversationsEvent,
     ErrorEvent,
@@ -61,6 +68,8 @@ OFFLINE: Final = "offline"
 #: their message on screen. ``no_account``: the daemon refuses every send until an AI
 #: account is connected (upstream f97d56d, observed on the real daemon).
 LASTING_ERRORS: Final = frozenset({"no_account"})
+#: Under the sign-in notice, unless the daemon's own words already say it.
+LOGIN_HINT: Final = "Type /login to connect one."
 
 
 class StageState(StrEnum):
@@ -140,6 +149,8 @@ class Message:
     at: float | None = None
     error: str | None = None
     stopped: bool = False
+    #: A user message this window sent from the microphone (f4), not typed.
+    spoken: bool = False
 
     @property
     def answer(self) -> str:
@@ -159,6 +170,12 @@ def fmt_seconds(seconds: float | None) -> str:
 class PromptTiming:
     """Monotonic stamps of one typed prompt: send, echo, first non-empty text, done.
 
+    A prompt may bring several messages (a tool-using one: an empty message with the
+    tool call, then the text), so the first text is the first across all of them and
+    the end is the agent going back to ``idle``. Until then ``done_at`` is the last
+    ``message_done`` and ``settled`` is false; a stop, an error, the next prompt or a
+    dropped link settle it where it is, so a daemon that never says idle does not hang it.
+
     The daemon's frames carry no time, so these are host-side: they include the
     local WebSocket hop, which is small next to the model's own time.
     """
@@ -169,6 +186,11 @@ class PromptTiming:
     done_at: float | None = None
     error: str | None = None
     stopped: bool = False
+    settled: bool = False
+    #: The newest assistant message of this prompt: the reply the time belongs to.
+    reply_id: str | None = None
+    #: Sent from the microphone (f4) rather than typed.
+    spoken: bool = False
 
     def _since(self, at: float | None) -> float | None:
         return None if at is None else at - self.sent_at
@@ -217,6 +239,134 @@ class LaneStats:
         return self.worst_s - self.target_s
 
 
+class LoginStage(StrEnum):
+    """Where the ``/login`` panel is."""
+
+    PROVIDERS = "providers"  # choose an account
+    METHOD = "method"  # choose subscription or API key
+    RUNNING = "running"  # a sign-in is under way (waiting, or a prompt is open)
+
+
+#: Steps of a sign-in kept for the panel, newest last.
+MAX_LOGIN_STEPS: Final = 20
+#: The sign-in ends when the daemon link drops: its flow does not survive the connection.
+LOGIN_DROPPED: Final = "The connection to Gentle Dot dropped: the sign-in ended."
+LOGIN_CANCELLED: Final = "Sign-in cancelled."
+
+
+@dataclass(slots=True)
+class Login:
+    """The ``/login`` panel. It holds what the daemon said, never what the person typed."""
+
+    open: bool = False
+    stage: LoginStage = LoginStage.PROVIDERS
+    providers: tuple[AuthProvider, ...] = ()
+    #: ``True`` once the daemon answered ``auth_list`` at least once.
+    listed: bool = False
+    provider: AuthProvider | None = None
+    method: str | None = None
+    flow_id: str | None = None
+    prompt: AuthPrompt | None = None
+    steps: list[AuthFlowEvent] = field(default_factory=list)
+    #: The outcome of the last sign-in: ``(ok, text)``.
+    result: tuple[bool, str] | None = None
+    #: A hint about the last answer (for example a number out of range).
+    hint: str | None = None
+    #: Esc came before the daemon named the flow: cancel it as soon as it does.
+    cancel_pending: bool = False
+    #: Esc sent ``auth_reply{cancelled}``; the daemon's ``auth_done`` ends it.
+    cancelling: bool = False
+    #: The panel was left before the daemon named the flow: cancel the next flow it names.
+    cancel_next: bool = False
+    #: Flows this window cancelled and left: their late frames change nothing.
+    ignored: set[str] = field(default_factory=set)
+
+    @property
+    def running(self) -> bool:
+        return self.stage is LoginStage.RUNNING
+
+    @property
+    def link(self) -> str | None:
+        """The newest address of this sign-in, for ctrl+y."""
+
+        for step in reversed(self.steps):
+            if step.kind == "auth_url" and step.url:
+                return step.url
+            if step.kind == "device_code" and step.verification_uri:
+                return step.verification_uri
+        return None
+
+    def show(self) -> None:
+        """Open the panel on the list, keeping a sign-in that is under way."""
+
+        self.open = True
+        if not self.running:
+            self.stage = LoginStage.PROVIDERS
+            self.hint = None
+
+    def close(self) -> None:
+        self.open = False
+        self.hint = None
+        if not self.running:
+            self.stage = LoginStage.PROVIDERS
+            self.result = None
+
+    def start(self, provider: AuthProvider, method: str) -> None:
+        self.stage = LoginStage.RUNNING
+        self.provider = provider
+        self.method = method
+        self.flow_id = None
+        self.prompt = None
+        self.steps = []
+        self.result = None
+        self.hint = None
+        self.cancel_pending = False
+        self.cancelling = False
+
+    def finish(self, ok: bool, text: str) -> None:
+        self.stage = LoginStage.PROVIDERS
+        self.prompt = None
+        self.flow_id = None
+        self.cancel_pending = False
+        self.cancelling = False
+        self.result = (ok, text)
+
+
+class VoiceInput:
+    """Push-to-talk in this window (f4): idle, recording or transcribing."""
+
+    def __init__(self, monotonic: Callable[[], float] = time.monotonic) -> None:
+        self._monotonic = monotonic
+        self.phase = "idle"
+        self.started_at: float | None = None
+
+    @property
+    def recording(self) -> bool:
+        return self.phase == "recording"
+
+    @property
+    def transcribing(self) -> bool:
+        return self.phase == "transcribing"
+
+    @property
+    def active(self) -> bool:
+        return self.phase != "idle"
+
+    def elapsed_s(self) -> float:
+        return 0.0 if self.started_at is None else max(0.0, self._monotonic() - self.started_at)
+
+    def start(self) -> None:
+        self.phase = "recording"
+        self.started_at = self._monotonic()
+
+    def transcribe(self) -> None:
+        self.phase = "transcribing"
+
+    def reset(self) -> None:
+        self.phase = "idle"
+        self.started_at = None
+
+
 def _median(values: Iterable[float]) -> float | None:
     items = list(values)
     return statistics.median(items) if items else None
@@ -232,11 +382,14 @@ class HostModel:
     ) -> None:
         self._clock = clock
         self._monotonic = monotonic
-        #: Send stamps of typed prompts not echoed yet, oldest first (the daemon queues).
-        self._sent: deque[float] = deque()
+        #: Send stamps of typed prompts not echoed yet, oldest first (the daemon queues),
+        #: each with whether it was spoken (f4) rather than typed.
+        self._sent: deque[tuple[float, bool]] = deque()
         #: The typed prompt being answered now, and the last one that finished.
         self._timing: PromptTiming | None = None
         self.last_timing: PromptTiming | None = None
+        #: Timed replies by assistant message id (typed here, in this window).
+        self._reply_timings: dict[str, PromptTiming] = {}
         self.devices: dict[str, Device] = {}
         self.backend_status = ConnectionStatus.DISCONNECTED
         self.daemon_status = ConnectionStatus.DISCONNECTED
@@ -252,6 +405,10 @@ class HostModel:
         self.agent_notice: str | None = None
         self.chat_title: str | None = None
         self.queue_total = 0
+        #: The ``/login`` panel, shared by both views.
+        self.login = Login()
+        #: Push-to-talk (f4), shared by both views.
+        self.voice = VoiceInput(monotonic)
         self.turns: list[Turn] = []
         self._turns_by_id: dict[str, Turn] = {}
         #: Actions that arrived while their device had no open turn.
@@ -270,6 +427,10 @@ class HostModel:
     def set_daemon_status(self, status: ConnectionStatus, detail: str = "") -> None:
         self.daemon_status = status
         self.daemon_detail = "" if status is ConnectionStatus.CONNECTED else detail
+        if status is not ConnectionStatus.CONNECTED:
+            self._settle_timing()  # the link dropped: no idle will come for it
+            if self.login.running:
+                self.login.finish(False, LOGIN_DROPPED)
 
     @property
     def agent_status(self) -> str:
@@ -280,6 +441,14 @@ class HostModel:
         """
 
         return self.agent_state if self.daemon_status is ConnectionStatus.CONNECTED else OFFLINE
+
+    @property
+    def login_hint(self) -> str | None:
+        """How to act on the sign-in notice, when the notice does not say it."""
+
+        if not self.agent_notice or "/login" in self.agent_notice:
+            return None
+        return LOGIN_HINT
 
     @property
     def agent_offline_reason(self) -> str | None:
@@ -446,10 +615,14 @@ class HostModel:
 
     # Daemon events
 
-    def note_sent(self) -> None:
-        """A typed prompt left this host now; its echo, first text and end are timed."""
+    def note_sent(self, *, spoken: bool = False) -> None:
+        """A prompt left this host now; its echo, first text and end are timed.
 
-        self._sent.append(self._monotonic())
+        ``spoken``: it was said into the microphone (f4) and transcribed, not typed; its
+        echo is marked so both views show it as said.
+        """
+
+        self._sent.append((self._monotonic(), spoken))
 
     def apply_daemon(self, event: Event) -> None:
         self._time(event)
@@ -466,9 +639,16 @@ class HostModel:
         elif isinstance(event, ErrorEvent):
             if event.code in LASTING_ERRORS and event.message:
                 self.agent_notice = event.message
+            elif event.code in AUTH_ERRORS and self.login.running:
+                # The daemon refused or no longer knows this sign-in: its own words, as they are.
+                self.login.finish(False, event.message or "The sign-in did not start.")
+        elif isinstance(event, (AuthProvidersEvent, AuthPromptEvent, AuthFlowEvent, AuthDoneEvent)):
+            self._apply_login(event)
         elif isinstance(event, UserMessageEvent):
             self.agent_notice = None  # the daemon started a prompt: it can answer again
-            self._message(event.message_id, "user", event.text, streaming=False, at=self._clock())
+            message = self._message(event.message_id, "user", event.text, streaming=False, at=self._clock())
+            if self._timing is not None and self._timing.spoken:  # set by _time for this echo
+                message.spoken = True
         elif isinstance(event, MessageDeltaEvent):
             self.agent_notice = None
             known = self._messages_by_id.get(event.message_id)
@@ -500,14 +680,73 @@ class HostModel:
         elif isinstance(event, QueueEvent):
             self.queue_total = len(event.steering) + len(event.follow_up)
 
+    def _apply_login(
+        self, event: AuthProvidersEvent | AuthPromptEvent | AuthFlowEvent | AuthDoneEvent
+    ) -> None:
+        login = self.login
+        if isinstance(event, AuthProvidersEvent):
+            login.providers = event.providers
+            login.listed = True
+            if event.open:
+                login.show()
+            return
+        flow_id = event.prompt.flow_id if isinstance(event, AuthPromptEvent) else event.flow_id
+        if flow_id in login.ignored:
+            return  # a flow this window cancelled: not this sign-in's outcome
+        if isinstance(event, AuthDoneEvent):
+            if login.flow_id not in (None, event.flow_id):
+                return  # another window's sign-in
+            if event.ok:
+                self.agent_notice = None  # an account is connected: the daemon answers again
+                name = login.provider.name if login.provider else event.provider_id
+                login.finish(True, f"Signed in to {name}.")
+            else:
+                login.finish(False, event.message or "Sign-in did not finish.")
+            return
+        if not login.running or login.flow_id not in (None, flow_id):
+            return
+        if isinstance(event, AuthPromptEvent):
+            login.flow_id = event.prompt.flow_id
+            if login.cancelling:
+                return  # being cancelled: nothing more to answer
+            login.prompt = event.prompt
+            login.hint = None
+        else:
+            login.flow_id = event.flow_id
+            login.steps.append(event)
+            del login.steps[:-MAX_LOGIN_STEPS]
+
+    def answered_login_prompt(self) -> None:
+        """The open prompt was answered; the answer itself is not kept."""
+
+        self.login.prompt = None
+        self.login.hint = None
+
+    def reply_timing(self, message_id: str) -> PromptTiming | None:
+        """The time of the typed prompt this assistant message ended, if it was timed here."""
+
+        return self._reply_timings.get(message_id)
+
+    def _settle_timing(self) -> None:
+        """End the open timing where it is (its last ``message_done``), if one is open."""
+
+        timing, self._timing = self._timing, None
+        if timing is not None and timing.done_at is not None:
+            timing.settled = True
+
     def _time(self, event: Event) -> None:
         if isinstance(event, Ready):
             # A new connection: prompts sent before it will not be echoed to this one.
             self._sent.clear()
-            self._timing = None
+            self._settle_timing()
         elif isinstance(event, UserMessageEvent):
+            self._settle_timing()  # the agent went on to the next prompt without idle
             # Only prompts typed here are timed; one from another window is not.
-            self._timing = PromptTiming(self._sent.popleft()) if self._sent else None
+            if self._sent:
+                sent_at, spoken = self._sent.popleft()
+                self._timing = PromptTiming(sent_at, spoken=spoken)
+            else:
+                self._timing = None
             if self._timing is not None:
                 self._timing.echo_at = self._monotonic()
         elif self._timing is None:
@@ -516,12 +755,23 @@ class HostModel:
             if event.delta and self._timing.first_text_at is None:
                 self._timing.first_text_at = self._monotonic()
         elif isinstance(event, MessageDoneEvent):
-            timing, self._timing = self._timing, None
+            timing = self._timing
             timing.done_at = self._monotonic()
             if timing.first_text_at is None and event.text:
                 timing.first_text_at = timing.done_at  # the whole text came at once
             timing.error = event.error
             timing.stopped = event.stopped
+            if timing.reply_id is not None:
+                self._reply_timings.pop(timing.reply_id, None)
+            timing.reply_id = event.message_id
+            self._reply_timings[event.message_id] = timing
+            self.last_timing = timing  # provisional until idle
+            if event.error or event.stopped:
+                self._settle_timing()
+        elif isinstance(event, AgentStateEvent) and event.state == "idle":
+            timing, self._timing = self._timing, None
+            timing.done_at = self._monotonic()
+            timing.settled = True
             self.last_timing = timing
 
     @property

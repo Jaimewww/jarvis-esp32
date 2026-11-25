@@ -31,7 +31,7 @@ from rich.text import Text
 from textual.widget import Widget
 
 from .client import ConnectionStatus
-from .model import STAGES, HostModel, StageState, Turn
+from .model import STAGES, HostModel, StageState, Turn, fmt_seconds
 from .theme import DEFAULT_DARK, THEMES, Theme, gradient_class, to_text
 
 Seg = tuple[str, str]
@@ -550,10 +550,16 @@ def conversation_rows(model: HostModel, g: Grid) -> list[list[Seg]]:
     for i, message in enumerate(messages):
         who = "you" if message.role == "user" else "jarvis"
         live = message.streaming
+        # A reply typed and timed here shows its total, dim, at the pane's right edge.
+        timing = None if live or who != "jarvis" else model.reply_timing(message.message_id)
+        stamp = [S(fmt_seconds(timing.total_s), "mu")] if timing and timing.total_s is not None else None
+        room = tw - (width(stamp) + 2 if stamp else 0)
+        if room < 8:
+            stamp, room = None, tw
         lines = [
             line
             for paragraph in (message.text or " ").split("\n")
-            for line in (textwrap.wrap(paragraph, tw) or [""])
+            for line in (textwrap.wrap(paragraph, room) or [""])
         ]
         for j, line in enumerate(lines):
             items: list[Item] = []
@@ -561,11 +567,13 @@ def conversation_rows(model: HostModel, g: Grid) -> list[list[Seg]]:
                 if live:
                     items.append((X_G, [S(*LIVE)]))
                 items.append((X_T, [S(who, "lv b" if live else ("t2 b" if who == "you" else "t1 b"))]))
+                if message.spoken:  # said into this window's microphone (f4)
+                    items.append((X_T + len(who) + 1, [S("◎", "t2")]))
             body = [S(line, "t2" if who == "you" else "t1")]
             if live and j == len(lines) - 1:
                 body.append(S("▍", "lv"))
             items.append((X_ID, body))
-            out.append(place(items, w, "bc"))
+            out.append(place(items, w, "bc", right=stamp if j == 0 else None))
         if who == "jarvis" and i < len(messages) - 1:
             out.append(blank(w, "bc"))
     return out
@@ -604,6 +612,8 @@ def rail_rows(model: HostModel, g: Grid, n: int) -> list[list[Seg]]:
         # The daemon's own message (e.g. no AI account), whole, wrapped to the card.
         for i, line in enumerate(textwrap.wrap(model.agent_notice, room) or [""]):
             body.append(kv("needs" if i == 0 else "", [S(line, "er")]))
+        if model.login_hint:
+            body.append(kv("", [S(clip(model.login_hint, room), "t2")]))
     body.append(inside([]))
     activities = model.activities
     body.append(inside([(xr, header("PC actions", str(len(activities))))]))
@@ -683,23 +693,31 @@ def _legend(entries: Sequence[tuple[Seg, str]], sep: str) -> list[Seg]:
     return segs
 
 
-def footer_row(w: int, keys: Sequence[tuple[str, str]], legend: bool) -> list[Seg]:
+def footer_row(
+    w: int, keys: Sequence[tuple[str, str]], legend: bool, optional: Sequence[str] = ()
+) -> list[Seg]:
     """Keys at column 2 (bold key, muted label); the glyph legend right-aligned if asked.
 
     The spacing is chosen for the developer view's legend, so both views show the same
     keys at the same width: wide spacing when the whole legend fits, tighter spacing
-    next, and only then whole legend entries go, the least telling first.
+    next. With the legend shown, the ``optional`` keys go next; only then whole legend
+    entries go, the least telling first.
     """
 
     def room(segs: list[Seg]) -> int:
         return w - PAD * 2 - width(segs) - 2
 
     found: list[Seg] = []
-    for key_sep, legend_sep in (("   ", "   "), ("   ", "  "), ("  ", "  ")):
-        segs = _keys(keys, key_sep)
-        found = _legend(LEGEND, legend_sep)
-        if width(found) <= room(segs):
-            break
+    spacings = (("   ", "   "), ("   ", "  "), ("  ", "  "))
+    for kept in (keys, [k for k in keys if k[0] not in optional]) if legend and optional else (keys,):
+        for key_sep, legend_sep in spacings:
+            segs = _keys(kept, key_sep)
+            found = _legend(LEGEND, legend_sep)
+            if width(found) <= room(segs):
+                break
+        else:
+            continue
+        break
     else:
         entries = list(LEGEND)
         for word in LEGEND_DROP_ORDER:

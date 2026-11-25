@@ -1,7 +1,12 @@
 # Gentle Dot daemon as a systemd user service (Jarvis D1, task P3).
 #
-# Template: host/systemd/install.sh replaces @NODE@ and @GENTLE_DOT_DIR@ and writes the
-# result to ~/.config/systemd/user/gentle-dot.service. Do not install this file by hand.
+# Template: host/systemd/install.sh replaces @NODE@, @GENTLE_DOT_DIR@, @SANDBOX_EXEC@,
+# @UNIT_DIR@, @STOP_PATH@, @TUI_LAUNCHER@ and @AGENT_HOME@ and writes the result to
+# ~/.config/systemd/user/gentle-dot.service. Do not install this file by hand.
+#
+# Sandbox (S13, docs: host/systemd/README.md): the daemon and every shell its agent opens
+# cannot reach the display. Only jarvis-input.service runs wtype, grim, niri msg,
+# gtk-launch and xdg-open; the agent asks it through $XDG_RUNTIME_DIR/jarvis/agent.sock.
 #
 # Upstream, unmodified and pinned (docs/decisiones.md D1; D8 names upstream `main`, `f97d56d`):
 #   https://github.com/Gentleman-Programming/gentle-dot
@@ -19,6 +24,11 @@ Documentation=https://github.com/Gentleman-Programming/gentle-dot
 # At most 10 starts in 10 minutes; then the unit stays failed until `reset-failed`.
 StartLimitIntervalSec=10min
 StartLimitBurst=10
+# Start and stop with the graphical session (still useful: the helper the agent talks to
+# lives there); the daemon itself no longer gets the display, see the sandbox below.
+# `install.sh --headless` drops these two lines and installs into default.target.
+After=graphical-session.target
+PartOf=graphical-session.target
 
 [Service]
 Type=simple
@@ -28,8 +38,10 @@ Environment=GENTLE_DOT_HOST=127.0.0.1
 Environment=GENTLE_DOT_PORT=4317
 # Upstream `--self-check`: resolves the engine files without starting anything or using
 # the network and exits 1 when one is missing (for example, no `pnpm install`).
-ExecStartPre="@NODE@" "@GENTLE_DOT_DIR@/packages/daemon/src/cli.ts" --self-check
-ExecStart="@NODE@" "@GENTLE_DOT_DIR@/packages/daemon/src/cli.ts"
+# Both go through jarvis-sandbox-exec, which adds the Landlock scopes below and exec()s node
+# (MainPID stays node).
+ExecStartPre=/usr/bin/python3 -I "@SANDBOX_EXEC@" "@NODE@" "@GENTLE_DOT_DIR@/packages/daemon/src/cli.ts" --self-check
+ExecStart=/usr/bin/python3 -I "@SANDBOX_EXEC@" "@NODE@" "@GENTLE_DOT_DIR@/packages/daemon/src/cli.ts"
 # The daemon closes its engine on SIGTERM; anything left is killed after the timeout.
 KillMode=mixed
 TimeoutStopSec=20s
@@ -45,12 +57,72 @@ StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=gentle-dot
 
-# Hardening that a user manager can apply without namespaces and that leaves the
-# engine's shell usable. NoNewPrivileges also stops `sudo` from the agent's shell.
+# Hardening that leaves the engine's shell usable. NoNewPrivileges also stops `sudo` from
+# the agent's shell (and jarvis-sandbox-exec needs it for Landlock).
 UMask=0077
 NoNewPrivileges=yes
 LockPersonality=yes
 RestrictRealtime=yes
 
+# --- S13 sandbox: no display, no session bus, no control plane ----------------------
+# A user manager is unprivileged: mount namespaces (everything below) only work inside a
+# user namespace (systemd.exec(5), "SANDBOXING"). It also makes /proc/<pid>/root of
+# processes outside the unit (niri, the helper) unreachable, so the hidden sockets cannot
+# be reached through another process's view of the filesystem. Our own uid stays the same.
+PrivateUsers=yes
+# An empty, private $XDG_RUNTIME_DIR (%t): hides wayland-*, niri.*.sock, bus, pipewire,
+# at-spi (can synthesize keys), gnupg/ssh agents, systemd/private (`systemctl --user`
+# and `systemd-run --user` would start an unsandboxed process) and whatever socket a
+# future compositor adds, whatever its name. The daemon uses nothing in %t.
+TemporaryFileSystem=%t:mode=0700
+# The helper's agent socket directory, created by systemd before the namespace is set up
+# so the bind below always has a source; shared with jarvis-input.service, which owns the
+# socket. Preserved on stop: removing it would leave a stale bind in the other unit.
+RuntimeDirectory=jarvis
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+# The only part of %t the daemon sees: agent.sock. Read-only so the agent cannot replace
+# the socket with its own (connect() to a socket still works on a read-only mount).
+BindReadOnlyPaths=%t/jarvis
+# Defense in depth if a drop-in resets TemporaryFileSystem=: the session bus, the
+# helper's control socket (grant/revoke: TUI and jarvis-stop only) and the user manager;
+# outside %t, the X11 socket directory and the Docker socket (docker group = root and
+# a way around every directive here). "-": skipped where they do not exist.
+# Also the system bus (S15): logind, NetworkManager, udisks and polkit prompts live there.
+InaccessiblePaths=-%t/bus -%t/jarvis-control -%t/systemd -/tmp/.X11-unix -/run/docker.sock -/run/dbus/system_bus_socket
+# A private /dev with only null, zero, random, tty, pts, shm…: no /dev/uinput (logind
+# gives the seat user an ACL on it, enough to create a virtual keyboard), no /dev/input,
+# no /dev/dri.
+PrivateDevices=yes
+# Private /tmp and /var/tmp, and an empty /dev/shm (third verifier, L18): the host's /tmp
+# holds the jiti cache of unsandboxed pi processes (code they trust and run), Chromium's
+# SingletonSocket (drives Brave without the helper) and other user sockets.
+# "disconnected" = a tmpfs not shared with any other unit (works in user units).
+PrivateTmp=disconnected
+# /dev/shm is the host's even under PrivateDevices (shared memory of other programs).
+TemporaryFileSystem=/dev/shm
+# S15: the whole home (and /root, /run/user) is read-only for the daemon and its agent:
+# anything the helper may start (~/.local/bin, AppImages, ~/.local/share/applications,
+# mimeapps.list, ~/.config/fish), the helper, wrapper and TUI under ~/.local/share/jarvis,
+# systemd drop-ins (~/.config/systemd/user, ~/.local/share/systemd, environment.d) and the
+# niri config. %t is replaced by the tmpfs above, so this does not touch the agent socket.
+ProtectHome=read-only
+# The only writable places in the home: the daemon's data (token, sessions, the engine's
+# HOME and agent dir; upstream writes nothing else there) and the user's work folder
+# ~/Jarvis. No "-": install.sh creates both, and a missing one fails the start
+# (226/NAMESPACE) instead of silently dropping the rule.
+ReadWritePaths=%h/.gentle-dot %h/Jarvis
+# Read-only on top: the user units, the stop key and the TUI launcher (named here because
+# XDG_CONFIG_HOME or --bin-dir may point outside the home), and the agent's own extensions
+# and rules inside its writable ~/.gentle-dot. No "-": install.sh creates every path first,
+# and a missing one stops the daemon from starting instead of leaving it creatable.
+ReadOnlyPaths=@UNIT_DIR@ @STOP_PATH@ @TUI_LAUNCHER@ @AGENT_HOME@/extensions @AGENT_HOME@/AGENTS.md
+# Inherited from the graphical session by the user manager; without them programs do not
+# even try the display (the sockets are hidden anyway).
+UnsetEnvironment=WAYLAND_DISPLAY DISPLAY NIRI_SOCKET DBUS_SESSION_BUS_ADDRESS
+# Not expressible here, done by jarvis-sandbox-exec (Landlock): no connect() to abstract
+# Unix sockets created outside the unit (Xwayland's unauthenticated @/tmp/.X11-unix/X0,
+# which lives in the network namespace) and no signals to processes outside it.
+
 [Install]
-WantedBy=default.target
+WantedBy=graphical-session.target

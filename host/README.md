@@ -23,6 +23,9 @@ does not vendor.
   `design/tui-user/08-story-chat-polished.html`), the default.
 * `jarvis/devview.py` — the developer view (approved mockup
   `design/tui-developer/06-pipeline-refined.html`).
+* `jarvis/voice.py` — push-to-talk (F4): records the microphone with `pw-record`
+  (or `parecord` / `arecord`) and transcribes it with the local `whisper-server`;
+  standard library only (see [Hablarle a Jarvis](#hablarle-a-jarvis)).
 * `jarvis/theme.py` — the six colour themes of `design/tui-theme` as tokens (copied
   by value; nothing under `design/` is read at run time). Both views draw only
   through them.
@@ -71,10 +74,13 @@ systemd:
 * `systemd/gentle-dot.service.in` — plantilla de la unidad. Arranca
   `node packages/daemon/src/cli.ts` (lo mismo que `pnpm start` del proyecto original),
   antes corre su `--self-check`, se reinicia ante fallos con espera creciente (2 s a
-  1 min, como mucho 10 arranques en 10 minutos) y escribe en el journal. Sin secretos.
+  1 min, como mucho 10 arranques en 10 minutos) y escribe en el journal. Arranca con la
+  sesión gráfica (`graphical-session.target`) y se detiene al cerrarla. Sin secretos.
 * `systemd/install.sh` — instala, verifica o quita la unidad. Solo escribe
-  `~/.config/systemd/user/gentle-dot.service` (o bajo `$XDG_CONFIG_HOME`) y solo llama a
-  `systemctl --user`. Se niega a correr como root.
+  `~/.config/systemd/user/gentle-dot.service` (o bajo `$XDG_CONFIG_HOME`) y las reglas del
+  agente (abajo), y solo llama a `systemctl --user`. Se niega a correr como root.
+* `gentle-dot/AGENTS.md` — reglas del agente para el escritorio; ver
+  [Reglas del agente](#reglas-del-agente-agentsmd).
 * `systemd/test_install.sh` — pruebas del script sin systemd ni Gentle Dot (ver abajo).
 
 ### Requisitos
@@ -96,9 +102,18 @@ systemd:
 
   El script rechaza un checkout en otro commit (salvo `--allow-unpinned`) o sin
   `node_modules`.
-* Para que arranque **sin iniciar sesión** (al encender la PC), opcional y fuera del
-  script: `loginctl enable-linger "$USER"`. Sin eso arranca al iniciar sesión, que es lo
-  que pide P3.
+* Una sesión gráfica que active `graphical-session.target` (niri, GNOME, KDE y los
+  compositores que usan `uwsm` o `systemd --user` lo hacen; comprobar con
+  `systemctl --user is-active graphical-session.target`). La unidad arranca **con la
+  sesión** y no con el administrador de usuario al encender la PC: así hereda
+  `WAYLAND_DISPLAY` y `DISPLAY`, que el agente necesita para abrir aplicaciones (etapa a
+  de [D20](../docs/decisiones.md#d20--control-de-la-pc-por-el-agente-pista-s2-por-etapas)).
+  Si arrancara antes que el compositor, las aplicaciones fallan con
+  `Missing X server or $DISPLAY`.
+* Sin sesión gráfica (un servidor, o para que arranque **sin iniciar sesión**):
+  `--headless` instala la unidad en `default.target` y sin atarla a la sesión; el agente
+  no podrá abrir ventanas. Para arrancar al encender la PC, opcional y fuera del script:
+  `loginctl enable-linger "$USER"`.
 
 ### Instalar
 
@@ -121,12 +136,43 @@ host/systemd/install.sh --gentle-dot-dir ~/ruta/gentle-dot \
 Sin `--enable` solo escribe la unidad y hace `systemctl --user daemon-reload`; con
 `--enable` además corre `systemctl --user enable --now gentle-dot.service` (y
 `try-restart` si la unidad cambió). Repetirlo es seguro: si la unidad ya está al día no
-hace nada.
+hace nada. Correrlo **dentro de la sesión gráfica**, para que `try-restart` y `start`
+dejen el daemon con `WAYLAND_DISPLAY`.
+
+- Al actualizar desde una unidad anterior habilitada en `default.target` (o al pasar de
+  `--headless` a la sesión, o al revés), `--enable` detecta el enlace viejo en
+  `~/.config/systemd/user/default.target.wants/` y corre `systemctl --user reenable` +
+  `start` en vez de `enable --now`, para no dejar el servicio arrancando también al
+  encender la PC. Sin `--enable` solo avisa.
 
 - `--allow-dirty`: acepta un checkout de Gentle Dot con cambios sin commitear o archivos sin seguimiento (desaconsejado). Sin ella, el instalador se niega y no escribe nada si `git -C <checkout> status --porcelain` no está vacío; `--check` también lo comprueba.
 - Backup: antes de reemplazar una unidad distinta, el instalador guarda la anterior en `~/.config/systemd/user/gentle-dot.service.bak` e imprime la ruta. `--uninstall` la conserva.
 - Límite de arranques: la unidad admite como mucho 10 arranques en 10 minutos (`StartLimitIntervalSec=10min`, `StartLimitBurst=10`); después queda en `failed` hasta `systemctl --user reset-failed gentle-dot.service`.
 - Si `systemctl --user daemon-reload` falla, el instalador sale con error y deja `gentle-dot.service.reload-pending`; vuelve a ejecutarlo (o `--uninstall`) y reintentará la recarga en vez de responder "Sin cambios".
+
+### Reglas del agente (`AGENTS.md`)
+
+El agente del daemon lee `AGENTS.md` de su carpeta (`~/.gentle-dot/agent/`) cuando
+arranca el motor. El de `host/gentle-dot/AGENTS.md` le dice que abra las aplicaciones
+gráficas **en segundo plano** (`setsid -f <programa> >/dev/null 2>&1` o
+`gtk-launch <id>`) y que confirme con `pgrep -f <programa>`: un `brave` en primer plano
+no termina nunca, la herramienta de shell corta a los 10 s y el agente responde que no
+pudo aunque la app se abrió (L13 de `odd/tasks/s2-round2.md`).
+
+- `install.sh` lo copia como `~/.gentle-dot/agent/AGENTS.md` (0644). Otra carpeta:
+  `--agent-home DIR` o `GENTLE_DOT_AGENT_HOME=DIR` (ruta absoluta; tiene que ser la que
+  usa el daemon). Si ya está igual, dice "Sin cambios"; si hay uno distinto, guarda el
+  anterior en `AGENTS.md.bak` e imprime la ruta. `--dry-run` solo lo anuncia y
+  `--check` dice si está al día, falta o está desactualizado.
+- Como se lee al arrancar el motor: con `--enable`, un cambio en las reglas hace
+  `systemctl --user try-restart gentle-dot.service`; sin `--enable` el script imprime ese
+  comando para que lo corras.
+- Para editarlo: cambiar `host/gentle-dot/AGENTS.md` en el repositorio y volver a correr
+  `install.sh --enable` (así queda versionado). Si se edita directamente
+  `~/.gentle-dot/agent/AGENTS.md`, reiniciar el servicio; la próxima instalación lo
+  reemplaza y deja tu versión en `AGENTS.md.bak`.
+- `--uninstall` no lo borra (puede tener cambios tuyos y sin el servicio no hace nada);
+  dice dónde quedó.
 
 ### Verificar
 
@@ -162,8 +208,8 @@ cd host && JARVIS_REAL_DAEMON=1 python -m pytest tests/test_real_daemon.py -v -r
 
 Sin una cuenta de IA conectada en Gentle Dot el daemon rechaza cada mensaje con
 `Connect an AI account first: open Accounts or type /login.`; la TUI muestra ese texto
-tal cual (ver [What the window shows](#what-the-window-shows)) y no inicia sesión: la
-cuenta se conecta en Gentle Dot.
+tal cual (ver [What the window shows](#what-the-window-shows)). La cuenta se conecta
+desde la misma TUI escribiendo `/login` (ver [Signing in with /login](#signing-in-with-login)).
 
 ### Desinstalar
 
@@ -173,7 +219,8 @@ host/systemd/install.sh --uninstall
 ```
 
 Detiene y deshabilita el servicio, borra la unidad y recarga systemd. No toca
-`~/.gentle-dot` (datos, conversaciones y token) ni el checkout de Gentle Dot.
+`~/.gentle-dot` (datos, conversaciones, token y `agent/AGENTS.md`) ni el checkout de
+Gentle Dot.
 
 ### Problemas frecuentes
 
@@ -185,9 +232,15 @@ Detiene y deshabilita el servicio, borra la unidad y recarga systemd. No toca
 | `EADDRINUSE` en el journal | Otro daemon (la aplicación de escritorio o un `pnpm dev`) ocupa el 4317: cerrarlo o cambiar el puerto |
 | La TUI dice `No access token at …` | El daemon no arrancó nunca con ese `HOME`: ver `status` y el journal |
 | La TUI dice `UNAUTHORIZED` | El token cambió: reiniciar la TUI |
-| La TUI dice `SIGN IN` y `Connect an AI account first: …` | Gentle Dot no tiene una cuenta de IA: conectarla en Gentle Dot (Accounts o `/login` en su propia interfaz) y volver a escribir |
+| La TUI dice `SIGN IN` y `Connect an AI account first: …` | Gentle Dot no tiene una cuenta de IA: escribir `/login` en la TUI, elegir la cuenta y volver a escribir |
+| `/login` dice `Gentle Dot is not connected: /login needs it.` | El daemon no está conectado: ver `status` y esperar `daemon connected` |
+| `/login` con Anthropic muestra `Signing in with a Claude subscription is not supported. …` | El daemon solo acepta Anthropic con API key: elegir `API key` |
+| `/login` muestra `Another sign-in is in progress. …` | Otra ventana (o la app de escritorio) tiene un inicio de sesión abierto: terminarlo o cancelarlo allí |
 | El agente no puede usar `sudo` | Efecto buscado de `NoNewPrivileges=yes`; se puede quitar con un override |
-| El servicio se detiene al cerrar sesión | Normal sin linger; ver Requisitos |
+| El servicio se detiene al cerrar sesión | Normal: la unidad es `PartOf=graphical-session.target`; ver Requisitos (`--headless` si se quiere sin sesión) |
+| La app no abre / `Missing X server or $DISPLAY` en el journal | El servicio arrancó antes de la sesión gráfica y no tiene `WAYLAND_DISPLAY` ni `DISPLAY`; con esta unidad arranca con la sesión (volver a correr `install.sh --enable` si la instalada es anterior). Mientras tanto: `systemctl --user restart gentle-dot` dentro de la sesión |
+| La app se abre pero Jarvis dice que no pudo (`Command timed out after 10 seconds`) | Falta la regla de lanzar en segundo plano: el agente corrió la app en primer plano. `install.sh --enable` instala `~/.gentle-dot/agent/AGENTS.md` y reinicia el servicio (`install.sh --check` dice si está al día) |
+| El servicio no arranca al iniciar sesión | El compositor no activa `graphical-session.target` (`systemctl --user is-active graphical-session.target`): usar `--headless` o arrancarlo desde el compositor |
 
 Sin la aplicación de escritorio, el proyecto original carga la configuración tal cual y
 deja bloqueados los conectores que usan token (su README, «started without the app»);
@@ -201,8 +254,11 @@ bash host/systemd/test_install.sh
 
 Corre en un `HOME` y `XDG_CONFIG_HOME` temporales con `systemctl`, `node` e `id` falsos:
 salida de `--dry-run` al instalar y desinstalar, idempotencia, negativa como root, con
-Node viejo, con un checkout en otro commit o sin dependencias, y que no se escribe nada
-fuera del directorio de unidades. Si `systemd-analyze` está instalado, además valida la
+Node viejo, con un checkout en otro commit o sin dependencias, que la unidad va con la
+sesión gráfica (y `--headless` con `default.target`), que `--enable` vuelve a habilitar
+una unidad que quedó en el otro target, que las reglas del agente se instalan (con backup
+de una versión distinta, `--agent-home`, sin borrarlas al desinstalar) y que no se
+escribe nada fuera del directorio de unidades y de la carpeta del agente. Si `systemd-analyze` está instalado, además valida la
 unidad con `systemd-analyze --user verify`. Corre en CI en el paso
 `host · systemd unit`.
 
@@ -245,12 +301,163 @@ python tools/sim_device.py --url http://127.0.0.1:8000
 
 Keys (all listed in the footer): **Enter** sends the text in the input row, **Ctrl+A**
 stops the answer that is running, **Ctrl+Q** quits, **F2** switches between the user
-view and the developer view, **F3** switches between dark and light mode.
+view and the developer view, **F3** switches between dark and light mode, **F4**
+starts recording what you say and, pressed again, sends it (see
+[Hablarle a Jarvis](#hablarle-a-jarvis)); while it records, **Esc** drops it. **F5**
+turns PC control on or off (see [Control de la PC](#control-de-la-pc)); while a
+confirmation card is up, **y** allows, **n** or **Esc** denies. While the
+`/login` panel is open the footer shows its own keys: **Enter** chooses or answers,
+**Esc** goes back, closes the panel or cancels the sign-in that is running, and
+**Ctrl+Y** copies the sign-in address (when one is shown) to the clipboard.
+
+## Signing in with /login
+
+Type `/login` and press Enter: the window does not send it to the assistant, it asks
+the daemon for its accounts (`auth_list`) and opens the **Sign in** card above the
+input, in both views and in the active theme. Nothing opens a browser by itself.
+
+1. The card lists every account the daemon offers, numbered, with `connected` /
+   `not connected` and the ways to sign in (`subscription (<plan>)`, `API key`). Type
+   the number and press Enter.
+2. With two ways, choose one by number (Esc goes back to the list).
+3. The daemon drives the rest and the card shows each step: an address to open (whole,
+   on its own rows, so it can be selected; Ctrl+Y copies it), a device code with the
+   address to type it at and when it expires, progress and info lines.
+4. When the daemon asks something, answer in the same input: an API key (`secret`) is
+   hidden as you type (`•`); a choice (`select`) is a numbered list; a text or a pasted
+   code (`text`, `manual_code`) shows as typed.
+5. The card ends with `✓ Signed in to <account>.` or the daemon's own message
+   (`Sign-in cancelled.`, a refusal, `That sign-in is no longer active.`…); the sign-in
+   notice goes away on success. Esc closes the card; a second Esc closes it even while
+   the daemon has not confirmed a cancel. If the daemon link drops, the sign-in ends
+   (`The connection to Gentle Dot dropped: the sign-in ended.`): start it again.
+
+Whenever a prompt closes (answered, Esc, the daemon ends it, the link drops, the card
+closes) the input is emptied before it stops hiding what was typed, so a half-typed API
+key is never shown and never sent as a message. While a secret is hidden, copy and cut
+(Ctrl+C, Ctrl+X) and Ctrl+Y do nothing. A flow left with Esc before the daemon named it
+is cancelled as soon as the daemon does, so the next `/login` is not refused as busy.
+
+Anthropic is offered with an API key only: the daemon refuses a Claude subscription
+sign-in, and the card shows its message as is. What you type in the card goes straight
+to the daemon: it is not shown (a secret), kept in the window's state, written to the
+history or logged, even with `--log-level debug` (the WebSocket frame log never goes
+below `info`).
 
 Without a daemon the client retries with backoff (500 ms, 1 s, 2 s, 5 s) with no
 traceback and no freeze. The user view says that Gentle Dot is not running (or has no
 access token yet) and keeps showing the voice side; the developer view shows
 `○ daemon disconnected` in its top border.
+
+## Hablarle a Jarvis
+
+**F4** graba el micrófono predeterminado y, al volver a pulsarla, transcribe lo dicho con
+el `whisper-server` local y lo manda a Gentle Dot igual que un mensaje escrito (se mide
+igual y se ve como `said ◎` en la vista de usuario y con `◎` junto a `you` en la vista
+de desarrollador). Mientras graba, una fila sobre el campo de texto muestra
+`● recording 3.2s  ·  f4 to send  ·  esc cancels`; luego `◐ transcribing…`. **Esc**
+cancela sin mandar nada. La grabación se corta sola a los 60 s y se envía.
+
+* Audio: WAV PCM 16 kHz mono 16 bits (D6), con
+  `pw-record --rate 16000 --channels 1 --format s16 <archivo>`; si falta, `parecord`
+  o `arecord`. Sin ninguno: `No recorder found: install pw-record (PipeWire), parecord
+  or arecord.`
+* El archivo va a una carpeta temporal privada (`0700`) y se borra al terminar, se
+  mande o no.
+* Transcripción: `POST` multipart (`file`, `response_format=json`, `language=es`) a
+  `JARVIS_STT_URL` (por defecto `http://127.0.0.1:8080/inference`), con 30 s de límite.
+* Si no se oyó nada: `Nothing was heard: nothing was sent.` Si el servidor no responde
+  o contesta otra cosa que 200, la notificación dice la causa exacta (por ejemplo
+  `Can't reach the speech server at http://127.0.0.1:8080/inference: [Errno 111]
+  Connection refused. Nothing was sent.`) y no se manda nada.
+* Con el panel `/login` abierto F4 no graba, y abrir `/login` mientras se graba descarta
+  la grabación: un secreto nunca se graba ni se manda.
+
+Requiere `whisper-server` (whisper.cpp) escuchando en local, con el modelo cargado una
+vez. Si está instalado como servicio de usuario (tarea T6):
+
+```bash
+systemctl --user start whisper-server
+```
+
+O a mano:
+
+```bash
+whisper-server -m ~/.local/share/whisper-models/ggml-large-v3-turbo-q5_0.bin \
+  --host 127.0.0.1 --port 8080
+JARVIS_STT_URL=http://127.0.0.1:8080/inference python -m jarvis.tui
+```
+
+Prueba real opcional (no corre por defecto), que transcribe un WAV con el mismo cliente
+de la ventana:
+
+```bash
+JARVIS_REAL_WHISPER=1 JARVIS_WHISPER_WAV=~/jarvis-prueba.wav \
+  python -m pytest tests/test_voice.py -k real -s
+```
+
+## Control de la PC
+
+Jarvis puede escribir, pulsar teclas y sacar capturas en tu sesión, pero **solo con permiso
+y por tiempo limitado**. El control está apagado por defecto.
+
+**Arquitectura: el ayudante `jarvis-input`.** Un servicio de usuario aparte
+(`jarvis-input.service`, en `graphical-session.target`) es el **único** proceso con acceso a
+la pantalla: solo él corre `wtype`, `grim`, `niri msg`, `gtk-launch` y `xdg-open`, y guarda
+el permiso **en memoria** (reiniciarlo = permiso revocado). El daemon de Gentle Dot corre
+aislado, sin Wayland ni acceso a `jarvis-control/`: el agente le pide al ayudante que abra
+apps o teclee por `$XDG_RUNTIME_DIR/jarvis/agent.sock`, y el ayudante aplica la lista de
+bloqueo, las palabras de riesgo y las confirmaciones. Lo instala
+`host/systemd/install.sh`; **`jarvis-input` tiene que estar corriendo** para usar el control
+(`systemctl --user status jarvis-input`).
+
+La TUI habla con el ayudante por `$XDG_RUNTIME_DIR/jarvis-control/control.sock` (JSON por
+líneas; solo la TUI y `jarvis-stop`). Ya no escribe ningún archivo de permiso.
+
+* `/control on` (o **F5**) manda `{"op":"grant","minutes":30}` (máximo 30) y el ayudante
+  contesta `{"ok":true,"expires_at":"…Z"}`. `/control off` (o **F5** otra vez) manda
+  `{"op":"revoke"}`. `/control status` (o `/control` solo) pregunta `{"op":"status"}` y dice
+  cuánto falta. Nada de `/control` se manda al agente.
+* La TUI mantiene una conexión `{"op":"subscribe"}` abierta y recibe
+  `{"event":"state","enabled":…,"expires_at":…}` y los pedidos de confirmación. Si el
+  ayudante se reinicia, se reconecta sola con espera creciente (0,5 s a 5 s).
+* Mientras está encendido, las dos vistas muestran sobre el campo de texto
+  `◉ control on · 29:12 left · /control off`, con la cuenta regresiva hasta el `expires_at`
+  del ayudante, que es quien manda. Al llegar a cero la barra se va y avisa
+  `control expired` (lo vence el ayudante; la TUI no revoca por su cuenta). Si se revoca por
+  otro lado (la parada de emergencia), avisa `Control off: jarvis-input revoked it …`.
+* **Si el ayudante no está**, `/control` avisa `jarvis-input is not running: …` con cómo
+  arrancarlo, y la barra muestra `◌ control unavailable · jarvis-input is not running` hasta
+  que vuelve. Si se cae con el control encendido, el control queda apagado.
+* **Al cerrar la TUI se manda `revoke`**: el control nunca dura más que la ventana que lo
+  dio. Para volver a usarlo, abrirla y escribir `/control on` de nuevo.
+* Sin `XDG_RUNTIME_DIR` (fuera de la sesión gráfica) la TUI se niega:
+  `XDG_RUNTIME_DIR is not set: PC control needs your session's private runtime directory. …`.
+
+**Parada de emergencia: `Alt+Shift+Esc`.** Ejecuta `jarvis-stop` (`host/bin/`), que manda
+`revoke` por `control.sock` y `{"type":"abort"}` al daemon para cortar la tarea. El atajo lo
+agrega cada uno en niri, en `~/.config/niri/binds.kdl`, por ejemplo
+`Alt+Shift+Escape { spawn "jarvis-stop"; }`.
+
+**Confirmaciones.** Antes de una acción de riesgo (enviar, pagar, comprar, eliminar, borrar, vaciar, o
+`Return` en navegadores, correo y mensajería), el ayudante manda por la suscripción
+`{"event":"confirm","id":…,"title":…,"message":…,"timeout_s":30}`. La TUI lo muestra como
+una tarjeta destacada sobre el campo de texto, en las dos vistas, y contesta
+`{"op":"answer","id":…,"allow":true|false}` por la misma conexión. Las confirmaciones que
+otras extensiones piden por el daemon (`{"type":"ask","ask":{"method":"confirm",…}}`) usan
+la misma tarjeta y se contestan con `{"type":"ui_response","requestId":…,"confirmed":…}`.
+
+* **y** permite; **n** o **Esc** niegan. **Enter no contesta** y nada más contesta: solo una
+  `y` explícita permite. Las teclas de los primeros 0,4 s no cuentan, para que una `y` que se
+  estaba escribiendo no se tome como respuesta.
+* Una tarjeta a la vez (`+1 waiting` si hay más). Si se acaba el tiempo (`denied in 27s` en
+  la tarjeta), se corta la conexión de quien pregunta (el ayudante o el daemon) u otra
+  ventana contesta (`ask_resolved`), la tarjeta se va y cuenta como **negado**. Sin
+  suscriptor o sin respuesta, el ayudante niega. Nunca confirma sola.
+* Mientras la tarjeta está, el campo de texto queda desactivado, el panel `/login` se
+  oculta y F4 no graba; si estaba grabando, la grabación se descarta.
+* Otros pedidos del daemon (`select`, `input`, `editor`, `app`, `pin`) no se contestan aquí:
+  la TUI avisa `Gentle Dot is asking: …. Answer this in Gentle Dot.` y sigue.
 
 ## Dark and light mode
 
@@ -275,7 +482,7 @@ theme is one constant, `DEFAULT_DARK` in `jarvis/theme.py`.
 | Jarvis card | the agent's state in large letters (`READY`, `THINKING`, `WORKING`, `NEEDS YOU`, `LISTENING`, `SPEAKING`, `STARTING`, `SIGN IN`, `ERROR`, `OFFLINE`), a spinner and a pulse on the card's edge while it works, what it is working on, and how many messages wait their turn |
 | Voice device card | the device and its state in plain words (`Ready`, `Listening`, `Thinking`, `Speaking`, `Offline`…) with a hint, a level meter, the connection to this PC and the signal as bars (good, fair, weak, poor) |
 | Thread | today's exchanges, newest at the bottom, on a timeline rail: time and `said ◎` / `typed ▸`, the user's words right-aligned in a bubble, the answer under `◆`, and what Jarvis did "on your PC" (`✓` done, `◐` running, `○` in the background, `✗` failed); a failed exchange says what to do next; the live one has an accent rail, a bold answer and `ctrl+a stops it`. `Today · N earlier above` counts the exchanges that do not fit |
-| Sign-in notice | only while Gentle Dot has no AI account: the daemon refused a message with `no_account`, and its own text (`Connect an AI account first: open Accounts or type /login.`) stays on a `✗` row under the header, whole and unchanged, until a prompt runs again; the Jarvis card says `SIGN IN` |
+| Sign-in notice | only while Gentle Dot has no AI account: the daemon refused a message with `no_account`, and its own text (`Connect an AI account first: open Accounts or type /login.`) stays on a `✗` row under the header, whole and unchanged, until a prompt runs again or `/login` succeeds (when the text does not mention `/login`, a `Type /login to connect one.` row follows it); the Jarvis card says `SIGN IN` |
 | Input and footer | the `▸ Message Jarvis` row and the keys |
 
 Voice exchanges come from the backend's turns (heard text, reply, catalogue actions,
@@ -295,11 +502,17 @@ both connections in its top border, and the live turn as a four-stage pipeline (
 route, agent, tts) with the median of each stage and a pulse under the live stage;
 the finished voice turns newest first with a gradient bar against the lane target
 (fast 1.5 s, chat 4.0 s, task none) and the amount over it, and the action (`→`) and
-reply under each; a summary per lane; the typed conversation (`◆ jarvis`); and a card
+reply under each; a summary per lane; the typed conversation (`◆ jarvis`), where each
+reply to a prompt typed in this window ends its first line with its total, dim
+(`2.9s`; replies from other windows or from before connecting show none); and a card
 with the agent and its PC actions: `model` is the running model and thinking level
 (`GPT-6.1 Sol · medium`), `reply` the timing of the last prompt typed in this window
 (`first text 2.6s · total 2.9s`, measured on the host from sending to the first
-non-empty `message_delta` and to `message_done`; the daemon's frames carry no time),
+non-empty text of any of its messages and to the agent going back to `idle`, so a
+tool-using reply, an empty tool-call message and then the text, is timed whole; until
+`idle` the total is the last `message_done`, which stays if no `idle` comes, a stop
+or error ends it, or the next prompt or a dropped link cuts it; the daemon's frames
+carry no time),
 and, while Gentle Dot has no AI account, a `needs` row with the daemon's message.
 The user view shows no timing. Both views are fed by every event, so switching
 always shows current data. Two gaps of contract C2 show on screen: an `action` has no
@@ -310,11 +523,12 @@ it today (the user view shows `you spoke` in the bubble).
 
 What it deliberately does not do:
 
-* **It never answers an `ask` approval.** Approvals are shown by the desktop app over
-  its private channel, and this window only writes that one is waiting. A `pin` ask on
-  a server is answered in the browser.
-* No file attachments, no attachments upload, no conversation switching, no sign-in
-  flows, and no paging back past the first history page.
+* **It answers only `confirm` asks** (see [Control de la PC](#control-de-la-pc)), and only
+  with an explicit **y** or a denial. Every other `ask` (approvals of the desktop app,
+  `pin` on a server, `select`, `input`, `editor`) is answered in Gentle Dot; this window
+  only writes that one is waiting.
+* No file attachments, no attachments upload, no conversation switching, no sign-out
+  (`/login` signs in only), and no paging back past the first history page.
 
 ## Timing the typed path: `python -m jarvis.bench`
 
@@ -355,6 +569,11 @@ skips that check and stops the prompt. `JARVIS_DAEMON_URL` and
 `JARVIS_DAEMON_TOKEN_FILE` override the defaults; the token is opened by the client and
 never printed.
 
+`tests/test_voice.py::test_real_whisper_server_transcribes_a_wav` posts an existing WAV
+(`JARVIS_WHISPER_WAV`) to the real `whisper-server` (`JARVIS_STT_URL`) and is skipped
+unless `JARVIS_REAL_WHISPER=1`. The other push-to-talk tests use a fake recorder and an
+in-process HTTP server: no microphone, no whisper-server.
+
 ## Security caveat: the catalog is bounded in the backend
 
 The TUI is display-only and executes nothing. The guarantee that only a bounded,
@@ -387,5 +606,9 @@ with the agent state, model, conversation, and features, and closes with `4401` 
 the token is wrong and `4400` when the protocol version is not supported. Every frame
 from the daemon carries a per-connection monotonic `seq`. The client asks for
 `get_history`, `list_conversations`, and `auth_list` once `ready` arrives, and sends
-`send`, `steer`, and `abort`. The message shapes are the ones in the fork's
+`send`, `steer`, and `abort`, and answers a `confirm` ask with
+`ui_response{requestId, confirmed}`. For `/login` it sends `auth_login{providerId, method}`
+and `auth_reply{flowId, value | cancelled}`, and reads `auth_providers`,
+`auth_prompt`, `auth_event` and `auth_done` (`auth_logout` exists in the client but
+the window offers no sign-out). The message shapes are the ones in the fork's
 `packages/protocol/src/index.ts`, the same ones the desktop app and the web UI use.

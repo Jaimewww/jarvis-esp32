@@ -202,7 +202,9 @@ def exchanges(model: HostModel) -> list[Exchange]:
             found = echo_of(message)
             echo = found is not None
             if found is None:
-                found = Exchange(source="typed", at=message.at, said=message.text, answer="")
+                # Said into this window's microphone (f4): "said", as a voice turn.
+                source = "voice" if message.spoken else "typed"
+                found = Exchange(source=source, at=message.at, said=message.text, answer="")
                 typed.append(found)
             current = found
             current.did += [_activity_did(a.status, a.title) for a in model.activities_of(message.message_id)]
@@ -717,10 +719,13 @@ def notice_rows(model: HostModel, w: int) -> list[list[Seg]]:
     if not model.agent_notice or w < 8:
         return []
     lines = textwrap.wrap(model.agent_notice, w - 6) or [""]
-    return [
+    rows = [
         [S("  "), S("✗ ", "er b") if i == 0 else S("  "), S(line, "er")]
         for i, line in enumerate(lines)
     ]
+    if model.login_hint:
+        rows += [[S("    "), S(line, "t2")] for line in textwrap.wrap(model.login_hint, w - 6)]
+    return rows
 
 
 def render_rows(model: HostModel, w: int, h: int, frame: int = 0) -> list[list[Seg]]:

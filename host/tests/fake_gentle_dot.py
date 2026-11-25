@@ -36,8 +36,24 @@ class FakeDaemon:
     send_error: str | None = None
     #: Never answer a ``send`` (to test the timeout).
     silent: bool = False
+    #: Answer like a tool-using turn: an empty message (the tool call), then the text.
+    tool_call: bool = False
+    #: Send ``agent_state`` idle after the reply (off: the daemon never says it is idle).
+    idle: bool = True
     received: list[dict[str, Any]] = field(default_factory=list)
     _seq: int = 0
+    _socket: Any = None
+
+    async def push(self, payload: dict[str, Any]) -> None:
+        """Send one frame now, unasked (an ``ask`` from an extension, an ``ask_resolved``)."""
+
+        self._seq += 1
+        await self._socket.send(json.dumps({**payload, "seq": self._seq}))
+
+    async def drop(self) -> None:
+        """Close the connection, as a daemon restart would."""
+
+        await self._socket.close()
 
     def _choice(self, provider: str, model_id: str) -> dict[str, Any] | None:
         for group in GROUPS:
@@ -54,6 +70,8 @@ class FakeDaemon:
         return {"type": "models", "current": current, "groups": GROUPS, "profiles": []}
 
     async def handler(self, socket: Any) -> None:
+        self._socket = socket
+
         async def emit(payload: dict[str, Any]) -> None:
             self._seq += 1
             await socket.send(json.dumps({**payload, "seq": self._seq}))
@@ -92,9 +110,14 @@ class FakeDaemon:
                 await emit({"type": "agent_state", "state": "working"})
                 await asyncio.sleep(echo)
                 await emit({"type": "user_message", "messageId": f"u{n}", "text": message["text"]})
+                if self.tool_call:
+                    await emit({"type": "message_delta", "messageId": f"t{n}", "delta": ""})
+                    await asyncio.sleep(first)
+                    await emit({"type": "message_done", "messageId": f"t{n}", "text": ""})
                 await emit({"type": "message_delta", "messageId": f"a{n}", "delta": ""})
                 await asyncio.sleep(first)
                 await emit({"type": "message_delta", "messageId": f"a{n}", "delta": "ok"})
                 await asyncio.sleep(done)
                 await emit({"type": "message_done", "messageId": f"a{n}", "text": "ok"})
-                await emit({"type": "agent_state", "state": "idle"})
+                if self.idle:
+                    await emit({"type": "agent_state", "state": "idle"})
