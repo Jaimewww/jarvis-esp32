@@ -78,6 +78,17 @@ arrancar. Mandá un WAV con el [`curl` de abajo](#prueba-con-curl), descargá la
 ruta relativa que devuelve `reply_audio_url` y comprobá que se escucha la
 frase. Sin esa variable, se conserva el pitido y no hace falta Piper ni FFmpeg.
 
+La síntesis corre en procesos hijos, no dentro del backend: `python -m piper`
+(con el intérprete que ejecuta el servidor) y luego `ffmpeg`. Cada uno tiene un
+límite duro de 30 s; si vence, el hijo se mata y se recoge antes de responder
+con error. La espera no bloquea el bucle de eventos. Si el modelo no existe, falta
+Piper o FFmpeg, o el hijo termina con error o timeout, el arranque falla con un
+mensaje claro (por ejemplo `JARVIS_PIPER_MODEL does not point to a file: …`,
+`Install requirements-voice.txt to use JARVIS_PIPER_MODEL` o
+`Install ffmpeg and make it available on PATH to use JARVIS_PIPER_MODEL`);
+**nunca** se reemplaza en silencio por el pitido cuando `JARVIS_PIPER_MODEL` está
+configurada.
+
 ### Activar también Whisper cuando esté disponible
 
 `whisper-server` y su modelo son requisitos del sistema, no paquetes de pip.
