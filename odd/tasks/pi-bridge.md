@@ -58,6 +58,32 @@ Gentle Dot as the default; a machine opts into the bridge. Branch `feat/pi-bridg
 - S11 (proof on the real machine): with the bridge running, `python -m jarvis.bench` (questions
   and the volume requests, `-n 3`) completes with every run done, and the TUI opens, shows a
   reply and a tool activity. Compare against the 2026-11-25 numbers in L4.
+- S12 (L6, resilience findings of the T1 native review, lineage review-f249edc39d48167e; the
+  reviewers' own claims, shortened only where marked):
+  1. Slow client (`server.py:97-101`): "Hub.broadcast awaits each client's ws.send in sequence
+     while holding one shared lock. A client that stops reading blocks the send once its write
+     buffer fills [...]. During that time every other client and every Pi frame waits. [...] A
+     fix would be a per-connection send queue or a send timeout that drops the slow client."
+  2. Start order (`__main__.py:30-31`): "serve() starts the Pi child (bridge.start) before
+     binding the WebSocket port, and both calls sit outside the try/finally that calls
+     bridge.close(). When the bind fails with OSError, for example because Gentle Dot already
+     holds port 4317 [...], the exception leaves serve() without an orderly bridge.close()."
+     A failed bind must exit non-zero with a message naming the address and leave no Pi child.
+  3. EOF (`pi.py:111-113`): "When Pi's stdout reaches EOF, read() awaits process.wait() with no
+     bound before it returns None. If Pi closes or redirects stdout but keeps running, the
+     reader hangs." Also: "The LimitOverrunError skip path [...] has no test."
+  4. Stuck turn (`turns.py:88-93`): "A turn ends only on agent_settled, a prompt response, an
+     abort, or Pi exiting. There is no timeout. If Pi stays alive but stops emitting [...]
+     agent_state stays working and every later send is queued without bound." A turn with no Pi
+     record for a configurable time (default 120 s; a pending question to the user does not
+     count) ends with an `error` frame and Pi is restarted on the next `send`; the queue has a
+     cap and a `send` beyond it gets an `error` frame.
+  5. Token race (`token.py:63-65`): "In the concurrent-create branch, the other writer's file is
+     read without an OSError guard [...]. A racing reader can see an empty file and raise
+     'empty' TokenError." A token error is reported as a token error, never as a listen error.
+  6. Origin (`server.py:143-145`): "Rejecting browser Origin headers would add defense in depth
+     for an endpoint that fronts PC control." A connection that carries an `Origin` header is
+     refused; Jarvis's clients send none.
 
 ## Tasks
 
@@ -66,8 +92,9 @@ Gentle Dot as the default; a machine opts into the bridge. Branch `feat/pi-bridg
   gentle-ai-worker. Commits 715494e (hello and token guard), 6295ce9 (turns on the Pi child)
   and the hardening fix after verify (L5). Host 291 passed, 6 skipped; backend 82 passed, 7
   skipped; pyright 0 errors on `host/jarvis/pibridge`. Independent verify: S2-S5 pass (L5).
-- [ ] T2 S6,S7,S8,S9 — Activities, questions, models, several clients and history, tested with
-  the unchanged `JarvisClient`. Route: gentle-ai-worker, after T1.
+- [ ] T2 S6,S7,S8,S9,S12 — Activities, questions, models, several clients and history, tested
+  with the unchanged `JarvisClient`, plus the resilience fixes of S12. Route: gentle-ai-worker,
+  branch feat/pi-bridge-clients on feat/pi-bridge (PR #41), after T1.
 - [ ] T3 S10 — systemd unit, installer, README and decision entry. Route: gentle-ai-worker,
   after T2.
 - [ ] T4 S11 — Run the bench and the TUI against the bridge on the user's machine; record the
@@ -109,3 +136,7 @@ Gentle Dot as the default; a machine opts into the bridge. Branch `feat/pi-bridg
   (`host/jarvis/turntrace.py:4-5`) and the bridge does the same. Follow-up outside this feature
   (backend, Jaime): `GentleDotAgent.reply` returns at the first `message_done`, so a tool turn
   gives it an empty reply with either daemon.
+- L6 (2026-11-25, T1 delivery): pushed feat/pi-bridge and opened PR #41 (core, 1/3). Native
+  review of the T1 range approved (risk, resilience, reliability; lineage
+  review-f249edc39d48167e) with eight non-blocking findings; the ones worth fixing are S12 and
+  go with T2. T2 continues on branch feat/pi-bridge-clients, stacked on PR #41.
