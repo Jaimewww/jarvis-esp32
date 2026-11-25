@@ -13,6 +13,16 @@ from typing import Any
 
 Behavior = Callable[["FakePi", dict[str, Any]], Awaitable[None]]
 
+#: What ``get_available_models`` lists (Pi's Model objects, trimmed to the fields used).
+MODELS: list[dict[str, Any]] = [
+    {"id": "test-model", "name": "Test Model", "provider": "openai", "reasoning": True,
+     "input": ["text", "image"]},
+    {"id": "plain", "name": "Plain", "provider": "openai", "reasoning": False, "input": ["text"]},
+    {"id": "claude-x", "name": "Claude X", "provider": "anthropic", "reasoning": True,
+     "input": ["text"]},
+]
+REASONING_LEVELS = ["off", "minimal", "low", "medium", "high"]
+
 
 class FakePi:
     def __init__(self, launcher: FakeLauncher) -> None:
@@ -24,6 +34,13 @@ class FakePi:
         self.aborted = asyncio.Event()
         self.running = False
         self._tasks: set[asyncio.Task[None]] = set()
+        self.model: dict[str, Any] = MODELS[0]
+        self.thinking = "low"
+        #: Answers to ``extension_ui_request``s, by request id.
+        self.ui_answers: dict[str, asyncio.Future[dict[str, Any]]] = {}
+        #: Commands never answered (to test a Pi that stops talking).
+        self.mute: set[str] = set()
+        self.last_answer: dict[str, Any] | None = None
 
     # PiProcess
 
@@ -42,6 +59,46 @@ class FakePi:
             self.aborted.set()
             if not self.running:
                 self.respond(record, "abort")
+        elif kind == "extension_ui_response":
+            future = self.ui_answers.setdefault(record["id"], asyncio.get_running_loop().create_future())
+            if not future.done():
+                future.set_result(record)
+        elif isinstance(kind, str) and kind not in self.mute:
+            self._command(record, kind)
+
+    def _command(self, record: dict[str, Any], kind: str) -> None:
+        if kind == "get_available_models":
+            self.respond(record, kind, data={"models": MODELS})
+        elif kind == "get_state":
+            self.respond(record, kind, data={"model": self.model, "thinkingLevel": self.thinking,
+                                             "isStreaming": self.running})
+        elif kind == "get_available_thinking_levels":
+            levels = REASONING_LEVELS if self.model.get("reasoning") else ["off"]
+            self.respond(record, kind, data={"levels": levels})
+        elif kind == "set_model":
+            found = next((m for m in MODELS if (m["provider"], m["id"]) == (record.get("provider"),
+                                                                          record.get("modelId"))), None)
+            if found is None:
+                self.emit({"id": record.get("id"), "type": "response", "command": kind, "success": False,
+                           "error": "Model not found"})
+                return
+            self.model = found
+            self.thinking = self.thinking if found.get("reasoning") else "off"
+            self.respond(record, kind, data=found)
+        elif kind == "set_thinking_level":
+            self.thinking = record["level"]
+            self.respond(record, kind)
+        else:
+            self.emit({"id": record.get("id"), "type": "response", "command": kind, "success": False,
+                       "error": f"Unknown command: {kind}"})
+
+    async def ask(self, method: str, **fields: Any) -> dict[str, Any]:
+        """Emit an ``extension_ui_request`` and wait for its ``extension_ui_response``."""
+
+        request_id = f"ui-{len(self.ui_answers) + 1}"
+        future = self.ui_answers.setdefault(request_id, asyncio.get_running_loop().create_future())
+        self.emit({"type": "extension_ui_request", "id": request_id, "method": method, **fields})
+        return await future
 
     async def read(self) -> dict[str, Any] | None:
         return await self._out.get()
@@ -178,6 +235,68 @@ def reject(message: str) -> Behavior:
 
     async def behavior(pi: FakePi, record: dict[str, Any]) -> None:
         pi.emit({"id": record["id"], "type": "response", "command": "prompt", "success": False, "error": message})
+
+    return behavior
+
+
+def tool_turn(
+    tool: str = "pc_media",
+    args: dict[str, Any] | None = None,
+    *,
+    final: str = "Listo.",
+    is_error: bool = False,
+    call_id: str = "call_1",
+) -> Behavior:
+    """An assistant message that only calls ``tool``, the tool's run, then a final answer."""
+
+    async def behavior(pi: FakePi, record: dict[str, Any]) -> None:
+        _start(pi, record)
+        arguments = args or {"action": "volume_up"}
+        call = {"type": "toolCall", "id": call_id, "name": tool, "arguments": arguments}
+        pi.emit({"type": "message_update", "assistantMessageEvent": {"type": "toolcall_start", "contentIndex": 0}})
+        calling = {"role": "assistant", "content": [call], "stopReason": "toolUse"}
+        pi.emit({"type": "message_end", "message": calling})
+        pi.emit({"type": "tool_execution_start", "toolCallId": call_id, "toolName": tool, "args": arguments})
+        await asyncio.sleep(0)
+        result = {"content": [{"type": "text", "text": "failed" if is_error else "ok"}], "details": {}}
+        pi.emit({"type": "tool_execution_update", "toolCallId": call_id, "toolName": tool, "args": arguments,
+                 "partialResult": result})
+        pi.emit({"type": "tool_execution_end", "toolCallId": call_id, "toolName": tool, "result": result,
+                 "isError": is_error, "durationMs": 3})
+        tool_result = {"role": "toolResult", "toolCallId": call_id, "toolName": tool,
+                       "content": result["content"], "isError": is_error}
+        pi.emit({"type": "message_start", "message": tool_result})
+        pi.emit({"type": "message_end", "message": tool_result})
+        pi.emit({"type": "turn_end", "message": calling, "toolResults": [tool_result]})
+        pi.emit({"type": "turn_start"})
+        pi.emit({"type": "message_start", "message": {"role": "assistant", "content": [], "stopReason": "pending"}})
+        _delta(pi, final)
+        _end(pi, _assistant(final, "stop"))
+
+    return behavior
+
+
+def asks(method: str, *, final: str = "ok", **fields: Any) -> Behavior:
+    """Ask the user through the extension UI, then reply with the answer it got."""
+
+    async def behavior(pi: FakePi, record: dict[str, Any]) -> None:
+        _start(pi, record)
+        answer = await pi.ask(method, **fields)
+        pi.last_answer = answer
+        _delta(pi, final)
+        _end(pi, _assistant(final, "stop"))
+
+    return behavior
+
+
+def silent(*chunks: str) -> Behavior:
+    """Accept the prompt, stream ``chunks`` and then never write again (a stuck Pi)."""
+
+    async def behavior(pi: FakePi, record: dict[str, Any]) -> None:
+        _start(pi, record)
+        for chunk in chunks:
+            _delta(pi, chunk)
+        await asyncio.Event().wait()
 
     return behavior
 

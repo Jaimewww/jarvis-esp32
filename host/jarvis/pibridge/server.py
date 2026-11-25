@@ -5,7 +5,9 @@ The protocol is the one ``host/jarvis/client.py`` and ``backend/app/agents/gentl
 speak: the first client frame is ``{"type": "hello", "token", "protocol": 1}``; a good
 one gets ``ready`` and from then on every server frame carries a per-connection
 monotonic ``seq``. A missing or wrong token closes with 4401, a malformed first frame or
-another protocol version with 4400. Turn frames go to every admitted client.
+another protocol version with 4400. Turn frames go to every admitted client; the answer to
+a request (history, the conversation list, the account, an ``error``) goes to its sender
+only. A request the bridge does not support gets an ``error`` frame (S9).
 """
 
 from __future__ import annotations
@@ -15,12 +17,13 @@ import ipaddress
 import contextlib
 import json
 import logging
-import uuid
+from collections.abc import Callable
 from typing import Any, Final, Protocol
 
 from websockets.asyncio.server import Server, ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
 
+from .history import Conversation
 from .token import token_matches
 
 logger = logging.getLogger(__name__)
@@ -75,12 +78,21 @@ def check_hello(raw: str | bytes, token: str) -> int | None:
     return None
 
 
+Observer = Callable[[dict[str, Any]], None]
+
+
 class Hub:
     """The admitted connections, each with its own ``seq``; frames go out in one order."""
 
     def __init__(self) -> None:
         self._seq: dict[ServerConnection, int] = {}
         self._lock = asyncio.Lock()
+        self._observers: list[Observer] = []
+
+    def observe(self, observer: Observer) -> None:
+        """Call ``observer`` with every broadcast frame (the conversation keeps them)."""
+
+        self._observers.append(observer)
 
     @property
     def size(self) -> int:
@@ -95,9 +107,15 @@ class Hub:
         self._seq.pop(ws, None)
 
     async def broadcast(self, payload: dict[str, Any]) -> None:
+        for observer in self._observers:
+            observer(payload)
         async with self._lock:
             for ws in list(self._seq):
                 await self._send(ws, payload)
+
+    async def send_to(self, ws: ServerConnection, payload: dict[str, Any]) -> None:
+        async with self._lock:
+            await self._send(ws, payload)
 
     async def _send(self, ws: ServerConnection, payload: dict[str, Any]) -> None:
         seq = self._seq.get(ws)
@@ -134,7 +152,8 @@ class BridgeServer:
         self._agent = agent
         self._hub = hub
         self._hello_timeout = hello_timeout
-        self._conversation_id = uuid.uuid4().hex
+        self._conversation = Conversation()
+        hub.observe(self._conversation.observe)
         self._server: Server | None = None
 
     async def start(self, host: str, port: int) -> int:
@@ -165,7 +184,7 @@ class BridgeServer:
         return {
             "type": "ready",
             "agentState": self._agent.agent_state,
-            "conversationId": self._conversation_id,
+            "conversationId": self._conversation.id,
             "model": self._agent.model,
             "features": {"conversations": False},
         }
@@ -189,16 +208,17 @@ class BridgeServer:
         await self._hub.admit(ws, self._ready())
         try:
             async for raw_frame in ws:
-                await self._dispatch(raw_frame)
+                await self._dispatch(ws, raw_frame)
         except ConnectionClosed:
             pass
         finally:
             self._hub.remove(ws)
             logger.info("client left")
 
-    async def _dispatch(self, raw: str | bytes) -> None:
+    async def _dispatch(self, ws: ServerConnection, raw: str | bytes) -> None:
         payload = _decode(raw)
         if payload is None:
+            await self._error(ws, "bad_request", "The bridge reads JSON objects only.")
             return
         kind = payload.get("type")
         if kind == "send":
@@ -207,5 +227,25 @@ class BridgeServer:
                 await self._agent.send(text)
         elif kind == "abort":
             await self._agent.abort()
+        elif kind == "get_history":
+            await self._hub.send_to(ws, self._conversation.history_frame())
+        elif kind == "list_conversations":
+            await self._hub.send_to(ws, self._conversation.conversations_frame())
+        elif kind == "auth_list":
+            await self._hub.send_to(ws, self._accounts())
+        elif kind in ("auth_login", "auth_reply", "auth_logout"):
+            await self._error(ws, "auth_unsupported", "Pi keeps its own accounts: sign in with pi itself.")
         else:
-            logger.debug("ignoring an unsupported client frame")
+            name = kind[:40] if isinstance(kind, str) else "that request"
+            logger.debug("refused an unsupported client frame")
+            await self._error(ws, "unsupported", f"The Pi bridge does not support {name}.")
+
+    def _accounts(self) -> dict[str, Any]:
+        """Pi signs in on its own: the running model's provider is the one, ready, account."""
+
+        provider = self._agent.model.partition("/")[0] or "pi"
+        account = {"id": provider, "name": provider, "methods": [], "configured": True, "source": "pi"}
+        return {"type": "auth_providers", "providers": [account], "open": False}
+
+    async def _error(self, ws: ServerConnection, code: str, message: str) -> None:
+        await self._hub.send_to(ws, {"type": "error", "code": code, "message": message})

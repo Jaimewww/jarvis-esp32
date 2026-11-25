@@ -6,6 +6,12 @@ assistant message, and ``agent_state`` idle when Pi settles. A Pi error ends the
 message with ``error`` and adds an ``error`` frame; a prompt Pi refuses is an ``error``
 frame with no echo. ``abort`` asks Pi to stop; the cut message ends ``stopped``.
 
+Each Pi tool run is an ``activity`` (S6): ``running`` on ``tool_execution_start``, then
+``done`` or ``failed`` on ``tool_execution_end``, under the assistant message that called
+it. That message ends first, empty when it only calls tools, as Gentle Dot does, so the
+clients count one model call per assistant message and one tool per activity. A tool still
+running when the turn ends is reported ``failed``.
+
 One turn at a time (D14): a ``send`` during a turn waits in a queue (reported with the
 ``queue`` frame) and runs when the turn ends; ``abort`` drops it too. If Pi exits, the
 turn ends with an ``error`` frame and the next ``send`` starts Pi again.
@@ -29,7 +35,16 @@ logger = logging.getLogger(__name__)
 Emit = Callable[[dict[str, Any]], Awaitable[None]]
 
 #: Pi events that belong to a run: the echo goes out before any of them is relayed.
-_RUN_EVENTS = frozenset({"agent_start", "turn_start", "message_start", "message_update", "message_end"})
+_RUN_EVENTS = frozenset({
+    "agent_start", "turn_start", "message_start", "message_update", "message_end",
+    "tool_execution_start", "tool_execution_end",
+})
+
+
+@dataclass(slots=True)
+class _Tool:
+    message_id: str
+    name: str
 
 
 @dataclass(slots=True)
@@ -42,6 +57,8 @@ class _Turn:
     replied: bool = False  # some message_done went out
     open_id: str | None = None
     open_text: list[str] = field(default_factory=list)
+    last_id: str = ""  # the last assistant message: the one whose tool calls run now
+    tools: dict[str, _Tool] = field(default_factory=dict)
 
 
 def _text_of(message: dict[str, Any]) -> str | None:
@@ -143,6 +160,8 @@ class Bridge:
         elif turn.abort_requested and turn.echoed and not turn.replied:
             # Stopped before Pi wrote anything: still end the reply the clients wait for.
             await self._emit({"type": "message_done", "messageId": f"a{next(self._ids)}", "text": "", "stopped": True})
+        for call_id in list(turn.tools):
+            await self._tool_end(turn, call_id, None, failed=True)
         self._turn = None
         if self._queue:
             text = self._queue.popleft()
@@ -162,6 +181,7 @@ class Bridge:
             frame["stopped"] = True
         if error:
             frame["error"] = error
+        turn.last_id = turn.open_id or turn.last_id
         turn.open_id = None
         turn.open_text = []
         turn.replied = True
@@ -238,8 +258,32 @@ class Bridge:
             message = record.get("message")
             if isinstance(message, dict) and message.get("role") == "assistant":
                 await self._on_assistant_end(turn, message)
+        elif kind == "tool_execution_start":
+            await self._tool_start(turn, record)
+        elif kind == "tool_execution_end":
+            call_id = record.get("toolCallId")
+            if isinstance(call_id, str):
+                await self._tool_end(turn, call_id, record.get("toolName"), failed=record.get("isError") is True)
         elif kind == "agent_settled":
             await self._finish(turn)
+
+    async def _tool_start(self, turn: _Turn, record: dict[str, Any]) -> None:
+        call_id, name = record.get("toolCallId"), record.get("toolName")
+        if not isinstance(call_id, str) or not call_id:
+            return
+        tool = _Tool(turn.open_id or turn.last_id, name if isinstance(name, str) and name else "tool")
+        turn.tools[call_id] = tool
+        await self._activity(call_id, tool, "running")
+
+    async def _tool_end(self, turn: _Turn, call_id: str, name: object, *, failed: bool) -> None:
+        tool = turn.tools.pop(call_id, None)
+        if tool is None:  # its start was not seen: still report the outcome
+            tool = _Tool(turn.last_id, name if isinstance(name, str) and name else "tool")
+        await self._activity(call_id, tool, "failed" if failed else "done")
+
+    async def _activity(self, call_id: str, tool: _Tool, status: str) -> None:
+        activity = {"id": call_id, "kind": tool.name, "title": tool.name, "status": status}
+        await self._emit({"type": "activity", "messageId": tool.message_id, "activity": activity})
 
     def _open(self, turn: _Turn) -> str:
         if turn.open_id is None:
