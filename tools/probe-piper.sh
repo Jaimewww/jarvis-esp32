@@ -14,7 +14,7 @@ scratch=$(mktemp -d)
 trap 'rm -f -- "$scratch/piper.wav"; rmdir -- "$scratch"' EXIT
 
 "$python_bin" -m piper -m "$model" -f "$scratch/piper.wav" -- 'En orden, señor.'
-ffmpeg -hide_banner -loglevel error -nostdin -n -i "$scratch/piper.wav" \
+ffmpeg -hide_banner -loglevel error -nostdin -y -i "$scratch/piper.wav" \
   -ar 16000 -ac 1 -c:a pcm_s16le "$output"
 
 "$python_bin" - "$output" <<'PY'

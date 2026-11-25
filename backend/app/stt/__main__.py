@@ -60,12 +60,26 @@ async def run(paths: list[str], runs: int) -> int:
     return 0
 
 
+def positive_int(raw: str) -> int:
+    """argparse type for ``--runs``: an integer of 1 or more."""
+
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"must be an integer of 1 or more, got {raw!r}")
+    return value
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").strip().split("\n")[0])
     parser.add_argument("wav", nargs="+", help="WAV PCM 16 kHz mono 16-bit")
-    parser.add_argument("--runs", type=int, default=1, help="times to send each file")
+    parser.add_argument(
+        "--runs", type=positive_int, default=1, help="times to send each file (1 or more)"
+    )
     args = parser.parse_args()
-    return asyncio.run(run(args.wav, max(1, args.runs)))
+    return asyncio.run(run(args.wav, args.runs))
 
 
 if __name__ == "__main__":

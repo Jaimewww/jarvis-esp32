@@ -137,3 +137,54 @@ def test_make_transcriber_rejects_unknown_value():
     with pytest.raises(ValueError, match="JARVIS_STT"):
         make_transcriber({"JARVIS_STT": "parakeet"})
 
+
+
+@pytest.mark.parametrize("value", ["abc", "0", "-1", "-0.5"])
+def test_make_transcriber_rejects_invalid_timeout_naming_variable_and_value(value):
+    env = {"JARVIS_STT": "whisper", "JARVIS_STT_TIMEOUT_S": value}
+    with pytest.raises(ValueError) as err:
+        make_transcriber(env)
+    assert "JARVIS_STT_TIMEOUT_S" in str(err.value) and repr(value) in str(err.value)
+
+
+def test_make_transcriber_accepts_a_valid_timeout():
+    t = make_transcriber({"JARVIS_STT": "whisper", "JARVIS_STT_TIMEOUT_S": "0.25"})
+    assert isinstance(t, WhisperServerTranscriber) and t.timeout_s == 0.25
+
+
+class _SlowPieces(httpx.AsyncByteStream):
+    """A 200 body sent in pieces; each piece is quick, the whole is not."""
+
+    def __init__(self, pieces: list[bytes], delay_s: float) -> None:
+        self.pieces = pieces
+        self.delay_s = delay_s
+
+    async def __aiter__(self):
+        for piece in self.pieces:
+            await asyncio.sleep(self.delay_s)
+            yield piece
+
+
+def test_a_response_in_slow_pieces_hits_one_total_deadline():
+    body = b'{"text": " hola que hora es"}'
+    pieces = [body[i : i + 3] for i in range(0, len(body), 3)]  # 10 pieces
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(0.05)  # slow before answering, too
+        return httpx.Response(200, stream=_SlowPieces(pieces, 0.05))
+
+    t = transcriber(handler, timeout_s=0.2)  # every phase < 0.2 s, the total ~0.55 s
+
+    async def timed():
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        try:
+            await t.transcribe(make_wav())
+        finally:
+            elapsed.append(loop.time() - started)
+
+    elapsed: list[float] = []
+    with pytest.raises(WhisperServerTimeout) as err:
+        run(timed())
+    assert URL in str(err.value) and "0.2" in str(err.value)
+    assert elapsed[0] < 0.4

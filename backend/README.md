@@ -65,7 +65,8 @@ PYTHON=backend/.venv/bin/python bash tools/probe-piper.sh \
 ```
 
 El script usa la frase «En orden, señor.» y verifica que el WAV no esté vacío
-ni sea silencioso y que sea PCM de **16 kHz, mono, 16 bits**. Para reproducirlo,
+ni sea silencioso y que sea PCM de **16 kHz, mono, 16 bits**. Si el archivo de
+salida ya existe lo sobrescribe, así que podés repetir el comando tal cual. Para reproducirlo,
 usá tu reproductor de audio o `ffplay -nodisp -autoexit /tmp/jarvis-piper-probe.wav`.
 
 ### Probar `/converse` con Piper
@@ -216,7 +217,7 @@ JARVIS_STT=whisper .venv/bin/uvicorn app.main:app --port 8000
 | `JARVIS_STT` | `fake` (CI y pruebas usan el doble); `whisper` usa el servidor; otro valor falla al importar |
 | `JARVIS_STT_URL` | `http://127.0.0.1:8080/inference` |
 | `JARVIS_STT_LANGUAGE` | `es` (también `auto`) |
-| `JARVIS_STT_TIMEOUT_S` | `30` |
+| `JARVIS_STT_TIMEOUT_S` | `30`: plazo total en segundos por transcripción (envío y respuesta completa); un valor no numérico, `0` o negativo falla al crear el transcriptor (al arrancar el backend con `JARVIS_STT=whisper` o en `python -m app.stt`) con un error que nombra la variable y el valor |
 | `JARVIS_STT_SLOW_MS` | `3000`: desde este tiempo de STT se avisa que whisper-server parece ir en CPU |
 
 En cada turno el backend emite `turn_stage` con `stage: "stt"`, `ms` y `text` (lo
@@ -228,7 +229,7 @@ mensaje. Errores (subclases de `WhisperServerError`):
 | Error | Cuándo |
 |---|---|
 | `WhisperServerUnavailable` | No conecta (servidor apagado, host o puerto mal) |
-| `WhisperServerTimeout` | Sin respuesta en `JARVIS_STT_TIMEOUT_S` |
+| `WhisperServerTimeout` | Sin respuesta completa en `JARVIS_STT_TIMEOUT_S`, aunque el servidor vaya lento en varias fases o mande la respuesta en pedazos |
 | `WhisperServerHTTPError` | Estado distinto de 200 (`status`); p. ej. `400 Invalid request` si no es WAV |
 | `WhisperServerBadResponse` | 200 sin JSON, sin `text` de tipo texto, o con `error` |
 
@@ -257,7 +258,8 @@ ffmpeg -i nota.m4a -ar 16000 -ac 1 -c:a pcm_s16le clip.wav  # desde otro formato
 
 ```bash
 cd backend
-# solo STT: texto y tiempo por envío (el primero calienta el modelo)
+# solo STT: texto y tiempo por envío (el primero calienta el modelo);
+# --runs vale 1 por defecto y tiene que ser 1 o más (0 o negativo es error de uso)
 .venv/bin/python -m app.stt clip.wav --runs 3
 # prueba opcional contra el servidor real (CI la salta)
 JARVIS_REAL_WHISPER=1 JARVIS_WHISPER_WAV=clip.wav JARVIS_WHISPER_EXPECT="hora" \
