@@ -84,6 +84,39 @@ Gentle Dot as the default; a machine opts into the bridge. Branch `feat/pi-bridg
   6. Origin (`server.py:143-145`): "Rejecting browser Origin headers would add defense in depth
      for an endpoint that fronts PC control." A connection that carries an `Origin` header is
      refused; Jarvis's clients send none.
+- S13 (L7, findings of the T2 verify and native review, lineage review-fde2f100406dc30c):
+  1. Stale questions (`turns.py:360`, `_finish` at `:306`). Verify: "the bridge doesn't notice
+     when Pi closes a dialog by itself. [...] The bridge keeps the question pending, so clients
+     get no `ask_resolved` and keep a stale `ask`. Worse, `_watch` then treats every later turn
+     as 'waiting for the user'." When a turn ends, every question still pending is resolved
+     for the clients (`ask_resolved`) and no longer pauses the stuck-turn watchdog; a late
+     `ui_response` to it is not forwarded to Pi.
+  2. Old reader after a timeout (`turns.py:368-381`). Verify: "when a stuck turn times out,
+     the old Pi's reader is cancelled only after `_finish()` has already started the queued
+     `send` and launched a new Pi. [...] the old Pi's late 'OLD' reply and `agent_settled`
+     were attributed to the new turn and ended it. The new Pi's real reply 'NEW' was then
+     dropped." No record of a Pi that was given up on may reach a later turn.
+  3. Model after a restart (`turns.py:239`, `pi.py:67`). Verify: "the model chosen with
+     `model_set` is lost on a Pi restart. [...] `ready.model` and the `auth_providers` entry
+     still say `anthropic/claude-x`, but `models.current` shows the configured default". A
+     restarted Pi runs the model and thinking level last chosen with `model_set`, and every
+     frame that names the current model agrees with what Pi runs.
+  4. Partial `model_set` (`turns.py:236-246`). Review: "set_model applies Pi's set_model and
+     updates self._model before it checks the requested thinking level against the new
+     model's levels. If that check fails, or set_thinking_level is refused, the sender gets a
+     thinking_unavailable error. Pi and the ready frame still run the new model, and no models
+     frame is broadcast". A `model_set` either applies whole and is broadcast, or leaves Pi on
+     the previous model and thinking level and answers the sender with an `error`.
+  5. Token file encoding (`token.py:35`, `:78`). Verify: "a token file that isn't valid UTF-8
+     raises `UnicodeDecodeError`, which isn't caught. The result is a traceback and exit 1,
+     the listen-error exit code, contrary to S12.5." It is a token error, exit 2, no traceback.
+  6. Writer errors (`hub.py:89-94`). Review: "The per-connection writer only catches
+     ConnectionClosed. Any other exception from ws.send ends the task silently while the peer
+     stays registered." Such a client is logged and dropped at once.
+  7. Shutdown and busy requests (`turns.py:268`, `server.py:189`). Verify: "A `models_list`
+     waiting on a silent Pi blocks that client's `abort` for up to 10 s. `bridge.close()`
+     doesn't cancel pending commands, so shutdown took 10.0 s". `abort` is never delayed by
+     another request of the same client, and closing the bridge cancels pending commands.
 
 ## Tasks
 
@@ -94,9 +127,12 @@ Gentle Dot as the default; a machine opts into the bridge. Branch `feat/pi-bridg
   skipped; pyright 0 errors on `host/jarvis/pibridge`. Independent verify: S2-S5 pass (L5).
 - [ ] T2 S6,S7,S8,S9,S12 — Activities, questions, models, several clients and history, tested
   with the unchanged `JarvisClient`, plus the resilience fixes of S12. Route: gentle-ai-worker,
-  branch feat/pi-bridge-clients on feat/pi-bridge (PR #41), after T1.
+  branch feat/pi-bridge-clients on feat/pi-bridge (PR #41), after T1. Code: 74d51ed (activities,
+  several clients, history), f8c364a (questions, models), 3c92381 (S12). Host 319 passed, 6
+  skipped. Fix pass pending: T5.
 - [ ] T3 S10 — systemd unit, installer, README and decision entry. Route: gentle-ai-worker,
   after T2.
+- [ ] T5 S13 — Fix pass after the T2 verify and review. Route: gentle-ai-worker, same branch.
 - [ ] T4 S11 — Run the bench and the TUI against the bridge on the user's machine; record the
   numbers. Route: inline with the user.
 
@@ -140,3 +176,13 @@ Gentle Dot as the default; a machine opts into the bridge. Branch `feat/pi-bridg
   review of the T1 range approved (risk, resilience, reliability; lineage
   review-f249edc39d48167e) with eight non-blocking findings; the ones worth fixing are S12 and
   go with T2. T2 continues on branch feat/pi-bridge-clients, stacked on PR #41.
+- L7 (2026-11-25, evidence, T2). The unchanged `python -m jarvis.bench --port 4391
+  --token-file <temp> --include-pc --only question --only volumen-sube --only volumen-baja
+  --only spotify -n 3` ran through the bridge with the real `pi`: 24 of 24 runs done, 0 errors,
+  1 model call per question and 2 per tool request; medians: questions 1.89-2.51 s, volume up
+  4.76 s, volume down 4.18 s, Spotify 4.37 s (Gentle Dot the same day, L4: 6.59-7.41 s, 15.96
+  s, 14.10 s, 13.80 s). No orphan Pi process. Native review of the T2 range approved (lineage
+  review-fde2f100406dc30c, 3 non-blocking findings). Independent verify: S6, S8, S9 and S12.1-4
+  and S12.6 pass; S7 and S12.5 partial; no blocker; security checks pass (nothing before a
+  valid hello for the 7 new request types, no frame to an unauthenticated socket, `Origin`
+  refused with 403). The findings worth fixing are S13 (T5).
