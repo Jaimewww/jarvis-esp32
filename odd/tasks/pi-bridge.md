@@ -117,6 +117,21 @@ Gentle Dot as the default; a machine opts into the bridge. Branch `feat/pi-bridg
      waiting on a silent Pi blocks that client's `abort` for up to 10 s. `bridge.close()`
      doesn't cancel pending commands, so shutdown took 10.0 s". `abort` is never delayed by
      another request of the same client, and closing the bridge cancels pending commands.
+- S14 (L8, left for a later pass; none shows up with one client and occasional model
+  switches): (1) more than 8 model requests of one client waiting on a silent Pi block that
+  client's read loop, so its `abort` waits and shutdown takes about 10 s per queued request
+  (`server.py:198`, `__main__.py:51`): answer the extra request with an `error` instead; (2)
+  model switches are not serialized across clients and a rollback can undo another client's
+  successful switch (`turns.py:241-242`); a disconnect in the middle of a `model_set` can
+  leave Pi half-switched (`server.py:204-206`); a failed put-back is only logged
+  (`models.py:110`); a `models()` failure after a successful switch answers `error` with Pi
+  already switched (`turns.py:244-247`); (3) a `model_set` followed at once by a `send` can
+  start the turn on the previous model (`server.py:196-200`); (4) an unexpected exception in
+  the model-request worker is only logged, the sender gets no answer (`server.py:216-217`);
+  (5) the watchdog of a new turn starts before the new Pi has launched, so a launch slower
+  than the record timeout reports `agent_timeout` yet still writes the prompt to Pi
+  (`turns.py:313-316`); (6) `close()` does not stop a relaunch already running
+  (`turns.py:294`).
 
 ## Tasks
 
@@ -125,14 +140,15 @@ Gentle Dot as the default; a machine opts into the bridge. Branch `feat/pi-bridg
   gentle-ai-worker. Commits 715494e (hello and token guard), 6295ce9 (turns on the Pi child)
   and the hardening fix after verify (L5). Host 291 passed, 6 skipped; backend 82 passed, 7
   skipped; pyright 0 errors on `host/jarvis/pibridge`. Independent verify: S2-S5 pass (L5).
-- [ ] T2 S6,S7,S8,S9,S12 — Activities, questions, models, several clients and history, tested
+- [x] T2 S6,S7,S8,S9,S12 — Activities, questions, models, several clients and history, tested
   with the unchanged `JarvisClient`, plus the resilience fixes of S12. Route: gentle-ai-worker,
   branch feat/pi-bridge-clients on feat/pi-bridge (PR #41), after T1. Code: 74d51ed (activities,
   several clients, history), f8c364a (questions, models), 3c92381 (S12). Host 319 passed, 6
   skipped. Fix pass pending: T5.
 - [ ] T3 S10 — systemd unit, installer, README and decision entry. Route: gentle-ai-worker,
   after T2.
-- [ ] T5 S13 — Fix pass after the T2 verify and review. Route: gentle-ai-worker, same branch.
+- [x] T5 S13 — Fix pass after the T2 verify and review. Route: gentle-ai-worker, same branch: bde49a8. Host 335 passed, 6 skipped; backend 82 passed, 7 skipped; pyright 0 errors. Native review approved (lineage review-03ea5a3391aa7fc2); independent verify: S13.1-S13.6 pass, S13.7 partial (L8).
+- [ ] T6 S14 — Second hardening pass on model switching and backlog. Route: gentle-ai-worker, after the bridge is in use.
 - [ ] T4 S11 — Run the bench and the TUI against the bridge on the user's machine; record the
   numbers. Route: inline with the user.
 
@@ -186,3 +202,16 @@ Gentle Dot as the default; a machine opts into the bridge. Branch `feat/pi-bridg
   and S12.6 pass; S7 and S12.5 partial; no blocker; security checks pass (nothing before a
   valid hello for the 7 new request types, no frame to an unauthenticated socket, `Origin`
   refused with 403). The findings worth fixing are S13 (T5).
+- L8 (2026-11-25, evidence, T5). Real `pi` through the bridge after bde49a8 (unchanged bench):
+  questions and volume n=2, 14 of 14 done (questions 1.88-2.52 s, volume 4.85 / 3.81 s);
+  `--model openai/gpt-6.1-terra --thinking low` applied and `--list` showed it as current;
+  back to `openai/gpt-6.1-sol` low, 1.62 s; after stopping the bridge no child process was
+  left and the port was free. Correction to L5 and L7: the earlier "no orphan" checks searched
+  the process list for `pi --mode rpc`, but Pi renames its process to `pi`, so they proved
+  nothing; a bridge from an earlier run had in fact been left running by the test script (not
+  by the bridge) and was stopped. Orphans are now checked through the bridge's child pids.
+  Likely reason Gentle Dot is slower (seen in the process list, not measured in isolation):
+  its daemon runs Pi with the `gentle-pi` package loaded, whose orchestrator prompt goes with
+  every model call; the bridge starts Pi without it. Independent verify of bde49a8: the seven
+  original failures are gone; two should-fix issues and two notes remain, recorded as S14.
+  Pushed feat/pi-bridge-clients and opened the second PR (2/3), stacked on PR #41.
