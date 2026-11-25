@@ -605,6 +605,7 @@ def rail_rows(model: HostModel, g: Grid, n: int) -> list[list[Seg]]:
         kv("state", [S(glyph[0] + " ", glyph[1]), S(state, cls)]),
         kv("model", [S(clip(name, room), "t1")] if name else [S("—", "mu")]),
         kv("reply", [S(clip(timing.summary(), room), "t1")] if timing else [S("—", "mu")]),
+        kv("turn", [S(clip(timing.trace.summary(), room), "t2")] if timing and timing.trace else [S("—", "mu")]),
         kv("chat", [S(model.chat_title, "t1")] if model.chat_title else [S("—", "mu")]),
         kv("queue", queue),
     ]

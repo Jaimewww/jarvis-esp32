@@ -374,6 +374,63 @@ carpeta tiene un responsable, y las fronteras son los
 El adaptador de tareas largas vive en `backend/` pero lo escribe la pista de agente,
 contra la interfaz de agente del contrato C3.
 
+## D22 — Plan de latencia
+
+Se adopta el plan de [latencia-propuestas.md](latencia-propuestas.md), en este orden:
+medir, camino rápido (P1), modelo según el pedido (P3), respuesta percibida y por
+frases (P4), menos consultas en las tareas de la PC (P2) y medir IA local (P5).
+
+- **El camino rápido vive en el backend** (D13, pista S1), antes del agente, así lo
+  aprovechan el ESP32 y la TUI.
+- **Catálogo inicial: lo básico.** Primero se define y se prueba qué órdenes entran;
+  la lista se acuerda con S1 antes de programarla.
+- **Tareas de la PC:** herramientas compuestas (`pc_write_in`, `pc_run`), sin captura
+  de pantalla por defecto (solo si algo falló o se pide) y confirmación según la acción,
+  no según las palabras del pedido. La confirmación va en su propia solicitud, con
+  pruebas de escritorio y revisión, porque es un resguardo de D20.
+- **IA local:** se mide con el mismo juego de pedidos (`python -m jarvis.bench`); adoptarla
+  es otra decisión.
+
+**Por qué:** la consulta al modelo (2,6-5,6 s cada una) domina el turno; STT tarda
+0,2-0,3 s en GPU (y unos 15 s si cae a CPU, por eso se avisa). Metas previstas: orden del
+catálogo de ~4,9 s a ~0,5-1 s; tarea de la PC de ~48 s a ~10-15 s.
+
+## D23 — Confirmación según la acción, no según las palabras
+
+El ayudante `jarvis-input` pide confirmación en la TUI antes de una acción irreversible
+según **la acción**, nunca según las palabras del texto escrito o de la intención
+(S10a, decisiones del usuario en L16 de `odd/tasks/latencia.md`). Reemplaza la parte de
+las palabras de riesgo de los resguardos de D20 y concreta el punto «confirmación según la
+acción» de D22.
+
+| Acción | ¿Pregunta? |
+|---|---|
+| Enter (`Return`, `ctrl+Return` o cualquier Enter en una secuencia, o un salto de línea en el texto) en una app de chat o correo, o en un navegador cuyo título muestra un chat o correo web (WhatsApp, Telegram, Gmail, Outlook, Discord, Messenger, Slack…) | Sí |
+| Enter en un navegador en cualquier otra página (búsquedas, formularios) o en otra app | No |
+| Texto o intención con palabras como «borrar», «enviar» o «pagar» | No; la intención solo se muestra en el aviso |
+| Borrar todo el contenido: `ctrl+a` seguido de `Delete`, `BackSpace` o `ctrl+x`, o `g g d shift+g` de Vim | Sí |
+| Cerrar una ventana o app: `alt+F4`, `ctrl+w`, `ctrl+q` | Sí |
+| Equivalentes (L17): `Tab` y luego `space` o Enter en chat o correo; en un navegador, cambiar de pestaña (`ctrl+Tab`, `ctrl+1..9`…) y luego Enter; `KP_Delete`; `ctrl+Home ctrl+shift+End` y borrar; `ggdG` o `:%d` en el texto; `ctrl+F4`, `super+w`, `super+q`, `super+shift+e`, `ctrl+alt+Delete` | Sí |
+| Borrado repartido en dos llamadas a la misma ventana (`ctrl+a` y luego `Delete` o escribir encima; `g g` y luego `d shift+g`), dentro de 60 s, aunque haya acciones en otras ventanas en el medio (T16) | Sí |
+| Pegar (`ctrl+v`, `shift+Insert`), Enter o `Tab` (o un salto de línea o tabulador en el texto) sobre un `ctrl+a` pendiente (T16) | Sí |
+
+El ayudante recuerda en memoria la cola de la última acción en cada ventana (L17 (a); T16:
+hasta 8 ventanas, se olvida la usada hace más tiempo, 60 s cada una); una acción negada no la
+cambia, y un texto cortado entre corridas de `wtype` solo cuenta lo que se escribió. Justo antes de `wtype` vuelve a evaluar con el título recién
+leído: un motivo que el usuario no confirmó niega sin preguntar otra vez (L17 (c)).
+
+Se mantienen sin cambios: la lista de bloqueo (terminales, contraseñas, ajustes), el
+rechazo de letras que imitan palabras de riesgo (cirílicas o griegas), los 30 s de espera
+y la denegación sin respuesta, sin TUI conectada o al revocar, y el aviso en la TUI. La
+tabla vive en el código (`host/input/jarvis_input/checks.py`, `confirm_reasons`).
+
+**Por qué:** con las palabras, el agente preguntaba por «entrar en modo inserción sin
+borrar contenido» (desktop-e2e L5-L8) y no por un `ctrl+a Delete` con una intención
+inocente; la confirmación dependía de cómo redactaba el modelo, no de lo que hacía.
+
+**Descartado:** preguntar por Enter en cualquier navegador (pregunta en cada búsqueda) y
+seguir preguntando por las palabras del texto escrito.
+
 ## Decisiones abiertas
 
 - **Motor de la charla de voz** (D14).

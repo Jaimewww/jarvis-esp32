@@ -1,8 +1,8 @@
 """Pure checks of jarvis-input (S13, S12 (3)): no sockets, no processes, no I/O.
 
 Ported from ``host/gentle-dot/extensions/pc-control-core.ts`` (key parsing, text validation,
-blocklist, rate limit) and extended: risky words by stem with Unicode normalization and a basic
-confusables map, terminals blocked for input, and the Return-confirmation app list.
+blocklist, rate limit) and extended: lookalike letters that imitate risky words (denied), terminals
+blocked for input, and the rule table of actions that ask the user first (S10a).
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ import re
 import stat
 import time
 import unicodedata
-from collections import deque
+from collections import OrderedDict, deque
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -121,8 +121,10 @@ def preview(text: str) -> str:
     return f"{len(text)} caracteres, empieza {head!r}…"
 
 
-# --- risky words ---------------------------------------------------------------------------
+# --- lookalike words -----------------------------------------------------------------------
 
+# Words are never a reason to ask (S10a); these stems only catch text or an intent that imitates
+# them with Cyrillic/Greek lookalike letters, which is denied outright.
 RISKY_STEMS = ("envi", "pag", "compr", "elimin", "borr", "vaci", "submit", "send", "pay", "buy",
                "delet", "clear", "wipe")
 
@@ -146,31 +148,18 @@ def _base(text: str) -> str:
     return text.casefold()
 
 
-def _stems_of(word: str) -> list[str]:
-    return [s for s in RISKY_STEMS if word.startswith(s)]
-
-
-def _collect(texts: tuple[str, ...], lookalike: bool) -> list[str]:
+def lookalike_stems(*texts: str) -> list[str]:
+    """Risky stems that only appear after mapping Cyrillic/Greek lookalikes to Latin (deny those)."""
     found: list[str] = []
     for text in texts:
         for word in _WORD.findall(_base(text)):
             mapped = word.translate(_CONFUSABLES)
-            if lookalike and mapped == word:
+            if mapped == word:
                 continue
-            for stem in _stems_of(mapped if lookalike else word):
-                if stem not in found:
+            for stem in RISKY_STEMS:
+                if mapped.startswith(stem) and stem not in found:
                     found.append(stem)
     return found
-
-
-def risky_stems(*texts: str) -> list[str]:
-    """Risky stems at the start of a word (envi*, pag*, …, delet*), in order, once each."""
-    return _collect(texts, lookalike=False)
-
-
-def lookalike_stems(*texts: str) -> list[str]:
-    """Risky stems that only appear after mapping Cyrillic/Greek lookalikes to Latin (deny those)."""
-    return _collect(texts, lookalike=True)
 
 
 # --- focused window ------------------------------------------------------------------------
@@ -436,10 +425,16 @@ def list_apps(data_dirs: Iterable[Path], *, query: str | None = None,
     return [{"id": i, "name": n} for _, i, n in found[:cap]], len(found) > cap
 
 
-# Browsers, mail and messaging: Return / ctrl+Return there usually sends something.
-_CONFIRM_APP_PARTS = (
+# --- what asks the user first (S10a) ------------------------------------------------------
+
+# Browsers: Return there only asks when the window title shows web chat or mail.
+_BROWSER_APP_PARTS = (
     "brave", "firefox", "chromium", "chrome", "vivaldi", "opera", "microsoft-edge", "librewolf",
     "waterfox", "floorp", "zen_browser", "zen-browser", "epiphany", "qutebrowser", "falkon", "midori",
+)
+_BROWSER_APP_IDS = {"zen"}
+# Mail and messaging apps (app_id substrings, lowercase): Return / ctrl+Return there sends.
+_CHAT_MAIL_APP_PARTS = (
     "thunderbird", "betterbird", "evolution", "geary", "kmail", "mailspring", "claws-mail",
     "tutanota", "protonmail", "proton-mail", "telegram", "kotatogram", "64gram", "materialgram",
     "signal", "discord", "vesktop", "webcord", "armcord", "slack", "whatsapp", "whatsie", "zapzap",
@@ -447,12 +442,233 @@ _CONFIRM_APP_PARTS = (
     "rocket.chat", "ferdium", "franz", "beeper", "viber", "caprine", "messenger", "gajim", "dino",
     "pidgin", "hexchat", "polari", "revolt", "wire",
 )
-_CONFIRM_APP_IDS = {"zen"}
+# Web chat and mail, by the browser window title (whole words, after _base: case and accents).
+_WEB_CHAT_MAIL_TITLE = re.compile(
+    r"\b(whatsapp|telegram|gmail|outlook|hotmail|discord|messenger|slack|teams|proton ?mail|tuta|"
+    r"tutanota|yahoo mail|instagram|element|mattermost|rocket\.chat|zoho mail|signal)\b")
+
+REASON_SEND = "enviar en un chat o correo"
+REASON_CLEAR = "borrar todo el contenido"
+REASON_CLOSE = "cerrar la ventana"
+
+Combo = tuple[frozenset[str], str]
+_NO_MODS: frozenset[str] = frozenset()
+_SHIFT = frozenset({"shift"})
+_COMMAND_MODS = frozenset({"ctrl", "alt", "logo", "altgr"})
+_DELETE_KEYS = {"delete", "backspace", "kp_delete"}
+_TAB_KEYS = {"tab", "iso_left_tab", "kp_tab"}
+_SPACE_KEYS = {"space", "kp_space"}
+_HOME_KEYS = {"home", "kp_home"}
+_END_KEYS = {"end", "kp_end"}
+_PAGE_KEYS = {"page_up", "page_down", "prior", "next", "kp_page_up", "kp_page_down", "kp_prior", "kp_next"}
+_TAB_DIGITS = {str(n) for n in range(1, 10)} | {f"kp_{n}" for n in range(1, 10)}
+# keysym names that type a character (a bare one replaces a selection, as typed text does)
+_CHAR_NAMES = {"space", "colon", "percent", "semicolon", "comma", "period", "minus", "plus", "equal",
+               "slash", "underscore", "apostrophe", "quotedbl", "exclam", "question"}
+# typed text -> the same (modifiers, key) the keys would give, for the shared rules below
+_TEXT_KEYS = {" ": "space", ":": "colon", "%": "percent", "\n": "return", "\t": "tab"}
 
 
-def needs_return_confirm(app_id: str) -> bool:
+def _is_colon(c: Combo) -> bool:
+    return (c[1] == "colon" and not c[0] & _COMMAND_MODS) or c == (_SHIFT, "semicolon")
+
+
+def _is_percent(c: Combo) -> bool:
+    return (c[1] == "percent" and not c[0] & _COMMAND_MODS) or c == (_SHIFT, "5")
+
+
+# Vim clears: g g d shift+g, and the ex command :%d (as keys or as typed text).
+_VIM_CLEARS: tuple[tuple[Callable[[Combo], bool], ...], ...] = (
+    (lambda c: c == (_NO_MODS, "g"), lambda c: c == (_NO_MODS, "g"), lambda c: c == (_NO_MODS, "d"),
+     lambda c: c == (_SHIFT, "g")),
+    (_is_colon, _is_percent, lambda c: c == (_NO_MODS, "d")),
+)
+TAIL_COMBOS = 4  # the longest Vim clear: enough to finish one split across calls
+TAIL_TTL_S = 60.0
+TAIL_WINDOWS = 8  # windows with a remembered tail; the least recently used one is forgotten
+_INSERT_KEYS = {"insert", "kp_insert"}
+_TYPED_TAB_KEYS = {"tab", "kp_tab"}  # bare Tab types a tab (shift+Tab is ISO_Left_Tab, a move)
+
+
+def _is_browser(app_id: str) -> bool:
+    return app_id in _BROWSER_APP_IDS or any(p in app_id for p in _BROWSER_APP_PARTS)
+
+
+def is_chat_or_mail(app_id: str, title: str) -> bool:
+    """A mail or messaging app, or a browser window whose title shows web chat or mail."""
     a = app_id.casefold()
-    return bool(a) and (a in _CONFIRM_APP_IDS or any(p in a for p in _CONFIRM_APP_PARTS))
+    if not a:
+        return False
+    if any(p in a for p in _CHAT_MAIL_APP_PARTS):
+        return True
+    return _is_browser(a) and _WEB_CHAT_MAIL_TITLE.search(_base(title)) is not None
+
+
+def key_combos(args: list[str]) -> list[Combo]:
+    """parse_keys output -> (modifiers, lowercase key) per press, in order. A bare argument is the
+    capital parse_keys sends for shift+letter."""
+    combos: list[Combo] = []
+    held: list[str] = []
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "-M":
+            held.append(args[i + 1])
+            i += 2
+        elif a == "-m":
+            if args[i + 1] in held:
+                held.remove(args[i + 1])
+            i += 2
+        elif a == "-k":
+            combos.append((frozenset(held), args[i + 1].lower()))
+            i += 2
+        elif a == "-s":
+            i += 2
+        else:
+            combos += [(_SHIFT, ch.lower()) for ch in a]
+            i += 1
+    return combos
+
+
+def text_combos(text: str) -> list[Combo]:
+    """Typed text as the presses it amounts to: a capital is shift+letter, ":" colon, "\n" Return."""
+    return [(_NO_MODS, _TEXT_KEYS[ch]) if ch in _TEXT_KEYS
+            else (_SHIFT, ch.lower()) if ch.isupper() else (_NO_MODS, ch) for ch in text]
+
+
+@dataclass(frozen=True)
+class KeyTail:
+    """What the previous calls on one window left behind (L17 (a)): the last presses, whether
+    everything is still selected, and a ctrl+Home/ctrl+End that a ctrl+shift+End/Home completes."""
+    recent: tuple[Combo, ...] = ()
+    select_all: bool = False
+    corner: str = ""
+
+
+def _scan(tail: KeyTail, combos: list[Combo]) -> tuple[bool, KeyTail]:
+    """Whether `combos`, after `tail`, clear all content (a match that ends in `combos`; one that
+    ended in the tail was already asked), and the tail they leave."""
+    seq = list(tail.recent) + combos
+    select_all, corner, clears = tail.select_all, tail.corner, False
+    for i, (mods, key) in enumerate(combos):
+        j = len(tail.recent) + i
+        replaces = not mods & _COMMAND_MODS and (len(key) == 1 or key in _CHAR_NAMES or key in _RETURN_KEYS)
+        replaces = replaces or (not mods and key in _TYPED_TAB_KEYS)  # T16: Return/Tab over all
+        pastes = ("ctrl" in mods and key == "v") or (mods == _SHIFT and key in _INSERT_KEYS)
+        if select_all and (key in _DELETE_KEYS or ("ctrl" in mods and key == "x") or replaces or pastes):
+            clears, select_all = True, False  # the selection is gone after it
+        if "ctrl" in mods and key == "a":
+            select_all = True
+        if "ctrl" in mods and key in _HOME_KEYS | _END_KEYS:
+            edge = "home" if key in _HOME_KEYS else "end"
+            if "shift" in mods and corner and corner != edge:
+                select_all = True
+            elif "shift" not in mods:
+                corner = edge
+        for pattern in _VIM_CLEARS:
+            n = len(pattern)
+            if j + 1 >= n and all(p(c) for p, c in zip(pattern, seq[j + 1 - n:j + 1])):
+                clears = True
+    return clears, KeyTail(tuple(seq[-TAIL_COMBOS:]), select_all, corner)
+
+
+def _closes(combos: list[Combo]) -> bool:
+    return any(("alt" in mods and key == "f4") or ("ctrl" in mods and key in ("w", "q", "f4"))
+               or ("logo" in mods and key in ("w", "q")) or ({"logo", "shift"} <= mods and key == "e")
+               or ({"ctrl", "alt"} <= mods and key in ("delete", "kp_delete"))
+               for mods, key in combos)
+
+
+def _followed(combos: list[Combo], first: Callable[[Combo], bool], then: Callable[[Combo], bool]) -> bool:
+    seen = False
+    for c in combos:
+        if seen and then(c):
+            return True
+        seen = seen or first(c)
+    return False
+
+
+def _switches_tab(c: Combo) -> bool:
+    mods, key = c
+    return (("ctrl" in mods and (key in _TAB_KEYS or key in _PAGE_KEYS or key in _TAB_DIGITS))
+            or ("alt" in mods and key in _TAB_DIGITS))
+
+
+def _sends(app_id: str, title: str, keys: list[str] | None, text: str | None, combos: list[Combo]) -> bool:
+    returns = (keys is not None and presses_return(keys)) or (text is not None and "\n" in text)
+    if is_chat_or_mail(app_id, title):
+        # Return, or Tab to the Send button and space/Return on it
+        return returns or _followed(combos, lambda c: c[1] in _TAB_KEYS,
+                                    lambda c: c[1] in _SPACE_KEYS or c[1] in _RETURN_KEYS)
+    # a tab switch inside the sequence may land on web chat whatever the title is now
+    return _is_browser(app_id.casefold()) and _followed(combos, _switches_tab, lambda c: c[1] in _RETURN_KEYS)
+
+
+def _combos(keys: list[str] | None, text: str | None) -> list[Combo]:
+    return (key_combos(keys) if keys is not None else []) + (text_combos(text) if text is not None else [])
+
+
+def confirm_reasons(app_id: str, title: str, *, keys: list[str] | None = None,
+                    text: str | None = None, tail: KeyTail = KeyTail()) -> list[str]:
+    """Why this action must ask the user first (S10a, L17), in Spanish, or [] when it needs no prompt.
+
+    By the action only, never by words in the text or the intent:
+    - send: Return (any Return keysym, or a newline in the text), or Tab then space/Return, in a
+      chat or mail window; in any browser, a tab switch (ctrl+Tab, ctrl+PageDown, ctrl/alt+1..9)
+      later followed by Return;
+    - clear all: a select-all (ctrl+a, or ctrl+Home then ctrl+shift+End) then Delete/KP_Delete/
+      BackSpace/ctrl+x, a paste (ctrl+v, shift+Insert), Return/KP_Enter, Tab, or a typed character
+      (a typed newline or tab too); Vim's g g d shift+g or :%d, as keys or typed text.
+      Matched against `tail` (the previous calls on the same window) plus this action;
+    - close: alt+F4, ctrl+w, ctrl+q, ctrl+F4, super+w, super+q, super+shift+e, ctrl+alt+Delete.
+    `keys` is parse_keys output."""
+    combos = _combos(keys, text)
+    reasons: list[str] = []
+    if _sends(app_id, title, keys, text, combos):
+        reasons.append(REASON_SEND)
+    if _scan(tail, combos)[0]:
+        reasons.append(REASON_CLEAR)
+    if _closes(combos):
+        reasons.append(REASON_CLOSE)
+    return reasons
+
+
+def next_tail(tail: KeyTail, *, keys: list[str] | None = None, text: str | None = None,
+              failed: bool = False) -> KeyTail:
+    """The tail after this action ran on the same window. `failed`: wtype ran but failed, so any
+    part of it may have been typed: its presses count, and a select-all or ctrl+Home/End pending
+    before it is kept (T16)."""
+    after = _scan(tail, _combos(keys, text))[1]
+    if not failed:
+        return after
+    return KeyTail(after.recent, after.select_all or tail.select_all, after.corner or tail.corner)
+
+
+class KeyTails:
+    """The tail of the last action typed into each window (L17 (a), T16): memory only, at most
+    `size` windows (the least recently recorded one is forgotten), each entry forgotten `ttl`
+    seconds after it was recorded."""
+
+    def __init__(self, ttl: float = TAIL_TTL_S, clock: Callable[[], float] = time.monotonic,
+                 size: int = TAIL_WINDOWS) -> None:
+        self.ttl, self.clock, self.size = ttl, clock, size
+        self._tails: OrderedDict[int, tuple[KeyTail, float]] = OrderedDict()
+
+    def get(self, wid: int) -> KeyTail:
+        entry = self._tails.get(wid)
+        if entry is None:
+            return KeyTail()
+        tail, at = entry
+        if self.clock() - at > self.ttl:
+            del self._tails[wid]
+            return KeyTail()
+        return tail
+
+    def record(self, wid: int, tail: KeyTail) -> None:
+        self._tails[wid] = (tail, self.clock())
+        self._tails.move_to_end(wid)
+        while len(self._tails) > self.size:
+            self._tails.popitem(last=False)
 
 
 # --- open ----------------------------------------------------------------------------------
@@ -482,6 +698,31 @@ def validate_url(url: object) -> str | None:
     if not parts.netloc or not host:
         return bad
     return None
+
+
+# --- media and volume (T15) ---------------------------------------------------------------
+
+# The C4 catalog's media/volume set, each with a fixed argv: no caller text ever reaches it.
+# Volume moves in 5% steps on the default sink; raising it is capped at 100% (-l 1.0).
+_SINK = "@DEFAULT_AUDIO_SINK@"
+_MEDIA_ARGV: dict[str, tuple[str, ...]] = {
+    "play_pause": ("playerctl", "play-pause"),
+    "next": ("playerctl", "next"),
+    "previous": ("playerctl", "previous"),
+    "volume_up": ("wpctl", "set-volume", "-l", "1.0", _SINK, "5%+"),
+    "volume_down": ("wpctl", "set-volume", _SINK, "5%-"),
+    # Explicit states, not a toggle: "silencio" must never unmute an already muted sink.
+    "mute": ("wpctl", "set-mute", _SINK, "1"),
+    "unmute": ("wpctl", "set-mute", _SINK, "0"),
+}
+MEDIA_ACTIONS = tuple(_MEDIA_ARGV)
+
+
+def media_argv(action: object) -> list[str]:
+    """A media action name -> its fixed argv. Raises ValueError for anything outside the set."""
+    if not isinstance(action, str) or action not in _MEDIA_ARGV:
+        raise ValueError("action debe ser una de: " + ", ".join(MEDIA_ACTIONS))
+    return list(_MEDIA_ARGV[action])
 
 
 # --- rate limit ----------------------------------------------------------------------------

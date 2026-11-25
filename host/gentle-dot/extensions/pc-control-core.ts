@@ -36,7 +36,19 @@ export type HelperRequest =
 	| { op: "screenshot"; scale: number; window_id?: number }
 	| { op: "apps" }
 	| { op: "windows" }
-	| { op: "focus"; window_id: number };
+	| { op: "focus"; window_id: number }
+	| { op: "media"; action: MediaAction };
+
+/** T15: the closed media/volume set of jarvis-input's `media` op (C4: playerctl and wpctl). */
+export const MEDIA_ACTIONS = ["play_pause", "next", "previous", "volume_up", "volume_down", "mute", "unmute"] as const;
+export type MediaAction = (typeof MEDIA_ACTIONS)[number];
+
+function mediaAction(params: Record<string, unknown>): MediaAction {
+	const v = params.action;
+	if (typeof v !== "string" || !(MEDIA_ACTIONS as readonly string[]).includes(v))
+		throw new Error(`action must be one of: ${MEDIA_ACTIONS.join(", ")}`);
+	return v as MediaAction;
+}
 
 /** Most lines `formatApps` returns (plus one "… more" line), to keep the tool result small. */
 export const MAX_APP_LINES = 60;
@@ -82,9 +94,160 @@ export function buildRequest(tool: string, params: Record<string, unknown>): Hel
 			return { op: "windows" };
 		case "pc_focus_window":
 			return { op: "focus", window_id: windowId(params) };
+		case "pc_media":
+			return { op: "media", action: mediaAction(params) };
 		default:
 			throw new Error(`unknown pc-control tool: ${tool}`);
 	}
+}
+
+/** T10 (S9): a composite call = the app's desktop id plus the type/key request for its window. */
+export type CompositeRequest = {
+	app: string;
+	input: { op: "type"; text: string; intent: string } | { op: "key"; keys: string; intent: string };
+};
+
+/** pc_write_in / pc_run params → CompositeRequest; throws on missing fields before any helper call. */
+export function compositeRequest(tool: string, params: Record<string, unknown>): CompositeRequest {
+	switch (tool) {
+		case "pc_write_in":
+			return { app: str(params, "app"), input: { op: "type", text: str(params, "text"), intent: str(params, "intent") } };
+		case "pc_run":
+			return { app: str(params, "app"), input: { op: "key", keys: str(params, "keys"), intent: str(params, "intent") } };
+		default:
+			throw new Error(`unknown composite pc-control tool: ${tool}`);
+	}
+}
+
+/**
+ * Whether a niri window app_id belongs to a desktop id: equal (case-insensitive, `.desktop` dropped)
+ * or equal to its last dotted part (org.gnome.Nautilus → nautilus). A heuristic: the helper keeps
+ * every check on the window itself.
+ */
+export function appMatchesWindow(desktopId: string, appId: string): boolean {
+	const d = desktopId.trim().toLowerCase().replace(/\.desktop$/, "");
+	const a = appId.trim().toLowerCase();
+	if (!d || !a) return false;
+	return a === d || a === d.slice(d.lastIndexOf(".") + 1);
+}
+
+export type AppWindow = { id: number; app_id: string; title: string; focused: boolean };
+
+function parseWindowList(res: Record<string, unknown>): AppWindow[] {
+	const raw = Array.isArray(res.windows) ? res.windows : [];
+	return raw
+		.filter((w): w is Record<string, unknown> => typeof w === "object" && w !== null && Number.isSafeInteger((w as { id?: unknown }).id))
+		.map((w) => ({
+			id: w.id as number,
+			app_id: typeof w.app_id === "string" ? w.app_id : "",
+			title: typeof w.title === "string" ? w.title : "",
+			focused: w.focused === true,
+		}));
+}
+
+function pickAppWindow(windows: AppWindow[], app: string): AppWindow | undefined {
+	const hits = windows.filter((w) => appMatchesWindow(app, w.app_id));
+	return hits.find((w) => w.focused) ?? hits[0];
+}
+
+export type HelperCall = (req: HelperRequest) => Promise<Record<string, unknown>>;
+
+/** How long runInApp waits for a just-opened app's window, and how often it asks. */
+export const APP_WINDOW_WAIT_MS = 10_000;
+export const APP_WINDOW_POLL_MS = 400;
+
+/**
+ * T10 (S9): one tool call instead of list windows → list apps → open → list windows → type.
+ * Finds the app's window (focused one first); if there is none, opens the app and polls `windows`
+ * until a window whose app_id matches appears. It never guesses: a new window of another app_id
+ * (a dialog, another app) is not a target; it is named in the error so the agent can pick it with
+ * pc_type/pc_key and its window_id. Then sends the type/key request with that window_id, so every
+ * helper check (permission, blocklist, terminals, confirmation, focus return) still applies. Any
+ * helper refusal stops the chain and is thrown verbatim; an aborted signal stops it between steps.
+ */
+export async function runInApp(
+	call: HelperCall,
+	req: CompositeRequest,
+	opts: {
+		sleep?: (ms: number) => Promise<void>;
+		now?: () => number;
+		waitMs?: number;
+		pollMs?: number;
+		signal?: AbortSignal;
+	} = {},
+): Promise<{ window: AppWindow; opened: boolean; result: Record<string, unknown> }> {
+	const signal = opts.signal;
+	const checkAbort = () => {
+		if (signal?.aborted) throw new Error("cancelled");
+	};
+	const sleep =
+		opts.sleep ??
+		((ms: number) =>
+			new Promise<void>((r) => {
+				const onAbort = () => (clearTimeout(t), r());
+				const t = setTimeout(() => (signal?.removeEventListener("abort", onAbort), r()), ms);
+				signal?.addEventListener("abort", onAbort, { once: true });
+			}));
+	const now = opts.now ?? Date.now;
+	const waitMs = opts.waitMs ?? APP_WINDOW_WAIT_MS;
+	const pollMs = opts.pollMs ?? APP_WINDOW_POLL_MS;
+
+	const before = parseWindowList(await call({ op: "windows" }));
+	let target = pickAppWindow(before, req.app);
+	const opened = target === undefined;
+	if (!target) {
+		await call({ op: "open", app: req.app });
+		const known = new Set(before.map((w) => w.id));
+		const deadline = now() + waitMs;
+		let fresh: AppWindow[] = [];
+		for (;;) {
+			checkAbort();
+			const windows = parseWindowList(await call({ op: "windows" }));
+			fresh = windows.filter((w) => !known.has(w.id));
+			target = pickAppWindow(windows, req.app);
+			if (target || now() >= deadline) break;
+			await sleep(pollMs);
+		}
+		if (!target) {
+			const seen = fresh.length
+				? ` New windows: ${fresh.map((w) => `${w.id} · ${w.app_id || "?"} · ${w.title}`).join("; ")}; if one is the app, use pc_type/pc_key with its window_id.`
+				: " Check with pc_list_windows, then use pc_type/pc_key with its window_id.";
+			throw new Error(`Opened ${req.app}, but no window for it appeared within ${Math.round(waitMs / 1000)} s.${seen}`);
+		}
+	}
+	checkAbort();
+	const result = await call({ ...req.input, window_id: target.id });
+	return { window: target, opened, result };
+}
+
+/**
+ * T10: the current local date and time for the agent's context, so "qué hora es" / "qué día es"
+ * need no tool call. Unknown time zones fall back to UTC.
+ */
+export function clockContext(date: Date, timeZone?: string): string {
+	let tz = timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+	try {
+		new Intl.DateTimeFormat("en-US", { timeZone: tz });
+	} catch {
+		tz = "UTC";
+	}
+	const parts = Object.fromEntries(
+		new Intl.DateTimeFormat("en-US", {
+			timeZone: tz,
+			weekday: "long",
+			year: "numeric",
+			month: "2-digit",
+			day: "2-digit",
+			hour: "2-digit",
+			minute: "2-digit",
+			hourCycle: "h23",
+			timeZoneName: "longOffset",
+		})
+			.formatToParts(date)
+			.map((p) => [p.type, p.value]),
+	);
+	const offset = parts.timeZoneName === "GMT" ? "UTC+00:00" : String(parts.timeZoneName).replace("GMT", "UTC");
+	return `Current local date and time: ${parts.weekday} ${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute} (${tz}, ${offset}). Answer date and time questions from this; do not run a command to read the clock.`;
 }
 
 function fold(s: string): string {
@@ -213,8 +376,8 @@ export function requestHelper(
 	});
 }
 
-const TOOLS_HINT =
-	"Use the pc_list_apps, pc_open_app, pc_open_url, pc_list_windows, pc_focus_window, pc_type, pc_key and pc_screenshot tools.";
+export const TOOLS_HINT =
+	"Use the pc_write_in, pc_run, pc_list_apps, pc_open_app, pc_open_url, pc_list_windows, pc_focus_window, pc_type, pc_key and pc_screenshot tools.";
 const INPUT_TOOLS = /(?:^|[^\w.-])(wtype|grim|ydotoold?|dotoolc?|wlrctl)(?![\w-])/;
 const NIRI_ACTION = /(?:^|[^\w.-])niri\s+msg\b[^;&|\n]*?\saction\b/;
 const SYSTEMD_RUN = /(?:^|[^\w.-])systemd-run(?![\w-])/;

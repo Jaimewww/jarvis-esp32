@@ -69,7 +69,8 @@ sys.exit(int(read(name + "_exit", "0")))
 """
 
 EDITOR = {"id": 7, "app_id": "org.gnome.TextEditor", "title": "Notas"}
-BRAVE = {"id": 8, "app_id": "brave-browser", "title": "Inbox"}
+BRAVE = {"id": 8, "app_id": "brave-browser", "title": "Inbox (3) - Gmail"}  # web mail: Return asks (S10a)
+SEARCH = {"id": 12, "app_id": "brave-browser", "title": "recetas - Buscar con Google"}
 PNG = b"\x89PNG\r\n\x1a\nfake-image-bytes"
 
 
@@ -86,7 +87,8 @@ class Base(unittest.IsolatedAsyncioTestCase):
         self.fake.mkdir()
         bindir = root / "bin"
         bindir.mkdir()
-        for name in ["wtype", "grim", "niri", "gtk-launch", "xdg-open", "xdg-mime"]:
+        self.bindir = bindir
+        for name in ["wtype", "grim", "niri", "gtk-launch", "xdg-open", "xdg-mime", "playerctl", "wpctl"]:
             p = bindir / name
             p.write_text(FAKE)
             p.chmod(0o755)
@@ -589,10 +591,11 @@ class KeyTest(Base):
 
     async def test_key_pauses_after_escape(self) -> None:
         # VS Code Vim needs a moment to leave insert mode before the next keys (L25).
-        res = await self.agent({"op": "key", "keys": "Escape g g d shift+g", "intent": "modo vim"})
+        # (no "d": the Vim clear "g g d shift+g" asks first, S10a; ConfirmTest covers it)
+        res = await self.agent({"op": "key", "keys": "Escape g g shift+g", "intent": "modo vim"})
         self.assertTrue(res["ok"])
         [c] = self.calls("wtype")
-        tail = ["-k", "Escape", "-s", "300", "-k", "g", "-k", "g", "-k", "d", "-k", "0x47"]
+        tail = ["-k", "Escape", "-s", "300", "-k", "g", "-k", "g", "-k", "0x47"]
         self.assertEqual(c["argv"][-len(tail):], tail)
         self.assertEqual(c["argv"][:2], ["-p", "0xff1b"])  # Escape keeps keycode 1 (L24-L25)
 
@@ -616,7 +619,7 @@ class KeyTest(Base):
 
     async def test_key_without_libxkbcommon(self) -> None:
         with mock.patch.object(slots, "_xkb_keysym_from_name", None):
-            self.assertEqual(await self.agent({"op": "key", "keys": "ctrl+a Delete"}), {"ok": True})
+            self.assertEqual(await self.agent({"op": "key", "keys": "ctrl+l Delete"}), {"ok": True})
             res = await self.agent({"op": "key", "keys": "XF86AudioMute"})
         self.assertFalse(res["ok"])
         self.assertIn("libxkbcommon", res["error"])
@@ -627,6 +630,7 @@ class KeyTest(Base):
 
 
 class ConfirmTest(Base):
+    """S10a: the helper asks by the action (send in chat/mail, clear all, close), never by words."""
     confirm_timeout = 0.6
 
     async def asyncSetUp(self) -> None:
@@ -635,7 +639,7 @@ class ConfirmTest(Base):
 
     async def test_no_subscriber_denies_immediately(self) -> None:
         t = time.monotonic()
-        res = await self.agent({"op": "type", "text": "enviar ahora"})
+        res = await self.agent({"op": "key", "keys": "ctrl+a Delete"})
         self.assertFalse(res["ok"])
         self.assertLess(time.monotonic() - t, 0.5)
         self.assertEqual(self.calls("wtype"), [])
@@ -653,36 +657,44 @@ class ConfirmTest(Base):
             self.assertEqual(e["id"], events[0]["id"])
         return task, readers, events[0]
 
+    async def _no_prompt(self, r: asyncio.StreamReader) -> None:
+        with self.assertRaises(asyncio.TimeoutError):
+            await asyncio.wait_for(r.readline(), 0.2)
+
     async def test_allow(self) -> None:
-        task, [(r, w)], ev = await self._pending({"op": "type", "text": "Envíe el pedido", "intent": "x"})
+        self.focus(BRAVE)
+        task, [(r, w)], ev = await self._pending({"op": "type", "text": "Nos vemos\n", "intent": "mandar el mail"})
         self.assertEqual(ev["timeout_s"], 0.6)
-        self.assertIn("Envíe el pedido", ev["message"])
+        self.assertIn("Nos vemos", ev["message"])
+        self.assertIn("enviar en un chat o correo", ev["message"])
+        self.assertIn("mandar el mail", ev["message"])  # the intent is only shown
         self.assertEqual(await self.ask_on(r, w, {"op": "answer", "id": ev["id"], "allow": True}), {"ok": True})
         self.assertEqual(await task, {"ok": True})
         self.assertEqual(len(self.calls("wtype")), 1)
 
     async def test_deny(self) -> None:
-        task, [(r, w)], ev = await self._pending({"op": "key", "keys": "Return", "intent": "borrar fila"})
+        task, [(r, w)], ev = await self._pending({"op": "key", "keys": "alt+F4", "intent": "cerrar"})
+        self.assertIn("cerrar la ventana", ev["message"])
         await self.ask_on(r, w, {"op": "answer", "id": ev["id"], "allow": False})
         res = await task
         self.assertFalse(res["ok"])
         self.assertEqual(self.calls("wtype"), [])
 
     async def test_timeout(self) -> None:
-        task, _, _ = await self._pending({"op": "type", "text": "pay now"})
+        task, _, _ = await self._pending({"op": "key", "keys": "ctrl+q"})
         res = await asyncio.wait_for(task, 3)
         self.assertFalse(res["ok"])
         self.assertEqual(self.calls("wtype"), [])
 
     async def test_first_answer_wins(self) -> None:
-        task, [(r1, w1), (r2, w2)], ev = await self._pending({"op": "type", "text": "comprar"}, subs=2)
+        task, [(r1, w1), (r2, w2)], ev = await self._pending({"op": "key", "keys": "ctrl+w"}, subs=2)
         self.assertEqual(await self.ask_on(r1, w1, {"op": "answer", "id": ev["id"], "allow": True}), {"ok": True})
         late = await self.ask_on(r2, w2, {"op": "answer", "id": ev["id"], "allow": False})
         self.assertFalse(late["ok"])
         self.assertEqual(await task, {"ok": True})
 
     async def test_answer_validation(self) -> None:
-        task, [(r, w)], ev = await self._pending({"op": "type", "text": "delete all"})
+        task, [(r, w)], ev = await self._pending({"op": "key", "keys": "ctrl+a BackSpace"})
         for bad in [{"op": "answer", "id": ev["id"], "allow": "yes"}, {"op": "answer", "id": ev["id"]},
                     {"op": "answer", "id": "nope", "allow": True}, {"op": "answer", "allow": True}]:
             self.assertFalse((await self.ask_on(r, w, bad))["ok"], bad)
@@ -691,14 +703,14 @@ class ConfirmTest(Base):
         self.assertFalse((await task)["ok"])
 
     async def test_subscribers_gone_denies(self) -> None:
-        task, [(r, w)], _ = await self._pending({"op": "type", "text": "send it"})
+        task, [(r, w)], _ = await self._pending({"op": "key", "keys": "ctrl+a ctrl+x"})
         w.close()
         t = time.monotonic()
         self.assertFalse((await asyncio.wait_for(task, 3))["ok"])
         self.assertLess(time.monotonic() - t, 0.5)
 
     async def test_revoke_while_pending_denies(self) -> None:
-        task, [(r, w)], ev = await self._pending({"op": "type", "text": "send it"})
+        task, [(r, w)], ev = await self._pending({"op": "key", "keys": "Escape g g d shift+g"})
         await self.control({"op": "revoke"})
         self.assertFalse((await task)["ok"])
         # even a late allow cannot type
@@ -707,36 +719,65 @@ class ConfirmTest(Base):
 
     async def test_focus_recheck_after_confirm(self) -> None:
         self.focus(EDITOR, {"id": 50, "app_id": "org.keepassxc.KeePassXC", "title": "db"})
-        task, [(r, w)], ev = await self._pending({"op": "type", "text": "send it"})
+        task, [(r, w)], ev = await self._pending({"op": "key", "keys": "ctrl+w"})
         await self.ask_on(r, w, {"op": "answer", "id": ev["id"], "allow": True})
         self.assertFalse((await task)["ok"])
         self.assertEqual(self.calls("wtype"), [])
 
-    async def test_risky_variants_confirm(self) -> None:
-        for text in ["BORRAR todo", "e\u0301nviar", "\uff53\uff45\uff4e\uff44", "se\u200bnd", "Submit", "eliminados"]:
-            task, [(r, w)], ev = await self._pending({"op": "type", "text": text})
+    async def test_clear_and_close_ask(self) -> None:
+        for keys, reason in [("ctrl+a Delete", "borrar todo el contenido"),
+                             ("ctrl+a BackSpace", "borrar todo el contenido"),
+                             ("ctrl+a ctrl+x", "borrar todo el contenido"),
+                             ("Escape g g d shift+g", "borrar todo el contenido"),
+                             ("alt+F4", "cerrar la ventana"), ("ctrl+w", "cerrar la ventana"),
+                             ("ctrl+q", "cerrar la ventana")]:
+            task, [(r, w)], ev = await self._pending({"op": "key", "keys": keys, "intent": "x"})
+            self.assertIn(reason, ev["message"], keys)
+            self.assertIn("org.gnome.TextEditor", ev["message"], keys)
             await self.ask_on(r, w, {"op": "answer", "id": ev["id"], "allow": False})
-            self.assertFalse((await task)["ok"], text)
+            self.assertFalse((await task)["ok"], keys)
             w.close()
         self.assertEqual(self.calls("wtype"), [])
 
-    async def test_intent_risky_confirms(self) -> None:
-        task, [(r, w)], ev = await self._pending({"op": "key", "keys": "ctrl+v", "intent": "pagar factura"})
-        await self.ask_on(r, w, {"op": "answer", "id": ev["id"], "allow": True})
-        self.assertTrue((await task)["ok"])
+    async def test_words_never_ask(self) -> None:
+        # S10a (2): risky words in the text or the intent no longer ask; a subscriber is there to
+        # answer, so a prompt would show up on it.
+        r, _ = await self.subscribe()
+        n = 0
+        for req in [{"op": "type", "text": "borrar todo"}, {"op": "type", "text": "Envíe el pedido"},
+                    {"op": "type", "text": "pay now", "intent": "pagar la factura"},
+                    {"op": "type", "text": "delete all", "intent": "enviar y borrar"},
+                    {"op": "key", "keys": "a", "intent": "Entrar en modo inserción sin borrar contenido."},
+                    {"op": "key", "keys": "ctrl+v", "intent": "pagar factura"},
+                    {"op": "key", "keys": "Delete", "intent": "borrar una letra"}]:
+            self.assertEqual(await self.agent(req), {"ok": True}, req)
+            n += 1
+            self.assertEqual(len(self.calls("wtype")), n, req)
+        await self._no_prompt(r)
+
+    async def test_words_never_ask_in_chat_either(self) -> None:
+        self.focus({"id": 9, "app_id": "org.telegram.desktop", "title": "Telegram"})
+        r, _ = await self.subscribe()
+        self.assertEqual(await self.agent({"op": "type", "text": "enviar el pago", "intent": "enviar"}), {"ok": True})
+        await self._no_prompt(r)
+        self.assertEqual(len(self.calls("wtype")), 1)
 
     async def test_lookalike_denied_outright(self) -> None:
-        await self.subscribe()
+        r, _ = await self.subscribe()
         res = await self.agent({"op": "type", "text": "s\u0435nd"})
         self.assertFalse(res["ok"])
+        res = await self.agent({"op": "key", "keys": "a", "intent": "b\u043errar"})
+        self.assertFalse(res["ok"])
+        await self._no_prompt(r)
         self.assertEqual(self.calls("wtype"), [])
 
-    async def test_return_in_messaging(self) -> None:
+    async def test_return_in_chat_and_mail(self) -> None:
         self.focus(BRAVE)
         for req in [{"op": "key", "keys": "Return"}, {"op": "key", "keys": "ctrl+Return"},
                     {"op": "type", "text": "hola\n"}]:
             task, [(r, w)], ev = await self._pending(req)
             self.assertIn("brave-browser", ev["message"])
+            self.assertIn("enviar en un chat o correo", ev["message"])
             await self.ask_on(r, w, {"op": "answer", "id": ev["id"], "allow": False})
             self.assertFalse((await task)["ok"], req)
             w.close()
@@ -746,6 +787,202 @@ class ConfirmTest(Base):
             self.assertFalse((await self.agent({"op": "key", "keys": keys}))["ok"], keys)
         self.assertEqual(self.calls("wtype"), [])
         self.assertTrue((await self.agent({"op": "type", "text": "hola"}))["ok"])  # no Return: fine
+
+    async def test_title_change_without_window_id_denies(self) -> None:
+        # L17 (c): the focused window's title changed between the check and wtype.
+        self.focus(SEARCH, {**SEARCH, "title": "WhatsApp"})
+        r, _ = await self.subscribe()
+        res = await self.agent({"op": "type", "text": "hola\n"})
+        self.assertFalse(res["ok"])
+        self.assertIn("cambió", res["error"])
+        await self._no_prompt(r)
+        self.assertEqual(self.calls("wtype"), [])
+
+    async def test_tab_switch_then_return_in_a_browser_asks(self) -> None:
+        self.focus(SEARCH)  # a plain page: the switched-to tab may be web chat
+        for keys in ["ctrl+Tab Return", "ctrl+2 Return"]:
+            task, [(r, w)], ev = await self._pending({"op": "key", "keys": keys})
+            self.assertIn("enviar en un chat o correo", ev["message"], keys)
+            await self.ask_on(r, w, {"op": "answer", "id": ev["id"], "allow": False})
+            self.assertFalse((await task)["ok"], keys)
+            w.close()
+        self.assertEqual(self.calls("wtype"), [])
+
+    async def test_equivalents_ask(self) -> None:
+        # L17 (d): Tab then space presses Send in chat; KP_Delete, ctrl+Home ctrl+shift+End;
+        # ctrl+F4 and the niri close/quit binds.
+        cases = [({"id": 9, "app_id": "org.telegram.desktop", "title": "Telegram"}, "Tab space",
+                  "enviar en un chat o correo"),
+                 (EDITOR, "ctrl+a KP_Delete", "borrar todo el contenido"),
+                 (EDITOR, "ctrl+Home ctrl+shift+End Delete", "borrar todo el contenido"),
+                 (EDITOR, "ctrl+F4", "cerrar la ventana"), (EDITOR, "super+w", "cerrar la ventana"),
+                 (EDITOR, "super+shift+e", "cerrar la ventana"), (EDITOR, "ctrl+alt+Delete", "cerrar la ventana")]
+        for window, keys, reason in cases:
+            self.focus(window)
+            task, [(r, w)], ev = await self._pending({"op": "key", "keys": keys})
+            self.assertIn(reason, ev["message"], keys)
+            await self.ask_on(r, w, {"op": "answer", "id": ev["id"], "allow": False})
+            self.assertFalse((await task)["ok"], keys)
+            w.close()
+        self.assertEqual(self.calls("wtype"), [])
+
+    async def test_typed_vim_clear_asks(self) -> None:
+        # L17 (b)
+        for text in ["ggdG", ":%d\n"]:
+            task, [(r, w)], ev = await self._pending({"op": "type", "text": text})
+            self.assertIn("borrar todo el contenido", ev["message"], text)
+            await self.ask_on(r, w, {"op": "answer", "id": ev["id"], "allow": False})
+            self.assertFalse((await task)["ok"], text)
+            w.close()
+        self.assertEqual(self.calls("wtype"), [])
+
+    async def test_return_elsewhere_does_not_ask(self) -> None:
+        r, _ = await self.subscribe()
+        for window in [SEARCH, EDITOR]:
+            self.focus(window)
+            self.assertEqual(await self.agent({"op": "key", "keys": "Return"}), {"ok": True}, window)
+            self.assertEqual(await self.agent({"op": "type", "text": "hola\n"}), {"ok": True}, window)
+        await self._no_prompt(r)
+        self.assertEqual(len(self.calls("wtype")), 4)
+
+
+class CrossCallTest(Base):
+    """L17 (a): clear-all across calls on the same window, from an in-memory tail."""
+    confirm_timeout = 0.6
+
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        await self.grant()
+        self.helper._limiter = server.checks.RateLimiter(100, server.RATE_WINDOW_S)
+
+    async def _asks(self, req: dict[str, Any], allow: bool, reason: str = "borrar todo el contenido") -> dict:
+        r, w = await self.subscribe()
+        task = asyncio.create_task(self.agent(req))
+        ev = await self.next_event(r)
+        self.assertEqual(ev["event"], "confirm")
+        self.assertIn(reason, ev["message"])
+        await self.ask_on(r, w, {"op": "answer", "id": ev["id"], "allow": allow})
+        res = await task
+        w.close()
+        return res
+
+    async def _no_prompt(self, req: dict[str, Any]) -> dict:
+        r, w = await self.subscribe()
+        res = await self.agent(req)
+        with self.assertRaises(asyncio.TimeoutError):
+            await asyncio.wait_for(r.readline(), 0.2)
+        w.close()
+        return res
+
+    async def test_select_all_then_delete_next_call(self) -> None:
+        self.assertEqual(await self._no_prompt({"op": "key", "keys": "ctrl+a"}), {"ok": True})
+        self.assertEqual(len(self.calls("wtype")), 1)
+        tail = self.helper._tails.get(EDITOR["id"])
+        self.assertTrue(tail.select_all)
+        # denied: no wtype, and the tail stays as it was, so the next Delete asks again
+        self.assertFalse((await self._asks({"op": "key", "keys": "Delete"}, allow=False))["ok"])
+        self.assertEqual(len(self.calls("wtype")), 1)
+        self.assertEqual(self.helper._tails.get(EDITOR["id"]), tail)
+        self.assertEqual(await self._asks({"op": "key", "keys": "BackSpace"}, allow=True), {"ok": True})
+        self.assertEqual(len(self.calls("wtype")), 2)
+        # the selection was consumed: a further Delete is a plain Delete
+        self.assertEqual(await self._no_prompt({"op": "key", "keys": "Delete"}), {"ok": True})
+        self.assertEqual(len(self.calls("wtype")), 3)
+
+    async def test_vim_clear_split_across_calls(self) -> None:
+        self.assertEqual(await self._no_prompt({"op": "key", "keys": "Escape g g"}), {"ok": True})
+        self.assertFalse((await self._asks({"op": "key", "keys": "d shift+g"}, allow=False))["ok"])
+        self.assertEqual(len(self.calls("wtype")), 1)
+
+    async def test_type_over_pending_select_all(self) -> None:
+        self.assertEqual(await self._no_prompt({"op": "key", "keys": "ctrl+a"}), {"ok": True})
+        self.assertFalse((await self._asks({"op": "type", "text": "hola"}, allow=False))["ok"])
+        self.assertEqual(len(self.calls("wtype")), 1)
+
+    async def test_another_window_keeps_the_tail(self) -> None:
+        # T16: ctrl+a on A, any action on B, then Delete on A still asks
+        self.assertEqual(await self._no_prompt({"op": "key", "keys": "ctrl+a"}), {"ok": True})
+        self.focus(NOTEPAD)
+        self.assertEqual(await self._no_prompt({"op": "key", "keys": "Delete"}), {"ok": True})
+        self.assertEqual(await self._no_prompt({"op": "type", "text": "hola"}), {"ok": True})
+        self.focus(EDITOR)
+        tail = self.helper._tails.get(EDITOR["id"])
+        self.assertFalse((await self._asks({"op": "key", "keys": "Delete"}, allow=False))["ok"])
+        self.assertEqual(len(self.calls("wtype")), 3)
+        self.assertEqual(self.helper._tails.get(EDITOR["id"]), tail)
+        self.assertEqual(await self._asks({"op": "key", "keys": "Delete"}, allow=True), {"ok": True})
+        self.assertEqual(len(self.calls("wtype")), 4)
+
+    async def test_paste_return_tab_over_pending_select_all(self) -> None:
+        for second in [{"op": "key", "keys": "ctrl+v"}, {"op": "key", "keys": "shift+Insert"},
+                       {"op": "key", "keys": "Return"}, {"op": "key", "keys": "Tab"},
+                       {"op": "type", "text": "\n"}, {"op": "type", "text": "\t"}]:
+            with self.subTest(second=second):
+                self.helper._tails = server.checks.KeyTails()
+                self.assertEqual(await self._no_prompt({"op": "key", "keys": "ctrl+a"}), {"ok": True})
+                n = len(self.calls("wtype"))
+                self.assertFalse((await self._asks(second, allow=False))["ok"])
+                self.assertEqual(len(self.calls("wtype")), n)
+        self.helper._tails = server.checks.KeyTails()
+        self.assertEqual(await self._no_prompt({"op": "key", "keys": "ctrl+a ctrl+c"}), {"ok": True})
+
+    @staticmethod
+    def _gg_at_chunk_end() -> str:
+        """Text typed in two wtype runs whose first run ends with "gg"."""
+        pool = [chr(c) for c in range(0x21, 0x7F) if chr(c) not in "gdG"] + list("áéíóúñ")
+        for n in range(40, len(pool)):
+            text = "".join(pool[:n]) + "gg" + "".join(pool[n:])
+            argvs = slots.type_argvs(text)
+            if len(argvs) == 2 and argvs[0][argvs[0].index("-d") + 2:].count("-k") == n + 2:
+                return text
+        raise AssertionError("no split found")
+
+    async def test_cut_text_records_only_the_typed_part(self) -> None:
+        text = self._gg_at_chunk_end()
+        self.focus(EDITOR, EDITOR, NOTEPAD)  # check, run 1, focus moved before run 2
+        res = await self._no_prompt({"op": "type", "text": text})
+        self.assertFalse(res["ok"])
+        self.assertIn("se cortó", res["error"])
+        self.assertEqual(len(self.calls("wtype")), 1)
+        self.focus(EDITOR)
+        # only the first run reached Vim, ending in g g: d shift+g clears all
+        self.assertFalse((await self._asks({"op": "key", "keys": "d shift+g"}, allow=False))["ok"])
+        self.assertEqual(len(self.calls("wtype")), 1)
+
+    async def test_failed_run_keeps_pending_select_all(self) -> None:
+        self.assertEqual(await self._no_prompt({"op": "key", "keys": "ctrl+a"}), {"ok": True})
+        text = self._gg_at_chunk_end()
+        real = self.helper._run
+
+        async def run(argv: list[str], **kw: Any) -> tuple[int, bytes]:
+            if argv[0] == "wtype" and len(self.calls("wtype")) == 1:
+                await real(argv, **kw)
+                return 1, b""  # the first run of the text fails
+            return await real(argv, **kw)
+
+        with mock.patch.object(self.helper, "_run", run):
+            res = await self._asks({"op": "type", "text": text}, allow=True)
+        self.assertFalse(res["ok"])
+        self.assertEqual(len(self.calls("wtype")), 2)  # ctrl+a, the failed run; no second run
+        # the failed run may have typed nothing: the select-all may still be there, Delete asks
+        self.assertFalse((await self._asks({"op": "key", "keys": "Delete"}, allow=False))["ok"])
+        self.assertEqual(len(self.calls("wtype")), 2)
+
+    async def test_tail_expires(self) -> None:
+        now = [1000.0]
+        self.helper._tails = server.checks.KeyTails(ttl=60, clock=lambda: now[0])
+        self.assertEqual(await self._no_prompt({"op": "key", "keys": "ctrl+a"}), {"ok": True})
+        now[0] += 61
+        self.assertEqual(await self._no_prompt({"op": "key", "keys": "Delete"}), {"ok": True})
+        self.assertEqual(len(self.calls("wtype")), 2)
+
+    async def test_denial_before_wtype_leaves_tail(self) -> None:
+        self.assertEqual(await self._no_prompt({"op": "key", "keys": "g g"}), {"ok": True})
+        tail = self.helper._tails.get(EDITOR["id"])
+        self.focus(EDITOR, {"id": 99, "app_id": "x", "title": "y"})  # focus moves before wtype
+        self.assertFalse((await self._no_prompt({"op": "key", "keys": "i"}))["ok"])
+        self.assertEqual(self.helper._tails.get(EDITOR["id"]), tail)
+        self.assertEqual(len(self.calls("wtype")), 1)
 
 
 class RevokeKillsTest(Base):
@@ -817,6 +1054,7 @@ class ScreenshotTest(Base):
 GHOSTTY = {"id": 3, "app_id": "com.mitchellh.ghostty", "title": "jarvis"}
 KEEPASS = {"id": 5, "app_id": "org.keepassxc.KeePassXC", "title": "db.kdbx"}
 NOTEPAD = {"id": 11, "app_id": "dev.duxlabs.shell.notepad", "title": "Sin título"}
+WHATSAPP_WEB = {"id": 14, "app_id": "brave-browser", "title": "(1) WhatsApp"}
 
 
 class AppsTest(Base):
@@ -1101,6 +1339,68 @@ class TypeIntoWindowTest(Base):
         self.focus(BRAVE, NOTEPAD)  # focused Brave would need a confirmation; the target does not
         self.assertTrue((await self.agent({"op": "key", "keys": "Return", "window_id": 11}))["ok"])
 
+    async def test_return_uses_target_browser_title_not_focused(self) -> None:
+        # L17 (e): same browser app_id for both, only the target's title tells web chat apart.
+        self.windows({**SEARCH, "focused": True}, BRAVE, WHATSAPP_WEB, NOTEPAD)
+        self.focus(SEARCH)  # a plain page has focus; the target is Gmail
+        r, w = await self.subscribe()
+        task = asyncio.create_task(self.agent({"op": "key", "keys": "Return", "window_id": 8}))
+        ev = await self.next_event(r)
+        self.assertIn("enviar en un chat o correo", ev["message"])
+        self.assertIn("Gmail", ev["message"])
+        await self.ask_on(r, w, {"op": "answer", "id": ev["id"], "allow": False})
+        self.assertFalse((await task)["ok"])
+        self.assertEqual(self.calls("wtype"), [])
+
+    async def test_return_on_plain_target_while_whatsapp_has_focus(self) -> None:
+        self.windows({**WHATSAPP_WEB, "focused": True}, BRAVE, SEARCH, NOTEPAD)
+        self.focus(WHATSAPP_WEB, SEARCH)
+        r, _ = await self.subscribe()
+        res = await self.agent({"op": "key", "keys": "Return", "window_id": 12})
+        self.assertEqual(res, {"ok": True, "window_id": 12})
+        with self.assertRaises(asyncio.TimeoutError):
+            await asyncio.wait_for(r.readline(), 0.2)
+        self.assertEqual(self.order(), ["focus 12", "wtype", "focus 14"])
+
+    # L17 (c): the title is read again after focusing, right before wtype.
+    async def test_title_turned_into_chat_after_focus_denies(self) -> None:
+        self.windows({**GHOSTTY, "focused": True}, SEARCH)
+        self.focus(GHOSTTY, {**SEARCH, "title": "WhatsApp"})
+        r, _ = await self.subscribe()
+        res = await self.agent({"op": "key", "keys": "Return", "window_id": 12})
+        self.assertFalse(res["ok"])
+        self.assertIn("cambió", res["error"])
+        self.assertIn("enviar en un chat o correo", res["error"])
+        with self.assertRaises(asyncio.TimeoutError):  # no second prompt, a clear denial
+            await asyncio.wait_for(r.readline(), 0.2)
+        self.assertEqual(self.calls("wtype"), [])
+        self.assertEqual(self.order(), ["focus 12", "focus 3"])
+
+    async def test_title_race_adds_a_reason_after_confirming_another(self) -> None:
+        self.windows({**GHOSTTY, "focused": True}, SEARCH)
+        self.focus(GHOSTTY, {**SEARCH, "title": "Inbox - Gmail"})
+        r, w = await self.subscribe()
+        task = asyncio.create_task(self.agent({"op": "key", "keys": "ctrl+a Delete Return", "window_id": 12}))
+        ev = await self.next_event(r)
+        self.assertIn("borrar todo el contenido", ev["message"])
+        self.assertNotIn("enviar", ev["message"])
+        await self.ask_on(r, w, {"op": "answer", "id": ev["id"], "allow": True})
+        res = await task
+        self.assertFalse(res["ok"])
+        self.assertIn("enviar en un chat o correo", res["error"])
+        with self.assertRaises(asyncio.TimeoutError):  # the confirmed reason is not asked again
+            await asyncio.wait_for(r.readline(), 0.2)
+        self.assertEqual(self.calls("wtype"), [])
+
+    async def test_title_unchanged_after_confirm_types(self) -> None:
+        self.focus(GHOSTTY, {**BRAVE, "title": "Otra bandeja - Gmail"})  # still mail: already confirmed
+        r, w = await self.subscribe()
+        task = asyncio.create_task(self.agent({"op": "key", "keys": "Return", "window_id": 8}))
+        ev = await self.next_event(r)
+        await self.ask_on(r, w, {"op": "answer", "id": ev["id"], "allow": True})
+        self.assertEqual(await task, {"ok": True, "window_id": 8})
+        self.assertEqual(len(self.calls("wtype")), 1)
+
     async def test_requires_permission(self) -> None:
         await self.control({"op": "revoke"})
         res = await self.agent({"op": "type", "text": "hola", "window_id": 11})
@@ -1187,6 +1487,78 @@ class RevokeWindowTest(Base):
         with mock.patch.object(self.helper, "_list_windows", flaky), self.assertLogs("jarvis_input"):
             res = await self.agent({"op": "screenshot", "window_id": 11})
         self.assertEqual(res, {"ok": False, "error": "grim falló (código 1)"})  # the action's error
+
+
+class MediaTest(Base):
+    """T15: media/volume through playerctl/wpctl (fakes on PATH; the real volume never changes)."""
+
+    SINK = "@DEFAULT_AUDIO_SINK@"
+
+    async def test_each_action_runs_its_fixed_argv_without_permission_or_focus(self) -> None:
+        self.focus({"exit": 1})  # no readable focused window: media must not care
+        cases = [("play_pause", "playerctl", ["play-pause"]), ("next", "playerctl", ["next"]),
+                 ("previous", "playerctl", ["previous"]),
+                 ("volume_up", "wpctl", ["set-volume", "-l", "1.0", self.SINK, "5%+"]),
+                 ("volume_down", "wpctl", ["set-volume", self.SINK, "5%-"]),
+                 ("mute", "wpctl", ["set-mute", self.SINK, "1"]),
+                 ("unmute", "wpctl", ["set-mute", self.SINK, "0"])]
+        for action, _, _ in cases:
+            self.assertEqual(await self.agent({"op": "media", "action": action}), {"ok": True}, action)
+        self.assertEqual([(c["name"], c["argv"]) for c in self.calls()], [(n, a) for _, n, a in cases])
+
+    async def test_works_with_permission_and_after_revoke(self) -> None:
+        await self.grant()
+        self.assertTrue((await self.agent({"op": "media", "action": "volume_up"}))["ok"])
+        await self.control({"op": "revoke"})
+        self.assertTrue((await self.agent({"op": "media", "action": "volume_down"}))["ok"])
+        self.assertEqual(len(self.calls("wpctl")), 2)
+
+    async def test_rejects_unknown_or_missing_action(self) -> None:
+        for req in [{"op": "media"}, {"op": "media", "action": "stop"}, {"op": "media", "action": 3},
+                    {"op": "media", "action": "volume_up --set 200%"}]:
+            res = await self.agent(req)
+            self.assertFalse(res["ok"], req)
+            self.assertIn("play_pause", res["error"])
+        self.assertEqual(self.calls(), [])
+
+    async def test_no_player(self) -> None:
+        (self.fake / "playerctl_exit").write_text("1")  # playerctl: "No players found"
+        res = await self.agent({"op": "media", "action": "play_pause"})
+        self.assertFalse(res["ok"])
+        self.assertIn("reproductor", res["error"])
+
+    async def test_wpctl_failure(self) -> None:
+        (self.fake / "wpctl_exit").write_text("1")
+        res = await self.agent({"op": "media", "action": "mute"})
+        self.assertFalse(res["ok"])
+        self.assertIn("volumen", res["error"])
+
+    async def test_missing_tool_is_named(self) -> None:
+        (self.bindir / "playerctl").unlink()
+        (self.bindir / "wpctl").unlink()
+        with mock.patch.dict(os.environ, {"PATH": str(self.bindir)}):
+            for action, tool in [("next", "playerctl"), ("volume_up", "wpctl")]:
+                res = await self.agent({"op": "media", "action": action})
+                self.assertFalse(res["ok"], action)
+                self.assertIn(tool, res["error"])
+                self.assertIn("instal", res["error"])
+        self.assertEqual(self.calls(), [])
+
+    async def test_logged(self) -> None:
+        with self.assertLogs("jarvis_input", level="INFO") as logs:
+            await self.agent({"op": "media", "action": "next"})
+        self.assertTrue(any("media next" in line for line in logs.output), logs.output)
+
+    async def test_rate_limit(self) -> None:
+        r, w = await self.connect(self.agent_path)
+        results = [await self.ask_on(r, w, {"op": "media", "action": "volume_up"}) for _ in range(11)]
+        self.assertTrue(all(x["ok"] for x in results[:10]))
+        self.assertIn("10 acciones por segundo", results[-1]["error"])
+        self.assertEqual(len(self.calls("wpctl")), 10)
+
+    async def test_control_socket_does_not_know_it(self) -> None:
+        res = await self.control({"op": "media", "action": "next"})
+        self.assertIn("op desconocida", res["error"])
 
 
 class ScreenshotWindowTest(Base):

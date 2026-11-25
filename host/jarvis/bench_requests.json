@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "about": "Fixed request set of python -m jarvis.bench (S5, docs/latencia-propuestas.md 'Cómo medimos'). desktop: true acts on the real desktop and runs only with --include-pc.",
+  "requests": [
+    {"id": "hora", "kind": "question", "desktop": false, "text": "¿Qué hora es?"},
+    {"id": "dia", "kind": "question", "desktop": false, "text": "¿Qué día es hoy?"},
+    {"id": "cuenta", "kind": "question", "desktop": false, "text": "¿Cuánto es 17 por 23?"},
+    {"id": "traduci", "kind": "question", "desktop": false, "text": "Traducí «good morning» al español."},
+    {"id": "capital", "kind": "question", "desktop": false, "text": "¿Cuál es la capital de Australia?"},
+    {"id": "spotify", "kind": "catalog", "desktop": true, "text": "Abrí Spotify."},
+    {"id": "volumen-sube", "kind": "catalog", "desktop": true, "text": "Subí el volumen."},
+    {"id": "volumen-baja", "kind": "catalog", "desktop": true, "text": "Bajá el volumen."},
+    {"id": "pausa", "kind": "catalog", "desktop": true, "text": "Pausá la música."},
+    {"id": "siguiente", "kind": "catalog", "desktop": true, "text": "Pasá a la siguiente canción."},
+    {"id": "navegador", "kind": "catalog", "desktop": true, "text": "Abrí el navegador."},
+    {"id": "pc-vscode", "kind": "pc", "desktop": true, "text": "Abrí VS Code y escribí «hola mundo» en un archivo nuevo, sin guardarlo."},
+    {"id": "pc-buscar", "kind": "pc", "desktop": true, "text": "Abrí el navegador y buscá el clima de hoy en Quito."},
+    {"id": "pc-archivos", "kind": "pc", "desktop": true, "text": "Abrí el explorador de archivos y entrá a la carpeta Descargas."}
+  ]
+}

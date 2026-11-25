@@ -8,8 +8,9 @@ Jarvis TUI and `jarvis-stop` grant, revoke and confirm over a second socket the 
 reach. It replaces the S12 permission file, which the agent could forge.
 
 * `jarvis_input/checks.py` — pure checks: key parsing (ported from
-  `host/gentle-dot/extensions/pc-control-core.ts`), text limits, risky words, blocklist,
-  Return-confirmation apps, `open` validation, rate limiter.
+  `host/gentle-dot/extensions/pc-control-core.ts`), text limits, lookalike letters, blocklist,
+  the rule table of actions that ask first (`confirm_reasons`, S10a), `open` validation, rate
+  limiter.
 * `jarvis_input/launch.py` — `open` (S15): finds the desktop entry, parses `Exec`, and refuses
   anything the sandboxed daemon could rewrite. Reads files only.
 * `jarvis_input/server.py` — the two sockets, the in-memory permission, confirmations, and the
@@ -62,6 +63,7 @@ All agent requests share a rate limit of **10 per second** (sliding window).
 | `{"op":"apps","query":"notas"}` (S14) | no | `{"ok":true,"apps":[{"id":"<desktop-id>","name":"…"}]}` |
 | `{"op":"windows"}` (S14) | yes | `{"ok":true,"windows":[{"id":11,"app_id":"…","title":"…","focused":false}]}` |
 | `{"op":"focus","window_id":11}` (S14) | yes | `{"ok":true}` |
+| `{"op":"media","action":"volume_up"}` (T15) | no | `{"ok":true}` |
 
 * `open` (S15; see [`open` hardening](#open-hardening-s15)): exactly one of `app` or `url`.
   `app` matches `[A-Za-z0-9][A-Za-z0-9._-]{0,254}`; `url` must be `http://` or `https://` with a
@@ -147,8 +149,8 @@ everything else as `-k`: key names, or `0x…` keysyms for text, so argv has no 
   `niri msg action focus-window --id <id>` and polls `focused-window` for up to 500 ms: ok only
   once that window is focused, otherwise an error.
 * `type`/`key` with `window_id` (S16), all under the action lock: the target gets the `focus`
-  checks (listed, not blocklisted, not a terminal); risky-word and Return-in-browser
-  confirmations name the **target** window and are asked before anything is focused (so the user
+  checks (listed, not blocklisted, not a terminal); confirmations (S10a, step 5 below) name
+  and are judged on the **target** window and are asked before anything is focused (so the user
   can answer in the TUI); then the currently focused window id is remembered; if the target is
   not already focused it is focused, confirmed (≤ 500 ms) and given 400 ms to settle (Electron
   apps such as VS Code drop keys sent right after they regain focus), focus is re-checked against the target right before `wtype`,
@@ -158,6 +160,19 @@ everything else as `-k`: key names, or `0x…` keysyms for text, so argv has no 
   flow for typing: `apps` + `open` (or `windows`), then `type`/`key` with `window_id`; `focus`
   only to bring a window forward for the user.
 * `windows`, `focus`, `type`, `key` and `screenshot` run one at a time (an action lock).
+* `media` (T15): `action` is one of a closed set, each with a fixed argv (no caller text reaches it):
+  `play_pause`/`next`/`previous` → `playerctl play-pause|next|previous` (the active player);
+  `volume_up` → `wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+` (capped at 100%),
+  `volume_down` → `wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-`, `mute`/`unmute` → `wpctl set-mute
+  @DEFAULT_AUDIO_SINK@ 1|0` (explicit, never a toggle). It never sends keys, so it works with any window focused (or none)
+  — unlike `key` with `XF86Audio*`, which goes to the focused window and is refused in terminals
+  (odd/tasks/latencia.md L8). **No permission and no confirmation:** these are catalog actions,
+  low risk by D8 (like `open`), and must work while `/control` is off; the shared rate limit
+  still applies, no action lock (it does not touch focus or input), and each run is logged as
+  `media <action>`. Errors: an unknown action (lists the valid ones); `playerctl`/`wpctl` not on
+  the helper's `PATH` ("Falta … Pídele al usuario que lo instale"); `playerctl` exiting non-zero
+  ("No hay ningún reproductor activo…", e.g. no player running); `wpctl` exiting non-zero.
+  Timeout 3 s.
 
 ### `$XDG_RUNTIME_DIR/jarvis-control/control.sock` (TUI and `jarvis-stop` only)
 
@@ -228,14 +243,44 @@ For `type` and `key`, in order:
    prompts, desktop portals, GParted; **and terminals** (foot, kitty, Alacritty, Ghostty,
    WezTerm, GNOME Console/Terminal, Konsole, xterm, …), because typing into a terminal would
    run commands outside the daemon's sandbox and could drive the Jarvis TUI itself (`/control on`).
-5. Confirmation through `control.sock` when the text or intent has a word starting with a
-   risky stem (`envi`, `pag`, `compr`, `elimin`, `borr`, `vaci`, `submit`, `send`, `pay`, `buy`,
-   `delet`, `clear`, `wipe`; text is NFKC-normalized, zero-width/format characters dropped, accents stripped,
-   case-folded), or when Return/KP_Enter (any modifiers, or a newline in `text`) goes to a
-   browser, mail or messaging app (Brave, Firefox, Chromium/Chrome, Zen, Thunderbird,
-   Evolution, Telegram, Signal, Discord, Slack, WhatsApp, Element, Teams, …). No subscriber =
-   denied immediately; no answer within 30 s = denied; subscribers all gone = denied.
+5. Confirmation through `control.sock` **by the action, never by words** (S10a,
+   `checks.confirm_reasons`). It asks when:
+   * **Sending in a chat or mail** (“enviar en un chat o correo”): any Return keysym anywhere in
+     the keys (`Return`, `ctrl+Return`, `KP_Enter`, `ISO_Enter`, …, any modifiers) or a newline
+     in `text`, going to a mail or messaging app (Thunderbird, Evolution, Geary, Telegram,
+     Signal, Discord, Slack, WhatsApp, Element, Teams, …) or to a browser (Brave, Firefox,
+     Chromium/Chrome, Zen, …) whose window title shows web chat or mail (WhatsApp, Telegram,
+     Gmail, Outlook, Discord, Messenger, Slack, Teams, Proton Mail, …; whole words, case and
+     accents ignored). Return in a browser on any other page (search, forms) does not ask, nor
+     in any other app.
+     Also (L17): in those windows `Tab` followed later by `space` or Return (Tab to the Send
+     button); and in **any** browser a tab switch (`ctrl+Tab`, `ctrl+shift+Tab`,
+     `ctrl+Page_Up/Page_Down`, `ctrl+1..9`, `alt+1..9`) followed later by Return, whatever the
+     current title.
+   * **Clearing all content** (“borrar todo el contenido”): a select-all (`ctrl+a`, or
+     `ctrl+Home` then `ctrl+shift+End`, or the reverse) followed later by `Delete`, `KP_Delete`,
+     `BackSpace`, `ctrl+x`, a paste (`ctrl+v`, `ctrl+shift+v`, `shift+Insert`), `Return`/
+     `KP_Enter`, a bare `Tab` or a typed character (a typed newline or tab too; T16); Vim's `g g d shift+g` or `:%d`, as keys or
+     inside typed text (`ggdG`, `:%d`, any app; a fail-safe heuristic).
+     **Across calls** (L17 (a), T16): the helper keeps in memory, per window, the tail of the
+     last action on it (its last 4 presses, whether a select-all is still pending) for 60 s,
+     for at most 8 windows (the least recently used one is forgotten); actions on other
+     windows in between do not touch it. So `ctrl+a` then `Delete` in a later call, `g g` then
+     `d shift+g`, or `ctrl+a` then `pc_type` over the selection ask. A clear that finished in a
+     previous call does not ask again; a denied action leaves the tail unchanged (it is updated
+     only once `wtype` ran, and only with the `wtype` runs that ran: text cut between runs
+     records only the typed part, and a failed run keeps a pending select-all).
+   * **Closing a window or app** (“cerrar la ventana”): `alt+F4`, `ctrl+w`, `ctrl+q`, `ctrl+F4`
+     (extra modifiers included, e.g. `ctrl+shift+w`), and the niri binds `super+w`, `super+q`,
+     `super+shift+e`, plus `ctrl+alt+Delete`.
+
+   Words in the text or the intent (“borrar”, “enviar”, “pagar”, …) never ask by themselves;
+   the intent is only shown in the prompt. No subscriber = denied immediately; no answer within
+   30 s = denied; subscribers all gone = denied.
 6. Focus re-checked right before `wtype`: a different window id or a now-blocked window = denied.
+   The rules of step 5 run again on the fresh title (L17 (c)); a reason the user did not
+   confirm (e.g. the page turned into WhatsApp) = denied with “La ventana cambió …”, never a
+   second prompt.
 
 With `window_id` (S16), steps 3–4 apply to the target window from `niri msg -j windows` instead
 of the focused one, and the helper focuses it (after step 5) before step 6, which then compares
@@ -255,7 +300,7 @@ python3 -m unittest discover -s tests        # or: <host venv>/bin/python -m pyt
 ```
 
 The tests run the helper in-process on a temp `XDG_RUNTIME_DIR` with fake `wtype`, `grim`,
-`niri` and `xdg-mime` scripts first on `PATH` that record their argv; `open` tests use a fake
+`niri`, `xdg-mime`, `playerctl` and `wpctl` scripts first on `PATH` that record their argv; `open` tests use a fake
 `$HOME` and a fake fixed `PATH` with fake apps. `test_launch.py` checks the `open` rules on temp
 dirs without running anything. No real Wayland tool or app runs. `test_main.py` starts `python3 -m jarvis_input` with `PATH=/nonexistent`.
 `test_e2e.py` covers the pure parts of the desktop E2E runner below (it starts nothing).
@@ -304,17 +349,20 @@ focus is back on it afterwards):
 | browser: type `hola mundo` | complete right after the window gets focus (L19-L22); every keydown on a character `code` |
 | browser: type the L27 sentence + `’ — …` | complete text, legacy keysyms included, character codes only |
 | browser: type ~100 distinct characters | complete text over several wtype runs, character codes only |
-| browser: key `Escape g g d shift+g` | keydowns `Escape g g d G`, Escape with `code` `Escape` (L24-L25), letters on character codes; textarea `ggdG` |
-| browser: key `ctrl+a Delete` | keydowns `a`/`KeyA` and `Delete`/`Delete`; textarea emptied |
+| browser: key `Escape g g d shift+g`, confirmed with a held `y` | asked (S10a); keydowns `Escape g g d G`, Escape with `code` `Escape` (L24-L25), letters on character codes; textarea `ggdG` |
+| browser: key `ctrl+a Delete`, confirmed with a held `y` | asked (S10a); keydowns `a`/`KeyA` and `Delete`/`Delete`; textarea emptied |
+| browser: key `Return` on a plain page | no confirmation (S10a; no subscriber, so a prompt would deny it); keydown `Enter`/`Enter` |
 | browser: `screenshot` with `window_id` (T26) | the target page painted magenta is ≥ 5% of the PNG (decoded with stdlib `zlib`), `window_id` echoed; skipped without `grim` |
 | vscode+vim: key `i`, type `hola mundo` | INSERT mode, buffer exactly `hola mundo`, character codes only (desktop-e2e L2) |
-| vscode+vim: key `Escape g g d shift+g` | buffer empty, NORMAL mode (L23-L25) |
+| vscode+vim: key `Escape g g d shift+g`, confirmed with a held `y` (every clear below too) | asked (S10a); buffer empty, NORMAL mode (L23-L25) |
 | vscode+vim: key `i`, type the sentence | buffer exactly the sentence (L27) |
 | vscode+vim: key `Escape g g d shift+g` again | buffer empty, NORMAL mode |
 | vscode+vim: key `a`, then type ` Cada nuevo proyecto` right away | buffer exactly the text, INSERT mode (desktop-e2e L5-L7) |
 | vscode+vim: key `Escape g g d shift+g` a third time | buffer empty, NORMAL mode |
-| vscode+vim: key `a` needing a confirmation answered with a held `y`, then the text | buffer exactly the text, INSERT mode (desktop-e2e L8) |
+| vscode+vim: key `a` with the production intent “… sin borrar contenido.”, then the text | no confirmation (S10a: words never ask); buffer exactly the text, INSERT mode (desktop-e2e L5-L8) |
 | vscode+vim: key `Escape g g d shift+g` a fourth time | buffer empty, NORMAL mode |
+| vscode+vim: key `i`, type `borrar todo, enviar y pagar` | no confirmation (S10a); buffer exactly the text |
+| vscode+vim: key `Escape g g d shift+g` a fifth time | buffer empty, NORMAL mode |
 
 Output: `PASS|FAIL|SKIP: <case> (<s>) — <detail>` per case, then
 `summary: N passed, N failed, N skipped in Ns`. Exit **0** all ran cases passed, **1** a case
