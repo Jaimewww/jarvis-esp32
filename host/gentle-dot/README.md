@@ -26,8 +26,9 @@ agente (pc_*) ── agent.sock ────┘   la pantalla)  └── (argv,
 - **`jarvis-input`** (`host/input/`, servicio de usuario en `graphical-session.target`) es el
   único proceso con acceso a Wayland y niri. Guarda el permiso de `/control on` en memoria
   (reiniciarlo = permiso revocado) y hace todos los controles de S12: lista de bloqueo por
-  ventana enfocada, re-chequeo de foco, palabras de riesgo con confirmación en la TUI (30 s),
-  10 acciones/s, 2000 caracteres.
+  ventana enfocada, re-chequeo de foco, confirmación en la TUI (30 s) según la acción y no
+  según las palabras (S10a: Enter en un chat o correo, borrar todo el contenido, cerrar la
+  ventana), 10 acciones/s, 2000 caracteres.
 - **`gentle-dot.service`** corre aislado: sin Wayland, X11, niri, bus de sesión ni
   `jarvis-control/`; extensiones y ayudante de solo lectura (`host/systemd/`).
 - **Esta extensión** es un cliente fino de `$XDG_RUNTIME_DIR/jarvis/agent.sock`: un JSON por
@@ -52,16 +53,25 @@ agente (pc_*) ── agent.sock ────┘   la pantalla)  └── (argv,
 | `pc_open_url{url}` | `{"op":"open","url":"https://…"}` | no (etapa a) |
 | `pc_type{text,intent,window_id?}` | `{"op":"type","text":…,"intent":…,"window_id":42}` (S16: con `window_id` el ayudante enfoca esa ventana, teclea y devuelve el foco; sin él, la enfocada) | `/control on` |
 | `pc_key{keys,intent,window_id?}` | `{"op":"key","keys":"ctrl+l","intent":…,"window_id":42}` (igual que `pc_type`) | `/control on` |
+| `pc_write_in{app,text,intent}` | compuesta (T10): `windows`, `open` si la app no tiene ventana y `windows` hasta que aparezca, y `{"op":"type",…,"window_id":7}` | `/control on` (lo pide `type`) |
+| `pc_run{app,keys,intent}` | compuesta (T10): igual, con `{"op":"key",…,"window_id":7}` | `/control on` (lo pide `key`) |
 | `pc_media{action}` | `{"op":"media","action":"volume_up"}`; `action` ∈ `play_pause`, `next`, `previous` (playerctl), `volume_up`, `volume_down` (±5 %, tope 100 %), `mute`, `unmute` (explícitos, no alternan) (wpctl); no depende del foco (T15) | no (catálogo, D8) |
 | `pc_screenshot{scale?,window_id?}` | `{"op":"screenshot","scale":0.5,"window_id":42}` (0,1–1) → `png_base64` (S17: con `window_id` el ayudante enfoca esa ventana, captura su monitor y devuelve el foco; sin él, la pantalla tal cual) | `/control on` |
 
 Los errores del ayudante (`{"ok":false,"error":"…"}`) vuelven tal cual como error de la
-herramienta. Para teclear, `AGENTS.md` fija el flujo (S14, S16): ventana con `pc_list_windows`
-(o `pc_list_apps` → `pc_open_app` → `pc_list_windows`), y `pc_type`/`pc_key` con su
-`window_id` (el foco vuelve a la ventana del usuario al terminar, así que cambiar de ventana
+herramienta. Para teclear, `AGENTS.md` fija el flujo (S14, S16; T10 de
+`odd/tasks/latencia.md`): primero `pc_write_in{app,text,intent}` o `pc_run{app,keys,intent}`,
+que en una sola llamada buscan la ventana de la app (la abren si no tiene, esperan hasta 10 s a
+que aparezca) y mandan `type`/`key` con su `window_id`, así que heredan todos los chequeos del
+ayudante. Si no alcanza: ventana con `pc_list_windows` (o `pc_list_apps` → `pc_open_app` →
+`pc_list_windows`), y `pc_type`/`pc_key` con su `window_id` (el foco vuelve a la ventana del usuario al terminar, así que cambiar de ventana
 mientras tanto no rompe nada); `pc_focus_window` solo para traer una ventana al frente; nunca en
-una terminal (la TUI corre en una). Para comprobar el resultado, `pc_screenshot` con el mismo
-`window_id` (S17): sin él la captura muestra la ventana enfocada, casi siempre la terminal (L27).
+una terminal (la TUI corre en una). `pc_screenshot` con el mismo `window_id` (S17) solo cuando
+algo falló, el resultado es dudoso o el usuario lo pide: cada llamada al modelo cuesta ~5 s.
+Sin `window_id` la captura muestra la ventana enfocada, casi siempre la terminal (L27).
+
+Antes de cada turno del usuario la extensión agrega un mensaje oculto (`before_agent_start`,
+`jarvis-clock`) con la fecha y hora locales, así "qué hora es" no gasta una llamada al reloj.
 
 ## Parada de emergencia
 
@@ -103,7 +113,9 @@ bash host/systemd/test_install.sh            # instalador en un sandbox
 5. `/control on` en la TUI; enfocar un editor y pedir "escribe hola" → aparece.
 6. `pc_key` con `ctrl+l` en el navegador → selecciona la barra de direcciones.
 7. "Saca una captura de pantalla y dime qué ves" → describe la pantalla.
-8. "Escribe: envía el correo" → la TUI pide confirmación; no contestar en 30 s → no se escribe.
+8. "Escribe: envía el correo" en un editor → se escribe sin confirmación (las palabras no
+   preguntan, S10a). Con Gmail o WhatsApp Web abierto en Brave, pedir que mande un mensaje
+   (Enter) → la TUI pide confirmación; no contestar en 30 s → no se manda.
 9. Enfocar KeePassXC (u otra de la lista) y pedir escribir → se niega.
 10. `systemctl --user stop jarvis-input` (desde tu terminal) y pedir "abre Brave" → el agente
     dice `jarvis-input is not running`.
