@@ -13,6 +13,7 @@ subclasses whose message always names the URL.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from collections.abc import Mapping
@@ -38,7 +39,7 @@ class WhisperServerUnavailable(WhisperServerError):
 
 
 class WhisperServerTimeout(WhisperServerError):
-    """whisper-server did not answer within the timeout."""
+    """whisper-server did not answer within the timeout (one total deadline per clip)."""
 
 
 class WhisperServerHTTPError(WhisperServerError):
@@ -77,24 +78,28 @@ class WhisperServerTranscriber:
         return cls(
             env.get(ENV_URL) or DEFAULT_URL,
             language=env.get(ENV_LANGUAGE) or DEFAULT_LANGUAGE,
-            timeout_s=float(env.get(ENV_TIMEOUT) or DEFAULT_TIMEOUT_S),
+            timeout_s=_timeout_from_env(env.get(ENV_TIMEOUT)),
         )
 
     async def transcribe(self, wav: bytes) -> str:
+        # httpx applies its timeout to each phase (connect, write, read, pool) separately;
+        # asyncio.timeout bounds the whole request, response body included, so a server
+        # that is slow in several phases or answers in pieces still ends within timeout_s.
         try:
-            async with httpx.AsyncClient(
-                transport=self._transport, timeout=self.timeout_s
-            ) as client:
-                response = await client.post(
-                    self.url,
-                    files={"file": ("clip.wav", wav, "audio/wav")},
-                    data={
-                        "response_format": "json",
-                        "language": self.language,
-                        "temperature": "0.0",
-                    },
-                )
-        except httpx.TimeoutException as error:
+            async with asyncio.timeout(self.timeout_s):
+                async with httpx.AsyncClient(
+                    transport=self._transport, timeout=self.timeout_s
+                ) as client:
+                    response = await client.post(
+                        self.url,
+                        files={"file": ("clip.wav", wav, "audio/wav")},
+                        data={
+                            "response_format": "json",
+                            "language": self.language,
+                            "temperature": "0.0",
+                        },
+                    )
+        except (httpx.TimeoutException, TimeoutError) as error:
             raise WhisperServerTimeout(
                 f"whisper-server at {self.url} did not answer within {self.timeout_s} s"
             ) from error
@@ -127,3 +132,17 @@ class WhisperServerTranscriber:
                 f"{response.text.strip()[:200]!r}"
             )
         return text.strip()
+
+
+def _timeout_from_env(raw: str | None) -> float:
+    """Parse ``JARVIS_STT_TIMEOUT_S``: unset or empty is the default, else seconds > 0."""
+
+    if not raw:
+        return DEFAULT_TIMEOUT_S
+    try:
+        value = float(raw)
+    except ValueError:
+        value = None
+    if value is None or not value > 0:
+        raise ValueError(f"{ENV_TIMEOUT}={raw!r} is not a number of seconds greater than 0")
+    return value
