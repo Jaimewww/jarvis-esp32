@@ -262,6 +262,92 @@ escribe nada fuera del directorio de unidades y de la carpeta del agente. Si `sy
 unidad con `systemd-analyze --user verify`. Corre en CI en el paso
 `host · systemd unit`.
 
+## Puente de Pi en lugar de Gentle Dot
+
+Gentle Dot sigue siendo **lo predeterminado**: `install.sh` sin opciones nuevas instala
+exactamente lo mismo que antes. Una máquina puede elegir, en cambio, el puente de Pi
+([D24](../docs/decisiones.md#d24--puente-de-pi-con-el-protocolo-de-gentle-dot)):
+`jarvis/pibridge` (`python -m jarvis.pibridge`) es un daemon que habla el mismo
+protocolo v1 de Gentle Dot, en el mismo `127.0.0.1:4317` y con el mismo token
+(`~/.gentle-dot/token`), y por debajo maneja un proceso `pi --mode rpc` con la extensión
+de control de la PC y el `AGENTS.md` de Jarvis. La TUI, `python -m jarvis.bench` y el
+backend no cambian. Medido el 2026-11-25 con el mismo modelo: las preguntas bajan de
+6,6-7,4 s a 1,9-2,5 s y subir o bajar el volumen de 14-16 s a 4,2-4,8 s.
+
+* `systemd/jarvis-pibridge.service.in` — plantilla de la unidad
+  `jarvis-pibridge.service`. Tiene el mismo aislamiento que `gentle-dot.service` (sin
+  pantalla, sin bus de sesión, home de solo lectura, el mismo envoltorio Landlock) y una
+  sola diferencia: también puede escribir en `~/.pi`, porque Pi guarda ahí su
+  configuración, sus cuentas y sus bloqueos (sin eso falla en
+  `~/.pi/agent/trust.json.lock`). Corre con el entorno de Python que `install.sh` ya arma
+  para la TUI (`~/.local/share/jarvis/tui/`), así que el puente es la copia instalada de
+  `host/jarvis`, no el checkout.
+* Lleva `Conflicts=gentle-dot.service`: arrancar una detiene la otra, en los dos
+  sentidos. Nunca corren juntas en el mismo puerto.
+
+Requisitos: `pi` instalado y con la cuenta del modelo ya configurada (la de `~/.pi`, la
+misma que usa `pi` en una terminal), y el **binario real** de Node, como para Gentle Dot
+(un shim de mise no sirve). No hace falta el checkout de Gentle Dot.
+
+### Pasar al puente
+
+```bash
+host/systemd/install.sh --pi-bridge --node "$(mise where node@24)/bin/node" --check
+host/systemd/install.sh --pi-bridge --node "$(mise where node@24)/bin/node" --enable
+```
+
+`--pi /ruta/a/pi` si `pi` no está en el `PATH` (por defecto, `command -v pi`). Instala lo
+mismo que la opción por defecto (reglas, extensión, parada, ayudante, TUI) salvo la
+unidad: escribe `~/.config/systemd/user/jarvis-pibridge.service` (la anterior, si era
+distinta, en `.bak`) y crea `~/.pi` (0700) si falta. Con `--enable`, si
+`gentle-dot.service` está instalado, primero corre
+`systemctl --user disable --now gentle-dot.service` y después habilita y arranca el
+puente; la unidad de Gentle Dot queda en su lugar. Sin `--enable` no toca nada en
+systemd y avisa qué correr.
+
+### Volver a Gentle Dot
+
+```bash
+host/systemd/install.sh --gentle-dot-dir ~/ruta/gentle-dot \
+  --node "$(mise where node@24)/bin/node" --enable
+```
+
+Es la instalación de siempre: con `--enable`, si el puente está instalado, primero corre
+`systemctl --user disable --now jarvis-pibridge.service` y después habilita Gentle Dot.
+`--uninstall` quita las dos unidades (y el ayudante); no toca `~/.pi` ni `~/.gentle-dot`.
+
+### Elegir el modelo
+
+Por defecto el puente usa `openai/gpt-6.1-sol` con razonamiento `low`. Se cambia sin
+editar la unidad, con un override (`systemctl --user edit jarvis-pibridge.service`):
+
+```ini
+[Service]
+Environment=JARVIS_PI_MODEL=openai/gpt-6.1-terra
+Environment=JARVIS_PI_THINKING=low
+# Extensiones extra de Pi, separadas por ":"; por ejemplo, la de los modelos de Claude
+# por suscripción:
+Environment=JARVIS_PI_EXTENSIONS=%h/.pi/agent/npm/node_modules/pi-claude-bridge
+```
+
+y `systemctl --user restart jarvis-pibridge.service`. Cualquier opción de
+`python -m jarvis.pibridge --help` se puede poner así como `JARVIS_PI_<NOMBRE>`. El
+modelo que se elige desde la TUI vale hasta que el servicio se reinicia.
+
+### Ver que está corriendo
+
+```bash
+systemctl --user status jarvis-pibridge.service
+systemctl --user is-active gentle-dot.service      # tiene que decir inactive
+journalctl --user -u jarvis-pibridge -f
+```
+
+Al arrancar, el journal muestra `token file …/.gentle-dot/token, model
+openai/gpt-6.1-sol:low` (nunca el token). Después, la TUI (`jarvis`) se conecta igual que
+a Gentle Dot. Si el journal dice `cannot listen on 127.0.0.1:4317`, otro daemon ocupa el
+puerto: ver que `gentle-dot.service` esté detenido o volver a correr el script con
+`--pi-bridge --enable`.
+
 ## Running it
 
 ```bash

@@ -431,6 +431,41 @@ inocente; la confirmación dependía de cómo redactaba el modelo, no de lo que 
 **Descartado:** preguntar por Enter en cualquier navegador (pregunta en cada búsqueda) y
 seguir preguntando por las palabras del texto escrito.
 
+## D24 — Puente de Pi con el protocolo de Gentle Dot
+
+Una máquina puede reemplazar el daemon de Gentle Dot por un **puente** propio
+(`host/jarvis/pibridge`) que habla el mismo protocolo v1, en el mismo puerto y con el
+mismo token, y por debajo maneja un proceso `pi --mode rpc` con la extensión de control
+de la PC y el `AGENTS.md` de Jarvis (decisión del usuario, S1 y L3 de
+`odd/tasks/pi-bridge.md`: «dejalo gentle dot por defecto pero que en realidad funciona pi
+por default», «Puente con protocolo de Gentle Dot»).
+
+- **Gentle Dot sigue siendo lo predeterminado** del repositorio. El puente se elige por
+  máquina con `host/systemd/install.sh --pi-bridge`, que instala
+  `jarvis-pibridge.service` con el mismo aislamiento que `gentle-dot.service` más
+  escritura en `~/.pi`. Las dos unidades se excluyen (`Conflicts=`) y el instalador
+  deshabilita una al habilitar la otra.
+- **Los clientes no cambian:** la TUI, `python -m jarvis.bench` y el adaptador del
+  backend (`GentleDotAgent`) hablan con el puente sin tocar su código.
+- **No cambia D1 ni D14 para las demás máquinas:** Gentle Dot sigue siendo la
+  dependencia externa fijada detrás del adaptador (D1) y el motor de la tarea larga
+  (D14), con una tarea a la vez; el puente también atiende un turno a la vez.
+
+**Por qué:** con el mismo modelo (`openai/gpt-6.1-sol`, razonamiento `low`), el mismo día
+(2026-11-25) y mediana de 3 corridas, Pi responde mucho más rápido. Prueba aparte con Pi
+1.6.1 (L4): preguntas 1,77-2,31 s contra 6,59-7,41 s de Gentle Dot; subir y bajar el
+volumen 4,13 / 4,25 s contra 15,96 / 14,10 s; Spotify 4,80 s contra 13,80 s; Pi se mantuvo
+parejo en 60 turnos. A través del puente, con el `jarvis.bench` sin cambios (L7): 24 de
+24 corridas completas, sin errores, una llamada al modelo por pregunta y dos por pedido
+con herramienta; preguntas 1,89-2,51 s, subir el volumen 4,76 s, bajarlo 4,18 s y Spotify
+4,37 s. Un puente con el mismo protocolo era la única opción con usuarios hoy: `/converse`
+todavía no enruta a ningún agente (`backend/app/main.py`), así que un adaptador nuevo en
+el backend no tendría quién lo llame.
+
+**Descartado:** un adaptador de Pi en el backend (sin llamador por ahora), quedarse solo
+con un plan, y reemplazar Gentle Dot en todas las máquinas (el usuario lo pidió como
+opción, con Gentle Dot por defecto).
+
 ## Decisiones abiertas
 
 - **Motor de la charla de voz** (D14).
