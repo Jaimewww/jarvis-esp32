@@ -922,6 +922,10 @@ check "bridge --headless renders WantedBy=default.target and no session binding"
 # Refusals specific to the bridge.
 bridged --pi-bridge --pi relative/pi --node "${STUBS}/node" --check
 check "refuses a relative --pi" '[[ ${RC} -ne 0 ]] && grep -qF "ruta absoluta" <<<"${OUT}"'
+reset_calls
+bridged --pi "${STUBS}/pi" --node "${STUBS}/node" --enable
+check "refuses --pi without --pi-bridge and calls nothing" \
+	'[[ ${RC} -ne 0 && ! -s "${CALLS}" ]] && grep -qF -- "--pi solo vale junto con --pi-bridge" <<<"${OUT}"'
 mkdir -p "${SANDBOX}/shims" && cp "${STUBS}/pi" "${SANDBOX}/shims/pi"
 bridged --pi-bridge --pi "${SANDBOX}/shims/pi" --node "${STUBS}/node" --check
 check "refuses a version-manager shim for pi" '[[ ${RC} -ne 0 ]] && grep -q "shim" <<<"${OUT}"'

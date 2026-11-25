@@ -143,6 +143,9 @@ while (($#)); do
 done
 
 ((UNINSTALL && (ENABLE || CHECK))) && die "--uninstall no se combina con --enable ni --check"
+# --pi names the binary of the bridge's agent: without --pi-bridge it would be dropped
+# and Gentle Dot installed instead, so refuse it before anything is touched.
+[[ -z "${PI_BIN}" ]] || ((PI_BRIDGE)) || die "--pi solo vale junto con --pi-bridge"
 
 # --- Who and where -------------------------------------------------------------
 
