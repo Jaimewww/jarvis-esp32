@@ -12,11 +12,15 @@ import logging
 import os
 import secrets
 import stat
+import time
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 TOKEN_BYTES = 32
+#: Another bridge that wins the create may not have written the token yet: read again.
+RACE_READS = 20
+RACE_WAIT_S = 0.05
 
 
 class TokenError(RuntimeError):
@@ -60,13 +64,25 @@ def _create(path: Path) -> str:
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     except FileExistsError:
-        # Someone else created it meanwhile: theirs wins.
-        return path.read_text(encoding="utf-8").strip()
+        return _read_theirs(path)  # someone else created it meanwhile: theirs wins
     except OSError as error:
         raise TokenError(f"Cannot create the access token at {path}: {error.strerror or error}") from error
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
         handle.write(token + "\n")
     return token
+
+
+def _read_theirs(path: Path) -> str:
+    for attempt in range(RACE_READS):
+        try:
+            token = path.read_text(encoding="utf-8").strip()
+        except OSError as error:
+            raise TokenError(f"Cannot read the access token at {path}: {error.strerror or error}") from error
+        if token:
+            return token
+        if attempt + 1 < RACE_READS:
+            time.sleep(RACE_WAIT_S)
+    raise TokenError(f"The access token at {path} is empty.")
 
 
 def token_matches(expected: str, offered: object) -> bool:

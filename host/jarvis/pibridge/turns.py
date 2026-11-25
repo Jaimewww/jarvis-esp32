@@ -18,8 +18,11 @@ Besides prompts, the bridge sends Pi commands and waits for their ``response`` b
 every client; with no client connected, the dialog is denied at once.
 
 One turn at a time (D14): a ``send`` during a turn waits in a queue (reported with the
-``queue`` frame) and runs when the turn ends; ``abort`` drops it too. If Pi exits, the
-turn ends with an ``error`` frame and the next ``send`` starts Pi again.
+``queue`` frame) and runs when the turn ends; ``abort`` drops it too. The queue holds
+``queue_cap`` messages; ``send`` refuses one more. If Pi exits, the turn ends with an
+``error`` frame and the next ``send`` starts Pi again. A turn with no Pi record for
+``record_timeout`` seconds (a question waiting for the user does not count) is stuck: it
+ends with an ``error`` frame and Pi is stopped, to start again on the next ``send`` (S12.4).
 """
 
 from __future__ import annotations
@@ -44,6 +47,10 @@ Emit = Callable[[dict[str, Any]], Awaitable[None]]
 
 #: How long a Pi command (not a prompt) may take to answer.
 COMMAND_TIMEOUT_S = 10.0
+#: A turn with no Pi record for this long is stuck (S12.4); a pending question pauses it.
+RECORD_TIMEOUT_S = 120.0
+#: ``send``s that may wait behind the running turn.
+QUEUE_CAP = 16
 
 #: Pi events that belong to a run: the echo goes out before any of them is relayed.
 _RUN_EVENTS = frozenset({
@@ -86,7 +93,17 @@ def _text_of(message: dict[str, Any]) -> str | None:
 
 
 class Bridge:
-    def __init__(self, launcher: PiLauncher, emit: Emit, *, model: str) -> None:
+    def __init__(
+        self,
+        launcher: PiLauncher,
+        emit: Emit,
+        *,
+        model: str,
+        record_timeout: float = RECORD_TIMEOUT_S,
+        queue_cap: int = QUEUE_CAP,
+    ) -> None:
+        self._record_timeout = record_timeout
+        self._queue_cap = queue_cap
         self._launcher = launcher
         self._emit = emit
         self._model = model
@@ -100,6 +117,8 @@ class Bridge:
         self._questions = questions.Questions()
         self._clients = 0
         self._launching = asyncio.Lock()
+        self._last_record = 0.0
+        self._watchdog: asyncio.Task[None] | None = None
 
     @property
     def agent_state(self) -> str:
@@ -117,12 +136,17 @@ class Bridge:
         except Exception:  # noqa: BLE001 - the first send reports it to the clients
             logger.exception("could not start pi")
 
-    async def send(self, text: str) -> None:
+    async def send(self, text: str) -> bool:
+        """Run ``text`` now or after the running turn; ``False`` when the queue is full."""
+
         if self._turn is not None:
+            if len(self._queue) >= self._queue_cap:
+                return False
             self._queue.append(text)
             await self._emit_queue()
-            return
+            return True
         await self._begin(text)
+        return True
 
     async def abort(self) -> None:
         turn = self._turn
@@ -248,6 +272,7 @@ class Bridge:
             self._commands.pop(command_id, None)
 
     async def close(self) -> None:
+        self._stop_watchdog()
         process, reader = self._process, self._reader
         self._process = self._reader = None
         if reader is not None:
@@ -263,6 +288,8 @@ class Bridge:
         n = next(self._ids)
         turn = _Turn(text, user_id=f"u{n}", request_id=f"prompt-{n}")
         self._turn = turn
+        self._last_record = asyncio.get_running_loop().time()
+        self._watchdog = asyncio.ensure_future(self._watch(turn))
         await self._set_state("working")
         try:
             process = await self._ensure_process()
@@ -287,6 +314,7 @@ class Bridge:
         for call_id in list(turn.tools):
             await self._tool_end(turn, call_id, None, failed=True)
         self._turn = None
+        self._stop_watchdog()
         if self._queue:
             text = self._queue.popleft()
             await self._emit_queue()
@@ -319,6 +347,40 @@ class Bridge:
     async def _emit_queue(self) -> None:
         await self._emit({"type": "queue", "steering": [], "followUp": list(self._queue)})
 
+    # A stuck turn (S12.4)
+
+    def _stop_watchdog(self) -> None:
+        watchdog, self._watchdog = self._watchdog, None
+        if watchdog is not None and watchdog is not asyncio.current_task():
+            watchdog.cancel()
+
+    async def _watch(self, turn: _Turn) -> None:
+        loop = asyncio.get_running_loop()
+        while self._turn is turn:
+            if self._questions:
+                self._last_record = loop.time()  # the person is answering: not stuck
+            quiet = loop.time() - self._last_record
+            if quiet >= self._record_timeout:
+                await self._time_out(turn)
+                return
+            await asyncio.sleep(min(self._record_timeout - quiet, 0.5))
+
+    async def _time_out(self, turn: _Turn) -> None:
+        message = f"Pi wrote nothing for {self._record_timeout:g}s; the reply was stopped and Pi restarts."
+        logger.warning("%s", message)
+        process, reader = self._process, self._reader
+        self._process = self._reader = None  # the next send starts a new Pi
+        self._fail_commands()
+        await self._resolve_questions()
+        if turn.open_id is not None:
+            await self._done(turn, "".join(turn.open_text), error=message)
+        await self._emit({"type": "error", "code": "agent_timeout", "message": message})
+        await self._finish(turn)
+        if reader is not None:
+            reader.cancel()
+        if process is not None:
+            await process.close()
+
     # Pi
 
     async def _ensure_process(self) -> PiProcess:
@@ -336,6 +398,7 @@ class Bridge:
             record = await process.read()
             if record is None:
                 break
+            self._last_record = asyncio.get_running_loop().time()
             try:
                 await self._on_record(record)
             except Exception:  # noqa: BLE001 - one bad record must not stop the reader

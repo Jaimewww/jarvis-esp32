@@ -5,7 +5,9 @@ The protocol is the one ``host/jarvis/client.py`` and ``backend/app/agents/gentl
 speak: the first client frame is ``{"type": "hello", "token", "protocol": 1}``; a good
 one gets ``ready`` and from then on every server frame carries a per-connection
 monotonic ``seq``. A missing or wrong token closes with 4401, a malformed first frame or
-another protocol version with 4400. Turn frames go to every admitted client; the answer to
+another protocol version with 4400. A connection that carries an ``Origin`` header (a
+browser page; Jarvis's clients send none) is refused with HTTP 403 before any of that
+(S12.6). Turn frames go to every admitted client; the answer to
 a request (history, the conversation list, the account, an ``error``) goes to its sender
 only. A request the bridge does not support gets an ``error`` frame (S9).
 """
@@ -17,13 +19,15 @@ import ipaddress
 import contextlib
 import json
 import logging
-from collections.abc import Callable
+from http import HTTPStatus
 from typing import Any, Final, Protocol
 
 from websockets.asyncio.server import Server, ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
+from websockets.http11 import Request, Response
 
 from .history import Conversation
+from .hub import Hub
 from .models import ModelError
 from .token import token_matches
 
@@ -50,7 +54,9 @@ class TurnAgent(Protocol):
     @property
     def model(self) -> str: ...
 
-    async def send(self, text: str) -> None: ...
+    async def send(self, text: str) -> bool:
+        """``False`` when the queue is full and the message was not taken."""
+        ...
 
     async def abort(self) -> None: ...
 
@@ -87,56 +93,6 @@ def check_hello(raw: str | bytes, token: str) -> int | None:
     return None
 
 
-Observer = Callable[[dict[str, Any]], None]
-
-
-class Hub:
-    """The admitted connections, each with its own ``seq``; frames go out in one order."""
-
-    def __init__(self) -> None:
-        self._seq: dict[ServerConnection, int] = {}
-        self._lock = asyncio.Lock()
-        self._observers: list[Observer] = []
-
-    def observe(self, observer: Observer) -> None:
-        """Call ``observer`` with every broadcast frame (the conversation keeps them)."""
-
-        self._observers.append(observer)
-
-    @property
-    def size(self) -> int:
-        return len(self._seq)
-
-    async def admit(self, ws: ServerConnection, ready: dict[str, Any]) -> None:
-        async with self._lock:
-            self._seq[ws] = 0
-            await self._send(ws, ready)
-
-    def remove(self, ws: ServerConnection) -> None:
-        self._seq.pop(ws, None)
-
-    async def broadcast(self, payload: dict[str, Any]) -> None:
-        for observer in self._observers:
-            observer(payload)
-        async with self._lock:
-            for ws in list(self._seq):
-                await self._send(ws, payload)
-
-    async def send_to(self, ws: ServerConnection, payload: dict[str, Any]) -> None:
-        async with self._lock:
-            await self._send(ws, payload)
-
-    async def _send(self, ws: ServerConnection, payload: dict[str, Any]) -> None:
-        seq = self._seq.get(ws)
-        if seq is None:
-            return
-        self._seq[ws] = seq + 1
-        try:
-            await ws.send(json.dumps({**payload, "seq": seq + 1}))
-        except ConnectionClosed:
-            self.remove(ws)
-
-
 def _is_loopback(host: str) -> bool:
     """Whether ``host`` only accepts connections from this machine."""
 
@@ -146,6 +102,13 @@ def _is_loopback(host: str) -> bool:
         return ipaddress.ip_address(host).is_loopback
     except ValueError:
         return False
+
+
+def _refuse_browsers(connection: ServerConnection, request: Request) -> Response | None:
+    if "Origin" in request.headers:
+        logger.info("refused a client that sent an Origin header (a browser page)")
+        return connection.respond(HTTPStatus.FORBIDDEN, "Browser pages may not connect.\n")
+    return None
 
 
 class BridgeServer:
@@ -169,7 +132,12 @@ class BridgeServer:
         """Listen on ``host:port`` and return the bound port."""
 
         self._server = await serve(
-            self._handle, host, port, max_size=MAX_FRAME_BYTES, logger=_WIRE_LOGGER
+            self._handle,
+            host,
+            port,
+            max_size=MAX_FRAME_BYTES,
+            logger=_WIRE_LOGGER,
+            process_request=_refuse_browsers,
         )
         bound = next(iter(self._server.sockets)).getsockname()[1]
         logger.info("listening on ws://%s:%d/ws", host, bound)
@@ -234,8 +202,8 @@ class BridgeServer:
         kind = payload.get("type")
         if kind == "send":
             text = payload.get("text")
-            if isinstance(text, str) and text.strip():
-                await self._agent.send(text)
+            if isinstance(text, str) and text.strip() and not await self._agent.send(text):
+                await self._error(ws, "queue_full", "Too many messages are waiting; try again when this reply ends.")
         elif kind == "abort":
             await self._agent.abort()
         elif kind == "ui_response":
