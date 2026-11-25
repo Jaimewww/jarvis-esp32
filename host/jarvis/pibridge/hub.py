@@ -3,7 +3,8 @@
 Every connection has its own monotonic ``seq`` and its own send queue, drained by its own
 task, so a client that stops reading holds up neither the turn nor the other clients:
 ``broadcast`` only numbers and queues. A client more than ``max_pending`` frames behind
-is dropped (close 1008); it reconnects and catches up with ``get_history``.
+is dropped (close 1008); it reconnects and catches up with ``get_history``. A client whose
+connection fails in any other way than a close is logged and dropped at once (S13.6).
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 MAX_PENDING: Final = 1024
 CLOSE_TOO_SLOW: Final = 1008
+CLOSE_FAILED: Final = 1011
 
 Observer = Callable[[dict[str, Any]], None]
 
@@ -80,10 +82,7 @@ class Hub:
     def _queue(self, ws: Connection, peer: _Peer, payload: dict[str, Any]) -> None:
         if peer.queue.qsize() >= self._max_pending:
             logger.warning("dropped a client more than %d frames behind", self._max_pending)
-            self.remove(ws)
-            task = asyncio.ensure_future(self._close(ws))
-            self._closing.add(task)
-            task.add_done_callback(self._closing.discard)
+            self._drop(ws, CLOSE_TOO_SLOW, "too slow")
             return
         peer.seq += 1
         peer.queue.put_nowait(json.dumps({**payload, "seq": peer.seq}))
@@ -94,8 +93,17 @@ class Hub:
                 await ws.send(await peer.queue.get())
         except ConnectionClosed:
             self.remove(ws)
+        except Exception as error:  # noqa: BLE001 - any other failure: drop it, keep the rest
+            logger.warning("dropped a client whose connection failed (%s)", type(error).__name__)
+            self._drop(ws, CLOSE_FAILED, "send failed")
+
+    def _drop(self, ws: Connection, code: int, reason: str) -> None:
+        self.remove(ws)
+        task = asyncio.ensure_future(self._close(ws, code, reason))
+        self._closing.add(task)
+        task.add_done_callback(self._closing.discard)
 
     @staticmethod
-    async def _close(ws: Connection) -> None:
+    async def _close(ws: Connection, code: int, reason: str) -> None:
         with contextlib.suppress(Exception):
-            await ws.close(CLOSE_TOO_SLOW, "too slow")
+            await ws.close(code, reason)

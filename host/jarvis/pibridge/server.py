@@ -9,7 +9,9 @@ another protocol version with 4400. A connection that carries an ``Origin`` head
 browser page; Jarvis's clients send none) is refused with HTTP 403 before any of that
 (S12.6). Turn frames go to every admitted client; the answer to
 a request (history, the conversation list, the account, an ``error``) goes to its sender
-only. A request the bridge does not support gets an ``error`` frame (S9).
+only. A request the bridge does not support gets an ``error`` frame (S9). The requests that
+wait for Pi (``models_list``, ``model_set``) run in order on their own task per connection, so
+they never hold up that client's next frame, ``abort`` above all (S13.7).
 """
 
 from __future__ import annotations
@@ -38,6 +40,9 @@ CLOSE_UNAUTHORIZED: Final = 4401
 CLOSE_BAD_PROTOCOL: Final = 4400
 HELLO_TIMEOUT_S: Final = 5.0
 MAX_FRAME_BYTES: Final = 2 * 1024 * 1024
+#: Pi requests of one client that may wait behind the one running; more wait in the read loop.
+MAX_PI_REQUESTS: Final = 8
+_PI_REQUESTS: Final = frozenset({"models_list", "model_set"})
 
 #: websockets logs every frame at debug level, and the hello frame holds the token:
 #: its logger never goes below info, whatever the log level is.
@@ -184,18 +189,34 @@ class BridgeServer:
         logger.info("client admitted")
         await self._hub.admit(ws, self._ready())
         await self._agent.clients_changed(self._hub.size)
+        requests: asyncio.Queue[dict[str, Any]] = asyncio.Queue(MAX_PI_REQUESTS)
+        worker = asyncio.ensure_future(self._serve_pi_requests(ws, requests))
         try:
             async for raw_frame in ws:
-                await self._dispatch(ws, raw_frame)
+                payload = _decode(raw_frame)
+                if payload is not None and payload.get("type") in _PI_REQUESTS:
+                    await requests.put(payload)
+                else:
+                    await self._dispatch(ws, payload)
         except ConnectionClosed:
             pass
         finally:
+            worker.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await worker
             self._hub.remove(ws)
             logger.info("client left")
             await self._agent.clients_changed(self._hub.size)
 
-    async def _dispatch(self, ws: ServerConnection, raw: str | bytes) -> None:
-        payload = _decode(raw)
+    async def _serve_pi_requests(self, ws: ServerConnection, requests: asyncio.Queue[dict[str, Any]]) -> None:
+        while True:
+            payload = await requests.get()
+            try:
+                await self._dispatch(ws, payload)
+            except Exception:  # noqa: BLE001 - one failed request must not stop the next
+                logger.exception("failed to answer a %s", payload.get("type"))
+
+    async def _dispatch(self, ws: ServerConnection, payload: dict[str, Any] | None) -> None:
         if payload is None:
             await self._error(ws, "bad_request", "The bridge reads JSON objects only.")
             return

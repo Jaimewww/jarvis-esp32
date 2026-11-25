@@ -23,6 +23,10 @@ One turn at a time (D14): a ``send`` during a turn waits in a queue (reported wi
 ``error`` frame and the next ``send`` starts Pi again. A turn with no Pi record for
 ``record_timeout`` seconds (a question waiting for the user does not count) is stuck: it
 ends with an ``error`` frame and Pi is stopped, to start again on the next ``send`` (S12.4).
+A question still pending when its turn ends is resolved for the clients and forgotten, and no
+record of a Pi the bridge gave up on reaches a later turn (S13.1, S13.2). A restarted Pi takes
+back the model last chosen with ``model_set``, or falls back to the configured one and says so
+with a ``models`` frame (S13.3).
 """
 
 from __future__ import annotations
@@ -38,7 +42,7 @@ from typing import Any
 
 from . import models as model_frames
 from . import questions
-from .models import ModelError
+from .models import Choice, ModelError
 from .pi import PiLauncher, PiProcess
 
 logger = logging.getLogger(__name__)
@@ -106,7 +110,8 @@ class Bridge:
         self._queue_cap = queue_cap
         self._launcher = launcher
         self._emit = emit
-        self._model = model
+        self._model = self._configured = model
+        self._choice: Choice | None = None  # the last model_set, taken back by a restarted Pi
         self._ids = itertools.count(1)
         self._process: PiProcess | None = None
         self._reader: asyncio.Task[None] | None = None
@@ -205,12 +210,12 @@ class Bridge:
 
     # Models (S8)
 
-    async def models(self) -> dict[str, Any]:
+    async def models(self, process: PiProcess | None = None) -> dict[str, Any]:
         """The ``models`` frame: Pi's models, the running one and its thinking level."""
 
-        listed = await self._data({"type": "get_available_models"})
-        state = await self._data({"type": "get_state"})
-        levels = await self._data({"type": "get_available_thinking_levels"})
+        listed = await self._data({"type": "get_available_models"}, process)
+        state = await self._data({"type": "get_state"}, process)
+        levels = await self._data({"type": "get_available_thinking_levels"}, process)
         available = [m for m in listed.get("models") or [] if isinstance(m, dict)]
         current = state.get("model")
         raw_levels = levels.get("levels")
@@ -233,33 +238,48 @@ class Bridge:
             raise ModelError("thinking_unavailable", f"Unknown thinking level {thinking[:20]}.")
         if thinking not in (None, "off") and not model_frames.reasons(target):
             raise ModelError("thinking_unavailable", "That model does not support that thinking level.")
-        switched = await self._command({"type": "set_model", "provider": provider, "modelId": model_id})
-        if switched.get("success") is not True:
-            raise ModelError("model_switch_failed", _error_of(switched, "Pi could not switch the model."))
+        previous = await model_frames.running(self._command)
+        await model_frames.apply(self._command, Choice(provider, model_id, thinking), previous)
         self._model = f"{provider}/{model_id}"
-        if thinking is not None:
-            levels = (await self._data({"type": "get_available_thinking_levels"})).get("levels")
-            if not isinstance(levels, list) or thinking not in levels:
-                raise ModelError("thinking_unavailable", "That model does not support that thinking level.")
-            done = await self._command({"type": "set_thinking_level", "level": thinking})
-            if done.get("success") is not True:
-                raise ModelError("thinking_unavailable", _error_of(done, "Pi refused that thinking level."))
-        return await self.models()
+        frame = await self.models()
+        current = frame.get("current")
+        level = current.get("thinking") if isinstance(current, dict) else None
+        self._choice = Choice(provider, model_id, level if isinstance(level, str) else thinking)
+        return frame
 
-    async def _data(self, record: dict[str, Any]) -> dict[str, Any]:
-        response = await self._command(record)
+    async def _take_back_choice(self, process: PiProcess, choice: Choice) -> None:
+        """A new Pi runs the configured model: switch it to the last ``model_set`` (S13.3)."""
+
+        async def command(record: dict[str, Any]) -> dict[str, Any]:
+            return await self._command(record, process)
+
+        try:
+            await model_frames.apply(command, choice, await model_frames.running(command))
+            return
+        except ModelError as error:
+            logger.warning("the restarted pi refused %s (%s); it runs %s", choice.name, error.message, self._configured)
+        self._choice = None
+        self._model = self._configured
+        try:
+            await self._emit(await self.models(process))
+        except ModelError as error:
+            logger.warning("could not tell the clients about the model fallback: %s", error.message)
+
+    async def _data(self, record: dict[str, Any], process: PiProcess | None = None) -> dict[str, Any]:
+        response = await self._command(record, process)
         if response.get("success") is not True:
-            raise ModelError("agent_unavailable", _error_of(response, f"Pi refused {record['type']}."))
+            raise ModelError("agent_unavailable", model_frames.error_of(response, f"Pi refused {record['type']}."))
         data = response.get("data")
         return data if isinstance(data, dict) else {}
 
-    async def _command(self, record: dict[str, Any]) -> dict[str, Any]:
-        """Send one Pi command and wait for its ``response``."""
+    async def _command(self, record: dict[str, Any], process: PiProcess | None = None) -> dict[str, Any]:
+        """Send one Pi command (to ``process``, else to the running Pi) and wait for its ``response``."""
 
-        try:
-            process = await self._ensure_process()
-        except Exception as error:  # noqa: BLE001 - any launch failure is "unavailable"
-            raise ModelError("agent_unavailable", f"Pi did not start: {error}") from error
+        if process is None:
+            try:
+                process = await self._ensure_process()
+            except Exception as error:  # noqa: BLE001 - any launch failure is "unavailable"
+                raise ModelError("agent_unavailable", f"Pi did not start: {error}") from error
         command_id = f"cmd-{next(self._ids)}"
         future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
         self._commands[command_id] = future
@@ -273,6 +293,7 @@ class Bridge:
 
     async def close(self) -> None:
         self._stop_watchdog()
+        self._fail_commands()  # nothing waits for a command timeout on shutdown (S13.7)
         process, reader = self._process, self._reader
         self._process = self._reader = None
         if reader is not None:
@@ -313,6 +334,7 @@ class Bridge:
             await self._emit({"type": "message_done", "messageId": f"a{next(self._ids)}", "text": "", "stopped": True})
         for call_id in list(turn.tools):
             await self._tool_end(turn, call_id, None, failed=True)
+        await self._resolve_questions()  # Pi closed them itself (a dialog timeout): S13.1
         self._turn = None
         self._stop_watchdog()
         if self._queue:
@@ -370,14 +392,14 @@ class Bridge:
         logger.warning("%s", message)
         process, reader = self._process, self._reader
         self._process = self._reader = None  # the next send starts a new Pi
+        if reader is not None:
+            reader.cancel()  # before the queued send starts: nothing of this Pi reaches it
         self._fail_commands()
         await self._resolve_questions()
         if turn.open_id is not None:
             await self._done(turn, "".join(turn.open_text), error=message)
         await self._emit({"type": "error", "code": "agent_timeout", "message": message})
         await self._finish(turn)
-        if reader is not None:
-            reader.cancel()
         if process is not None:
             await process.close()
 
@@ -391,13 +413,15 @@ class Bridge:
             process = await self._launcher()
             self._process = process
             self._reader = asyncio.ensure_future(self._read(process))
+            if self._choice is not None:
+                await self._take_back_choice(process, self._choice)
             return process
 
     async def _read(self, process: PiProcess) -> None:
         while True:
             record = await process.read()
-            if record is None:
-                break
+            if record is None or self._process is not process:
+                break  # ended, or given up on (timed out, replaced): its records are not relayed
             self._last_record = asyncio.get_running_loop().time()
             try:
                 await self._on_record(record)
@@ -523,7 +547,3 @@ class Bridge:
             return
         await self._done(turn, text)
 
-
-def _error_of(response: dict[str, Any], fallback: str) -> str:
-    error = response.get("error")
-    return error if isinstance(error, str) and error else fallback

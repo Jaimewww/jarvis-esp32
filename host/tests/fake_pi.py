@@ -40,6 +40,10 @@ class FakePi:
         self.ui_answers: dict[str, asyncio.Future[dict[str, Any]]] = {}
         #: Commands never answered (to test a Pi that stops talking).
         self.mute: set[str] = set()
+        #: Commands answered with ``success: false`` (``set_thinking_level`` when the level is listed).
+        self.refuse: set[str] = set()
+        #: Thinking levels ``set_thinking_level`` refuses.
+        self.refused_levels: set[str] = set()
         self.last_answer: dict[str, Any] | None = None
 
     # PiProcess
@@ -67,6 +71,11 @@ class FakePi:
             self._command(record, kind)
 
     def _command(self, record: dict[str, Any], kind: str) -> None:
+        refused = kind in self.refuse or (kind == "set_thinking_level" and record.get("level") in self.refused_levels)
+        if refused:
+            self.emit({"id": record.get("id"), "type": "response", "command": kind, "success": False,
+                       "error": f"{kind} refused"})
+            return
         if kind == "get_available_models":
             self.respond(record, kind, data={"models": MODELS})
         elif kind == "get_state":
@@ -140,9 +149,13 @@ class FakeLauncher:
     def __init__(self, *behaviors: Behavior) -> None:
         self._behaviors = list(behaviors)
         self.launches: list[FakePi] = []
+        #: Called with each new process before the bridge gets it (to script a restarted Pi).
+        self.on_launch: Callable[[FakePi], Awaitable[None]] | None = None
 
     async def __call__(self) -> FakePi:
         process = FakePi(self)
+        if self.on_launch is not None:
+            await self.on_launch(process)
         self.launches.append(process)
         return process
 

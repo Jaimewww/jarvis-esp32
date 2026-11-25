@@ -35,6 +35,8 @@ def load_or_create_token(path: Path) -> str:
         token = path.read_text(encoding="utf-8").strip()
     except FileNotFoundError:
         token = _create(path)
+    except UnicodeDecodeError:
+        raise _not_utf8(path) from None  # the error's text quotes the token's bytes
     except OSError as error:
         raise TokenError(f"Cannot read the access token at {path}: {error.strerror or error}") from error
     if not token:
@@ -76,6 +78,8 @@ def _read_theirs(path: Path) -> str:
     for attempt in range(RACE_READS):
         try:
             token = path.read_text(encoding="utf-8").strip()
+        except UnicodeDecodeError:
+            raise _not_utf8(path) from None
         except OSError as error:
             raise TokenError(f"Cannot read the access token at {path}: {error.strerror or error}") from error
         if token:
@@ -83,6 +87,10 @@ def _read_theirs(path: Path) -> str:
         if attempt + 1 < RACE_READS:
             time.sleep(RACE_WAIT_S)
     raise TokenError(f"The access token at {path} is empty.")
+
+
+def _not_utf8(path: Path) -> TokenError:
+    return TokenError(f"The access token at {path} is not valid UTF-8.")
 
 
 def token_matches(expected: str, offered: object) -> bool:

@@ -6,11 +6,22 @@ Pi lists its models with ``get_available_models`` (full Model objects: ``provide
 ``get_available_thinking_levels``. Pi does not list the levels of the other models: a
 model that reasons is offered ``off`` to ``high`` (Pi's levels that every reasoning model
 has); ``xhigh`` and ``max`` show only for the running model, when Pi says it has them.
+
+A switch is whole or nothing (S13.4): ``apply`` sets the model, then the thinking level, and
+puts Pi back on the previous model and level when the second step fails.
 """
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any, Final
+
+logger = logging.getLogger(__name__)
+
+#: Sends one Pi command and returns its ``response`` (``ModelError`` when Pi does not answer).
+Command = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 
 #: The thinking levels of protocol v1 (``jarvis.client.THINKING_LEVELS``).
 THINKING_LEVELS: Final = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
@@ -24,6 +35,79 @@ class ModelError(RuntimeError):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+@dataclass(frozen=True, slots=True)
+class Choice:
+    """A model and thinking level (``None``: leave Pi's level as it is)."""
+
+    provider: str
+    model_id: str
+    thinking: str | None = None
+
+    @property
+    def name(self) -> str:
+        return f"{self.provider}/{self.model_id}"
+
+
+def error_of(response: dict[str, Any], fallback: str) -> str:
+    error = response.get("error")
+    return error if isinstance(error, str) and error else fallback
+
+
+async def running(command: Command) -> Choice | None:
+    """The model and thinking level Pi runs, from ``get_state``."""
+
+    response = await command({"type": "get_state"})
+    if response.get("success") is not True:
+        raise ModelError("agent_unavailable", error_of(response, "Pi refused get_state."))
+    data = response.get("data")
+    model = data.get("model") if isinstance(data, dict) else None
+    if not isinstance(model, dict):
+        return None
+    provider, model_id = model.get("provider"), model.get("id")
+    if not isinstance(provider, str) or not isinstance(model_id, str):
+        return None
+    thinking = data.get("thinkingLevel") if isinstance(data, dict) else None
+    return Choice(provider, model_id, thinking if isinstance(thinking, str) else None)
+
+
+async def apply(command: Command, choice: Choice, previous: Choice | None) -> None:
+    """Switch Pi to ``choice`` whole, or put it back on ``previous`` and raise ``ModelError``."""
+
+    switched = await command({"type": "set_model", "provider": choice.provider, "modelId": choice.model_id})
+    if switched.get("success") is not True:
+        raise ModelError("model_switch_failed", error_of(switched, "Pi could not switch the model."))
+    if choice.thinking is None:
+        return
+    try:
+        listed = await command({"type": "get_available_thinking_levels"})
+        data = listed.get("data")
+        levels = data.get("levels") if isinstance(data, dict) else None
+        if listed.get("success") is not True or not isinstance(levels, list) or choice.thinking not in levels:
+            raise ModelError("thinking_unavailable", "That model does not support that thinking level.")
+        done = await command({"type": "set_thinking_level", "level": choice.thinking})
+        if done.get("success") is not True:
+            raise ModelError("thinking_unavailable", error_of(done, "Pi refused that thinking level."))
+    except ModelError:
+        await _put_back(command, previous)
+        raise
+
+
+async def _put_back(command: Command, previous: Choice | None) -> None:
+    if previous is None:
+        logger.warning("could not put pi back on its previous model: it was not known")
+        return
+    try:
+        back = await command({"type": "set_model", "provider": previous.provider, "modelId": previous.model_id})
+        if back.get("success") is not True:
+            raise ModelError("model_switch_failed", error_of(back, "Pi could not switch the model."))
+        if previous.thinking is not None:
+            level = await command({"type": "set_thinking_level", "level": previous.thinking})
+            if level.get("success") is not True:
+                logger.warning("pi is back on %s but refused thinking level %s", previous.name, previous.thinking)
+    except ModelError as error:
+        logger.warning("could not put pi back on %s: %s", previous.name, error.message)
 
 
 def _key(model: dict[str, Any]) -> tuple[object, object]:
