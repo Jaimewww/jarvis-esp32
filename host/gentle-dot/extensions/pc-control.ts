@@ -4,8 +4,8 @@
  *
  * Every tool is a thin client of the jarvis-input helper over $XDG_RUNTIME_DIR/jarvis/agent.sock
  * (one JSON line each way). The helper is the boundary: it alone has display access, keeps the
- * /control permission in memory, checks the focused window, asks the user to confirm risky
- * actions in the TUI and runs wtype/grim/gtk-launch/xdg-open. This extension reads no permission
+ * /control permission in memory, checks the focused window, asks the user in the TUI before
+ * irreversible actions (by the action, not by words: S10a) and runs wtype/grim/gtk-launch/xdg-open. This extension reads no permission
  * file, never calls niri, wtype or grim, and returns the helper's refusals as tool errors.
  *
  * The `tool_call` hook below is defense in depth only, NOT the boundary: it is a text match the
@@ -149,7 +149,7 @@ export default function pcControl(pi: ExtensionAPI) {
 		name: "pc_type",
 		label: "Escribir en la PC",
 		description:
-			"Types text (max 2000 characters) into a window of the user's desktop. Pass window_id (from pc_list_windows) whenever the target window is known: the helper focuses that window, types, and focus returns to the user's window afterwards, so it does not matter if the user switches focus. Without window_id it types into the focused window. Needs the user's /control on permission. Terminals, password managers, settings and security prompts are refused; sending, paying, buying or deleting asks the user first.",
+			"Types text (max 2000 characters) into a window of the user's desktop. Pass window_id (from pc_list_windows) whenever the target window is known: the helper focuses that window, types, and focus returns to the user's window afterwards, so it does not matter if the user switches focus. Without window_id it types into the focused window. Needs the user's /control on permission. Terminals, password managers, settings and security prompts are refused. A newline in a chat or mail window (a chat/mail app, or WhatsApp, Gmail, Telegram… open in a browser) sends, so it asks the user first; words in the text or the intent never ask by themselves.",
 		promptSnippet: "pc_type: type text into a desktop window (pass window_id)",
 		parameters: Type.Object({
 			text: Type.String({ description: "Text to type (max 2000 characters)." }),
@@ -167,7 +167,7 @@ export default function pcControl(pi: ExtensionAPI) {
 		name: "pc_key",
 		label: "Teclas en la PC",
 		description:
-			'Presses keys or shortcuts on the user\'s desktop, e.g. "ctrl+l", "super+1", "Return", or a space-separated sequence "ctrl+a Delete". Modifiers: ctrl, shift, alt, altgr, super. Pass window_id (from pc_list_windows) whenever the target window is known: the helper focuses it, presses the keys, and focus returns to the user\'s window afterwards. Without window_id the keys go to the focused window. Same permission, blocklist and confirmation rules as pc_type. For volume and media (play/pause, next, previous, mute) use pc_media, never XF86Audio* keys.',
+			'Presses keys or shortcuts on the user\'s desktop, e.g. "ctrl+l", "super+1", "Return", or a space-separated sequence "ctrl+a Delete". Modifiers: ctrl, shift, alt, altgr, super. Pass window_id (from pc_list_windows) whenever the target window is known: the helper focuses it, presses the keys, and focus returns to the user\'s window afterwards. Without window_id the keys go to the focused window. Same permission and blocklist rules as pc_type. Asks the user first only for: Return in a chat or mail window (a chat/mail app, or web chat/mail in a browser), clearing all content (ctrl+a then Delete/BackSpace/ctrl+x, or Vim g g d shift+g), and closing a window or app (alt+F4, ctrl+w, ctrl+q). For volume and media (play/pause, next, previous, mute) use pc_media, never XF86Audio* keys.',
 		promptSnippet: "pc_key: press keys or shortcuts in a desktop window (pass window_id)",
 		parameters: Type.Object({
 			keys: Type.String({ description: 'Key combo(s), e.g. "ctrl+l" or "Return".' }),

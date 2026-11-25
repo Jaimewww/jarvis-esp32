@@ -407,7 +407,7 @@ la pantalla: solo él corre `wtype`, `grim`, `niri msg`, `gtk-launch` y `xdg-ope
 el permiso **en memoria** (reiniciarlo = permiso revocado). El daemon de Gentle Dot corre
 aislado, sin Wayland ni acceso a `jarvis-control/`: el agente le pide al ayudante que abra
 apps o teclee por `$XDG_RUNTIME_DIR/jarvis/agent.sock`, y el ayudante aplica la lista de
-bloqueo, las palabras de riesgo y las confirmaciones. Lo instala
+bloqueo y las confirmaciones según la acción (D23). Lo instala
 `host/systemd/install.sh`; **`jarvis-input` tiene que estar corriendo** para usar el control
 (`systemctl --user status jarvis-input`).
 
@@ -443,8 +443,10 @@ líneas; solo la TUI y `jarvis-stop`). Ya no escribe ningún archivo de permiso.
 agrega cada uno en niri, en `~/.config/niri/binds.kdl`, por ejemplo
 `Alt+Shift+Escape { spawn "jarvis-stop"; }`.
 
-**Confirmaciones.** Antes de una acción de riesgo (enviar, pagar, comprar, eliminar, borrar, vaciar, o
-`Return` en navegadores, correo y mensajería), el ayudante manda por la suscripción
+**Confirmaciones.** Antes de una acción irreversible, según la acción y nunca según las
+palabras (D23: enviar en un chat o correo, borrar todo el contenido, cerrar una ventana o
+app, también cuando el borrado se reparte entre dos llamadas seguidas a la misma ventana),
+el ayudante manda por la suscripción
 `{"event":"confirm","id":…,"title":…,"message":…,"timeout_s":30}`. La TUI lo muestra como
 una tarjeta destacada sobre el campo de texto, en las dos vistas, y contesta
 `{"op":"answer","id":…,"allow":true|false}` por la misma conexión. Las confirmaciones que
