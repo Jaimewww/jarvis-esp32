@@ -4,8 +4,8 @@
  *
  * Every tool is a thin client of the jarvis-input helper over $XDG_RUNTIME_DIR/jarvis/agent.sock
  * (one JSON line each way). The helper is the boundary: it alone has display access, keeps the
- * /control permission in memory, checks the focused window, asks the user to confirm risky
- * actions in the TUI and runs wtype/grim/gtk-launch/xdg-open. This extension reads no permission
+ * /control permission in memory, checks the focused window, asks the user in the TUI before
+ * irreversible actions (by the action, not by words: S10a) and runs wtype/grim/gtk-launch/xdg-open. This extension reads no permission
  * file, never calls niri, wtype or grim, and returns the helper's refusals as tool errors.
  *
  * The `tool_call` hook below is defense in depth only, NOT the boundary: it is a text match the
@@ -17,29 +17,34 @@
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Type } from "@earendil-works/pi-ai";
+import { StringEnum, Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	HELPER_TIMEOUT_MS,
+	MEDIA_ACTIONS,
 	agentSocketPath,
 	bashBlockReason,
 	buildRequest,
+	clockContext,
+	compositeRequest,
 	controlDirPath,
 	formatApps,
 	formatWindows,
 	isProtectedPath,
 	requestHelper,
+	runInApp,
 } from "./pc-control-core.ts";
 
 function uid(): number {
 	return typeof process.getuid === "function" ? process.getuid() : -1;
 }
 
+function callRequest(req: Parameters<typeof requestHelper>[1], signal?: AbortSignal) {
+	return requestHelper(agentSocketPath(process.env, uid()), req, { timeoutMs: HELPER_TIMEOUT_MS, signal });
+}
+
 function call(tool: string, params: Record<string, unknown>, signal?: AbortSignal) {
-	return requestHelper(agentSocketPath(process.env, uid()), buildRequest(tool, params), {
-		timeoutMs: HELPER_TIMEOUT_MS,
-		signal,
-	});
+	return callRequest(buildRequest(tool, params), signal);
 }
 
 function text(t: string) {
@@ -144,7 +149,7 @@ export default function pcControl(pi: ExtensionAPI) {
 		name: "pc_type",
 		label: "Escribir en la PC",
 		description:
-			"Types text (max 2000 characters) into a window of the user's desktop. Pass window_id (from pc_list_windows) whenever the target window is known: the helper focuses that window, types, and focus returns to the user's window afterwards, so it does not matter if the user switches focus. Without window_id it types into the focused window. Needs the user's /control on permission. Terminals, password managers, settings and security prompts are refused; sending, paying, buying or deleting asks the user first.",
+			"Types text (max 2000 characters) into a window of the user's desktop. Pass window_id (from pc_list_windows) whenever the target window is known: the helper focuses that window, types, and focus returns to the user's window afterwards, so it does not matter if the user switches focus. Without window_id it types into the focused window. Needs the user's /control on permission. Terminals, password managers, settings and security prompts are refused. A newline in a chat or mail window (a chat/mail app, or WhatsApp, Gmail, Telegram… open in a browser) sends, so it asks the user first; words in the text or the intent never ask by themselves.",
 		promptSnippet: "pc_type: type text into a desktop window (pass window_id)",
 		parameters: Type.Object({
 			text: Type.String({ description: "Text to type (max 2000 characters)." }),
@@ -162,7 +167,7 @@ export default function pcControl(pi: ExtensionAPI) {
 		name: "pc_key",
 		label: "Teclas en la PC",
 		description:
-			'Presses keys or shortcuts on the user\'s desktop, e.g. "ctrl+l", "super+1", "Return", or a space-separated sequence "ctrl+a Delete". Modifiers: ctrl, shift, alt, altgr, super. Pass window_id (from pc_list_windows) whenever the target window is known: the helper focuses it, presses the keys, and focus returns to the user\'s window afterwards. Without window_id the keys go to the focused window. Same permission, blocklist and confirmation rules as pc_type.',
+			'Presses keys or shortcuts on the user\'s desktop, e.g. "ctrl+l", "super+1", "Return", or a space-separated sequence "ctrl+a Delete". Modifiers: ctrl, shift, alt, altgr, super. Pass window_id (from pc_list_windows) whenever the target window is known: the helper focuses it, presses the keys, and focus returns to the user\'s window afterwards. Without window_id the keys go to the focused window. Same permission and blocklist rules as pc_type. Asks the user first only for: Return in a chat or mail window (a chat/mail app, or web chat/mail in a browser), clearing all content (ctrl+a then Delete/BackSpace/ctrl+x, or Vim g g d shift+g), and closing a window or app (alt+F4, ctrl+w, ctrl+q). For volume and media (play/pause, next, previous, mute) use pc_media, never XF86Audio* keys.',
 		promptSnippet: "pc_key: press keys or shortcuts in a desktop window (pass window_id)",
 		parameters: Type.Object({
 			keys: Type.String({ description: 'Key combo(s), e.g. "ctrl+l" or "Return".' }),
@@ -176,11 +181,70 @@ export default function pcControl(pi: ExtensionAPI) {
 		},
 	});
 
+	const APP =
+		"Desktop id of the app (e.g. code, brave-browser, org.gnome.Nautilus). If unsure, call pc_list_apps with a query first.";
+	const composite = async (tool: string, params: Record<string, unknown>, signal?: AbortSignal) => {
+		const { window, opened } = await runInApp((req) => callRequest(req, signal), compositeRequest(tool, params), { signal });
+		return `${opened ? "Opened " + String(params.app) + "; " : ""}window ${window.id} · ${window.app_id} · ${window.title}`;
+	};
+
+	pi.registerTool({
+		name: "pc_write_in",
+		label: "Escribir en una app",
+		description:
+			"Types text into an app's window in ONE call: finds the app's window (opening the app when it has none and waiting for its window), types there, and gives focus back to the user's window. Prefer it over pc_list_windows + pc_open_app + pc_type. Same permission, blocklist and confirmation rules as pc_type. Report the result as done; take no screenshot unless the user asks or the result is in doubt.",
+		promptSnippet: "pc_write_in: type text into an app (opens it if needed), one call",
+		parameters: Type.Object({
+			app: Type.String({ description: APP }),
+			text: Type.String({ description: "Text to type (max 2000 characters)." }),
+			intent: INTENT,
+		}),
+		executionMode: "sequential",
+		async execute(_id, params, signal) {
+			const where = await composite("pc_write_in", params, signal);
+			return { content: [text(`Typed ${[...params.text].length} characters in ${where}.`)], details: {} };
+		},
+	});
+
+	pi.registerTool({
+		name: "pc_run",
+		label: "Teclas en una app",
+		description:
+			'Presses keys or shortcuts in an app\'s window in ONE call (e.g. app "code", keys "ctrl+s" or "ctrl+a Delete"): finds the app\'s window (opening the app when it has none), presses the keys there, and gives focus back to the user\'s window. Prefer it over pc_list_windows + pc_key. Same rules as pc_key; for volume and media use pc_media.',
+		promptSnippet: "pc_run: press keys in an app (opens it if needed), one call",
+		parameters: Type.Object({
+			app: Type.String({ description: APP }),
+			keys: Type.String({ description: 'Key combo(s), e.g. "ctrl+s" or "Return".' }),
+			intent: INTENT,
+		}),
+		executionMode: "sequential",
+		async execute(_id, params, signal) {
+			const where = await composite("pc_run", params, signal);
+			return { content: [text(`Pressed ${params.keys} in ${where}.`)], details: {} };
+		},
+	});
+
+	pi.registerTool({
+		name: "pc_media",
+		label: "Música y volumen",
+		description:
+			"Controls music and volume on the user's PC: play_pause, next, previous (the active player, via playerctl), volume_up / volume_down (5% steps, capped at 100%), mute and unmute (explicit, never a toggle), via wpctl. Use it instead of pc_key for volume and media; never send XF86Audio* keys, which go to the focused window and are refused in terminals. Needs no focused window and no /control on permission. If it says there is no active player, tell the user to start the music first.",
+		promptSnippet: "pc_media: play/pause, next, previous, volume up/down, mute, unmute",
+		parameters: Type.Object({
+			action: StringEnum(MEDIA_ACTIONS, { description: "Media or volume action." }),
+		}),
+		executionMode: "sequential",
+		async execute(_id, params, signal) {
+			const res = await call("pc_media", params, signal);
+			return { content: [text(`Done: ${params.action}.${helperNote(res)}`)], details: res };
+		},
+	});
+
 	pi.registerTool({
 		name: "pc_screenshot",
 		label: "Captura de pantalla",
 		description:
-			"Takes a screenshot and returns it as an image (scale 0.5 by default). Pass window_id (from pc_list_windows) to see a given window: the helper focuses it, captures the monitor showing it, and focus returns to the user's window afterwards. Use it to verify after pc_type/pc_key on that window. Without window_id it captures the whole screen as it is now (focus may already be back on the user's window). Needs the user's /control on permission.",
+			"Takes a screenshot and returns it as an image (scale 0.5 by default). Pass window_id (from pc_list_windows) to see a given window: the helper focuses it, captures the monitor showing it, and focus returns to the user's window afterwards. Use it only when an action failed, its result is in doubt, or the user asks to see the screen; never after every action. Without window_id it captures the whole screen as it is now (focus may already be back on the user's window). Needs the user's /control on permission.",
 		promptSnippet: "pc_screenshot: see the user's screen or a given window (pass window_id)",
 		parameters: Type.Object({
 			scale: Type.Optional(Type.Number({ minimum: 0.1, maximum: 1, description: "Scale factor, default 0.5." })),
@@ -198,6 +262,12 @@ export default function pcControl(pi: ExtensionAPI) {
 				details: rest,
 			};
 		},
+	});
+
+	// T10: the current date and time before each user turn, so date/time questions need no tool.
+	pi.on("before_agent_start", (event) => {
+		if (event.messageType === "custom") return undefined;
+		return { message: { customType: "jarvis-clock", content: clockContext(new Date()), display: false } };
 	});
 
 	// Defense in depth only (see the header): steer the agent to the pc_* tools and away from the
