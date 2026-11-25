@@ -1,8 +1,8 @@
 # Jarvis Pi bridge as a systemd user service (odd/tasks/pi-bridge.md S10; docs/decisiones.md D24).
 #
 # Template: host/systemd/install.sh --pi-bridge replaces @PI@, @SEARCH_PATH@, @TUI_VENV@,
-# @TUI_ROOT@, @SANDBOX_EXEC@, @UNIT_DIR@, @STOP_PATH@, @TUI_LAUNCHER@ and @AGENT_HOME@ and
-# writes the result to ~/.config/systemd/user/jarvis-pibridge.service. Do not install this
+# @TUI_ROOT@, @SANDBOX_EXEC@, @UNIT_DIR@, @STOP_PATH@, @TUI_LAUNCHER@, @AGENT_HOME@ and
+# @PI_AGENT_DIR@ and writes the result to ~/.config/systemd/user/jarvis-pibridge.service. Do not install this
 # file by hand.
 #
 # The bridge (host/jarvis/pibridge, `python -m jarvis.pibridge`) speaks Gentle Dot's
@@ -51,6 +51,10 @@ Environment=JARVIS_PI_PORT=4317
 Environment=JARVIS_PI_EXECUTABLE=@PI@
 Environment=JARVIS_PI_PC_CONTROL=@AGENT_HOME@/extensions/jarvis-pc-control/index.ts
 Environment=JARVIS_PI_AGENTS_MD=@AGENT_HOME@/AGENTS.md
+# S10: Pi's agent directory (settings, trust.json and its lock, logins, models cache, its
+# tmp/ and bin/) is one of the bridge's own, not ~/.pi/agent; the bridge passes its
+# environment to the Pi child. Empty until the user logs Pi in there once (install.sh says how).
+Environment=PI_CODING_AGENT_DIR=@PI_AGENT_DIR@
 # Not in gentle-dot.service, which starts node by its absolute path: pi is a
 # `#!/usr/bin/env node` script, so the directories of pi and node (often a version
 # manager's, unknown to the user manager) go first; the rest is the system's.
@@ -129,11 +133,14 @@ TemporaryFileSystem=/dev/shm
 # touch the agent socket.
 ProtectHome=read-only
 # The only writable places in the home: ~/.gentle-dot (the token file the clients share,
-# S3), the user's work folder ~/Jarvis and, unlike gentle-dot.service, Pi's own ~/.pi
-# (settings, auth, sessions and locks: under a read-only ~/.pi, Pi fails on
-# ~/.pi/agent/trust.json.lock, odd/tasks/pi-bridge.md L4). No "-": install.sh creates all
-# three, and a missing one fails the start (226/NAMESPACE) instead of silently dropping it.
-ReadWritePaths=%h/.gentle-dot %h/Jarvis %h/.pi
+# S3), the user's work folder ~/Jarvis and, unlike gentle-dot.service, the bridge's own Pi
+# agent directory (PI_CODING_AGENT_DIR above; Pi fails when it cannot write its agent
+# directory, e.g. trust.json.lock, odd/tasks/pi-bridge.md L4). The user's ~/.pi stays
+# read-only (S15.1): writable, the agent could plant extensions or packages that the user's
+# unsandboxed Pi loads. Extra extensions under ~/.pi (JARVIS_PI_EXTENSIONS) are still
+# readable. No "-": install.sh creates all three, and a missing one fails the start
+# (226/NAMESPACE) instead of silently dropping it.
+ReadWritePaths=%h/.gentle-dot %h/Jarvis @PI_AGENT_DIR@
 # Read-only on top: the user units, the stop key and the TUI launcher (named here because
 # XDG_CONFIG_HOME or --bin-dir may point outside the home), and the agent's own extensions
 # and rules inside its writable ~/.gentle-dot. No "-": install.sh creates every path first,

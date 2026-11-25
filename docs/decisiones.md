@@ -443,8 +443,23 @@ por default», «Puente con protocolo de Gentle Dot»).
 - **Gentle Dot sigue siendo lo predeterminado** del repositorio. El puente se elige por
   máquina con `host/systemd/install.sh --pi-bridge`, que instala
   `jarvis-pibridge.service` con el mismo aislamiento que `gentle-dot.service` más
-  escritura en `~/.pi`. Las dos unidades se excluyen (`Conflicts=`) y el instalador
-  deshabilita una al habilitar la otra.
+  escritura en una carpeta de agente propia del Pi del puente
+  (`PI_CODING_AGENT_DIR`, por defecto `~/.gentle-dot/pi-agent`, 0700). Las dos unidades
+  se excluyen (`Conflicts=`) y el instalador deshabilita una al habilitar la otra.
+- **`~/.pi` queda de solo lectura** para el servicio (S10 y S15.1, L9). Con escritura
+  ahí, el agente podría dejar una extensión en `~/.pi/agent/extensions/` o tocar
+  `npm/node_modules`, y el `pi` del usuario, que corre sin aislamiento, la ejecutaría al
+  arrancar. Por eso el Pi del puente escribe solo en su carpeta; las extensiones extra
+  de `~/.pi` se siguen leyendo. El costo es iniciar sesión una vez en esa carpeta
+  (`/login`, con el comando que imprime el instalador); el instalador no copia ni lee
+  credenciales.
+- **Los resguardos son otros que en D8.** En una máquina con el puente el agente ya no
+  está «limitado por los resguardos de Gentle Dot» (el diálogo de permiso, la lista de
+  bloqueo y el límite de acciones de D8): quedan solo los de la extensión de control de
+  la PC (D20 y D23) y el aislamiento de la unidad. Además, el Pi del puente conserva las
+  herramientas por defecto de Pi (`read`, `bash`, `edit`, `write`), que actúan dentro de
+  ese aislamiento: home de solo lectura salvo `~/.gentle-dot`, `~/Jarvis` y su carpeta
+  de agente.
 - **Los clientes no cambian:** la TUI, `python -m jarvis.bench` y el adaptador del
   backend (`GentleDotAgent`) hablan con el puente sin tocar su código.
 - **No cambia D1 ni D14 para las demás máquinas:** Gentle Dot sigue siendo la
