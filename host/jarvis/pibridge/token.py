@@ -8,9 +8,13 @@ an existing file is read as is. Nothing here logs or returns the token in a mess
 from __future__ import annotations
 
 import hmac
+import logging
 import os
 import secrets
+import stat
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 TOKEN_BYTES = 32
 
@@ -31,7 +35,23 @@ def load_or_create_token(path: Path) -> str:
         raise TokenError(f"Cannot read the access token at {path}: {error.strerror or error}") from error
     if not token:
         raise TokenError(f"The access token at {path} is empty.")
+    _warn_if_shared(path)
     return token
+
+
+def _warn_if_shared(path: Path) -> None:
+    """An existing file is never changed (S3); say so when others can read it."""
+
+    try:
+        mode = stat.S_IMODE(path.stat().st_mode)
+    except OSError:
+        return
+    if mode & 0o077:
+        logger.warning(
+            "the access token file %s has mode %04o: other users can read it; chmod 600 it",
+            path,
+            mode,
+        )
 
 
 def _create(path: Path) -> str:
@@ -54,4 +74,7 @@ def token_matches(expected: str, offered: object) -> bool:
 
     if not isinstance(offered, str):
         return False
-    return hmac.compare_digest(expected.encode("utf-8"), offered.encode("utf-8"))
+    # surrogatepass: a lone surrogate from JSON is a wrong token, not an encoding error.
+    return hmac.compare_digest(
+        expected.encode("utf-8", "surrogatepass"), offered.encode("utf-8", "surrogatepass")
+    )

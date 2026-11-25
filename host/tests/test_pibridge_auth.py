@@ -267,3 +267,47 @@ def test_the_token_never_reaches_the_logs(caplog: pytest.LogCaptureFixture) -> N
     for record in caplog.records:
         message = record.getMessage()
         assert not any(piece in message for piece in pieces), record.name
+
+
+def test_a_token_that_cannot_be_encoded_is_just_wrong() -> None:
+    # A lone surrogate is valid JSON text but not UTF-8: it must be a mismatch, not a crash.
+    assert token_matches("secret", "\ud800") is False
+    assert token_matches("secret", "secret") is True
+
+
+def test_a_token_file_others_can_read_is_used_with_a_warning_that_omits_the_token(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    path = tmp_path / "token"
+    path.write_text("shared-secret\n", encoding="utf-8")
+    path.chmod(0o644)
+    with caplog.at_level(logging.WARNING):
+        assert load_or_create_token(path) == "shared-secret"
+    assert stat.S_IMODE(path.stat().st_mode) == 0o644  # an existing file is never changed
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1 and str(path) in warnings[0] and "0644" in warnings[0]
+    assert "shared-secret" not in caplog.text
+
+
+def test_a_private_token_file_is_read_without_a_warning(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    path = tmp_path / "token"
+    path.write_text("own-secret\n", encoding="utf-8")
+    path.chmod(0o600)
+    with caplog.at_level(logging.WARNING):
+        assert load_or_create_token(path) == "own-secret"
+    assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+
+@pytest.mark.parametrize(("host", "warned"), [("127.0.0.1", False), ("localhost", False), ("0.0.0.0", True)])
+def test_binding_outside_loopback_warns(host: str, warned: bool, caplog: pytest.LogCaptureFixture) -> None:
+    async def scenario() -> None:
+        server = BridgeServer(token="secret", agent=StubAgent(), hub=Hub())
+        await server.start(host, 0)
+        await server.close()
+
+    with caplog.at_level(logging.WARNING):
+        asyncio.run(scenario())
+    hits = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING and "loopback" in r.getMessage()]
+    assert (len(hits) == 1) is warned

@@ -11,6 +11,7 @@ another protocol version with 4400. Turn frames go to every admitted client.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import contextlib
 import json
 import logging
@@ -109,6 +110,17 @@ class Hub:
             self.remove(ws)
 
 
+def _is_loopback(host: str) -> bool:
+    """Whether ``host`` only accepts connections from this machine."""
+
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 class BridgeServer:
     def __init__(
         self,
@@ -133,6 +145,12 @@ class BridgeServer:
         )
         bound = next(iter(self._server.sockets)).getsockname()[1]
         logger.info("listening on ws://%s:%d/ws", host, bound)
+        if not _is_loopback(host):
+            logger.warning(
+                "listening on %s, outside loopback: other machines can reach the agent "
+                "with the token; bind 127.0.0.1 unless you mean it",
+                host,
+            )
         return int(bound)
 
     async def close(self) -> None:
