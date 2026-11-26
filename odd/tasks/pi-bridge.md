@@ -351,10 +351,17 @@ Gentle Dot as the default; a machine opts into the bridge. Branch `feat/pi-bridg
   Leftovers: S21, no task yet.
 - [x] T4 S11 — Run the bench and the TUI against the bridge on the user's machine; record the
   numbers. Route: inline with the user. Done with Claude by subscription (L18).
-- [ ] T13 S19 — Bridge leftovers of the T11 verify: model state after a silent `set_model`,
+- [x] T13 S19 — Bridge leftovers of the T11 verify: model state after a silent `set_model`,
   abort-then-launch-failure, the `switch` assertion, a closed flag in `close()`, abort read
   during a launch, shutdown order in `__main__`. Route: gentle-ai-worker, branch
-  feat/pi-bridge-s19 on docs/pi-bridge-real-run (L19).
+  feat/pi-bridge-s19 on docs/pi-bridge-real-run (L19): bcd96f0, and 599b877 for the two
+  should-fix notes of the verify (a `send` during `close()` prompted the running Pi; an
+  unexpected prompt-write error left the turn `working`), and a61ba92 for the native review
+  of e38a15f..ad26857 (approved; R4-001 `close()` stops Pi before awaiting the turn tasks,
+  R3-002 a cancelled launch task does not skip stopping Pi; R3-001 needs no code: `apply`'s
+  put-back never ends in `NoAnswer`, `models.py:98-100,115`). Host 374 passed, 6 skipped;
+  pyright not run (not installed). Independent verify of c7ffff9: S19.1-S19.6 pass, no
+  blocker.
 - [x] T14 S21 — Installer leftovers of the T12 verify: `--enable` on an empty Claude Code
   directory, `cd ~ &&` in the printed login, own directories created 755 before the 0700
   creation, upgrade-state test, refusals naming the right directory. Route: gentle-ai-worker,
