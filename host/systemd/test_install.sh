@@ -875,6 +875,8 @@ readonly CLAUDE_STEP="cd ~ && env CLAUDE_CONFIG_DIR=${CCD} claude y dentro escri
 readonly CLAUDE_FIRST="Solo para los modelos de Claude por suscripción (claude-bridge): inicia sesión en Claude Code del puente una sola vez y ANTES del primer arranque del servicio con ${CCD}, que está vacía y donde el agente nunca escribió (este script no copia ni lee credenciales):"
 # S21.1: --enable on an empty Claude Code directory does not start the bridge (the login goes first).
 readonly CLAUDE_HELD="jarvis-pibridge.service no se habilitó ni arrancó: ${CCD} está vacía. Para los modelos de Claude por suscripción (claude-bridge), inicia sesión en Claude Code del puente una sola vez, con el servicio detenido y antes de que arranque con esa carpeta: con el servicio en marcha, el agente podría escribir en ella antes de que corras claude (este script no copia ni lee credenciales):"
+# T14 note 3: the Pi start step while the hold applies (after the Claude Code login, with --enable).
+readonly PI_HELD_START="Arranca el servicio después del inicio de sesión de Claude Code de arriba: este script con las mismas opciones y --enable (o, sin los modelos de Claude, el comando de arriba)."
 readonly CLAUDE_HELD_STEPS="  1. systemctl --user stop jarvis-pibridge.service
   2. ${CLAUDE_STEP}
   3. Vuelve a correr este script con las mismas opciones, con --enable: habilita y arranca el servicio."
@@ -1024,8 +1026,8 @@ check "S21.1 --pi-bridge --enable on an empty Claude Code directory enables only
 check "S21.1 --enable on an empty Claude Code directory prints the login with the service stopped, then --enable again" \
 	'[[ "$(after "${CLAUDE_HELD}" 4)" == "${CLAUDE_HELD_STEPS}"$'"'"'\n'"'"'"Si no vas a usar los modelos de Claude por suscripción, arráncalo así, sin esa sesión: systemctl --user disable --now gentle-dot.service && systemctl --user enable --now jarvis-pibridge.service" ]] &&
 	 ! grep -qF "${CLAUDE_FIRST}" <<<"${OUT}" && ! grep -qF "${CLAUDE_RELOGIN}" <<<"${OUT}"'
-check "S21.1 --enable on an empty Claude Code directory: the Pi steps say the service has not started" \
-	'grep -qxF "${FIRST_LOGIN}" <<<"${OUT}" && ! grep -qF "${ENABLED_LOGIN}" <<<"${OUT}" && ! grep -qF "No se habilitó ni arrancó. Para hacerlo" <<<"${OUT}"'
+check "S21.1 --enable on an empty Claude Code directory: the Pi steps say the service has not started and start it after the Claude Code login" \
+	'[[ "$(after "${FIRST_LOGIN}" 2)" == "  1. ${LOGIN_STEP}"$'"'"'\n'"'"'"  2. ${PI_HELD_START}" ]] && ! grep -qxF "${FIRST_START}" <<<"${OUT}" && ! grep -qF "${ENABLED_LOGIN}" <<<"${OUT}" && ! grep -qF "No se habilitó ni arrancó. Para hacerlo" <<<"${OUT}"'
 # As after the Claude Code login (the installer never opens it).
 : >"${CCD}/.claude.json" && chmod 000 "${CCD}/.claude.json"
 reset_calls
@@ -1270,17 +1272,39 @@ bridged_in "${h}" "${BRIDGE[@]}" --enable
 check "S21.4 upgrade (Pi logged in, Claude Code directory new) --enable: unit replaced, Claude Code directory 0700 and empty, Pi directory untouched, bridge not restarted or enabled" \
 	'[[ ${RC} -eq 0 && -d "${uccd}" && "$(stat -c %a "${uccd}")" == 700 && -z "$(ls -A "${uccd}")" && "$(stat -c %a "${upia}/auth.json")" == 0 && "$(ls -A "${upia}")" == auth.json ]] &&
 	 grep -qxF "Escrito ${h}/.config/systemd/user/jarvis-pibridge.service" <<<"${OUT}" &&
-	 [[ "$(calls)" == $'"'"'--user daemon-reload\n--user try-restart jarvis-input.service\n--user enable --now jarvis-input.service'"'"' ]]'
+	 [[ "$(calls)" == $'"'"'--user daemon-reload\n--user try-restart jarvis-input.service\n--user enable --now jarvis-input.service\n--user stop jarvis-pibridge.service'"'"' ]]'
+# T14 note 1: the restart the changed unit owes is not lost: the held run stops the bridge (a
+# try-restart would start it with the empty directory), so the next --enable starts the new unit.
+check "S21 held run with a changed unit stops the bridge and says so" \
+	'grep -qxF "Se detuvo jarvis-pibridge.service para aplicar los cambios (unidad, reglas o extensión) sin arrancarlo con ${uccd} vacía: arranca otra vez con los pasos de abajo." <<<"${OUT}"'
+# T14 note 3: the Pi steps follow the Claude-first order while the hold applies.
+check "S21 held run: the Pi re-login ends with the held start, not systemctl start" \
+	'grep -qxF "  5. ${PI_HELD_START}" <<<"${OUT}" && ! grep -qxF "  5. systemctl --user start jarvis-pibridge.service" <<<"${OUT}"'
 check "S21.4 upgrade --enable prints the Claude Code login with the service stopped and the Pi re-login procedure, never the Pi login alone" \
 	'grep -qxF "jarvis-pibridge.service no se habilitó ni arrancó: ${uccd} está vacía. ${CLAUDE_HELD#*está vacía. }" <<<"${OUT}" &&
 	 grep -qxF "  2. cd ~ && env CLAUDE_CONFIG_DIR=${uccd} claude y dentro escribe /login; luego sal de Claude Code." <<<"${OUT}" &&
 	 grep -qF "${upia} ya tiene contenido" <<<"${OUT}" && ! grep -qF "Inicio de sesión del Pi del puente" <<<"${OUT}" && ! grep -qF "quedó habilitado" <<<"${OUT}" &&
 	 [[ "$(grep -cF "env PI_CODING_AGENT_DIR=${upia} " <<<"${OUT}")" == 1 ]]'
+# T14 note 2: while the directory stays empty, every --enable holds and still applies the
+# update: changed rules stop the bridge (with the hint), and a stale target link is reported.
+printf '# edited\n' >>"${h}/.gentle-dot/agent/AGENTS.md"
+mkdir -p "${h}/.config/systemd/user/default.target.wants" && ln -s ../jarvis-pibridge.service "${h}/.config/systemd/user/default.target.wants/jarvis-pibridge.service"
+reset_calls
+bridged_in "${h}" "${BRIDGE[@]}" --enable
+check "S21 a later held run with changed rules stops the bridge, says so and reports the stale link" \
+	'[[ ${RC} -eq 0 ]] && [[ "$(calls)" == $'"'"'--user enable --now jarvis-input.service\n--user stop jarvis-pibridge.service'"'"' ]] &&
+	 grep -qxF "Se detuvo jarvis-pibridge.service para aplicar los cambios (unidad, reglas o extensión) sin arrancarlo con ${uccd} vacía: arranca otra vez con los pasos de abajo." <<<"${OUT}" &&
+	 grep -qxF "aviso: la unidad sigue habilitada en default.target; para pasarla a graphical-session.target: systemctl --user reenable jarvis-pibridge.service (o este script con --enable)." <<<"${OUT}" &&
+	 grep -qxF "jarvis-pibridge.service no se habilitó ni arrancó: ${uccd} está vacía. ${CLAUDE_HELD#*está vacía. }" <<<"${OUT}"'
+reset_calls
+bridged_in "${h}" "${BRIDGE[@]}" --enable
+check "S21 a held run with nothing changed does not stop the bridge" \
+	'[[ ${RC} -eq 0 ]] && [[ "$(calls)" == "--user enable --now jarvis-input.service" ]] && ! grep -qF "Se detuvo" <<<"${OUT}"'
 : >"${uccd}/.claude.json" && chmod 000 "${uccd}/.claude.json"
 reset_calls
 bridged_in "${h}" "${BRIDGE[@]}" --enable
-check "S21.4 upgrade, after the Claude Code login: --enable enables and starts the bridge, prints no login command alone" \
-	'[[ ${RC} -eq 0 ]] && [[ "$(calls)" == $'"'"'--user enable --now jarvis-input.service\n--user enable --now jarvis-pibridge.service'"'"' ]] &&
+check "S21.4 upgrade, after the Claude Code login: --enable enables and starts the bridge (reenable for the stale link), prints no login command alone" \
+	'[[ ${RC} -eq 0 ]] && [[ "$(calls)" == $'"'"'--user enable --now jarvis-input.service\n--user reenable jarvis-pibridge.service\n--user start jarvis-pibridge.service'"'"' ]] &&
 	 ! grep -qF "no se habilitó ni arrancó" <<<"${OUT}" && grep -qF "${uccd} ya tiene contenido" <<<"${OUT}"'
 
 # S15.4: the Gentle Dot options are refused with --pi-bridge, like --pi without it.

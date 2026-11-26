@@ -369,8 +369,10 @@ rechazos que a la de Pi (el mismo código): enlace simbólico en la ruta, existe
 carpeta, permisos para el grupo u otros en ella o escritura en las de arriba, `HOME`
 distinto de tu carpeta personal, caracteres que una unidad no admite. También rechaza un
 `XDG_CONFIG_HOME`, `--bin-dir` o `--agent-home` dentro de cualquiera de las dos (los
-crearía 755 y con contenido antes que ellas), y un rechazo en `~/.local`, `~/.local/state`
-o `~/.local/state/jarvis` nombra las dos carpetas. Antes de escribir
+crearía 755 y con contenido antes que ellas). Un enlace simbólico en `~/.local`,
+`~/.local/state` o `~/.local/state/jarvis` se rechaza nombrando las dos carpetas; si una
+de esas no es una carpeta o el grupo u otros pueden escribir en ella, el rechazo nombra esa
+de arriba. Antes de escribir
 nada. No hay opción ni variable para moverla. El envoltorio Landlock no limita archivos
 (solo sockets abstractos y señales), así que no hace falta abrirle nada.
 
@@ -390,7 +392,9 @@ Con `--enable` sobre esa carpeta vacía el script no habilita ni arranca el puen
 detiene Gentle Dot; solo el ayudante): con el servicio en marcha, un Pi con sesión podría
 escribir en ella antes de que corras `claude`. Imprime `systemctl --user stop
 jarvis-pibridge.service`, la línea de arriba y que vuelvas a correr el script con
-`--enable`; si no vas a usar los modelos de Claude, el comando para arrancarlo igual. Es
+`--enable`; si no vas a usar los modelos de Claude, el comando para arrancarlo igual. Si la
+unidad, las reglas o la extensión cambiaron, lo detiene en vez de reiniciarlo (reiniciarlo
+lo arrancaría con la carpeta vacía) y el siguiente `--enable` lo arranca con los cambios. Es
 lo que pasa también al actualizar una instalación anterior del puente, cuyo Pi ya tiene
 sesión. Si ya tiene contenido, nunca corras `claude` en ella; el script da el mismo
 procedimiento que para Pi:
