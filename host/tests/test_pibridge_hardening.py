@@ -357,13 +357,15 @@ def test_shutdown_during_model_sets_launches_no_pi_and_leaves_no_switch_running(
                 await wait_for(lambda: "set_thinking_level" in written(pi))
                 await second.send(model_set("openai", "plain"))  # waits for the first
                 await asyncio.sleep(0.05)
+                # The tasks running the two switches (S19.3): found by their coroutine, both alive.
+                switches = [t for t in asyncio.all_tasks()
+                            if getattr(t.get_coro(), "__qualname__", "") == "BridgeServer._model_set.<locals>.switch"]
+                assert len(switches) == 2 and not any(t.done() for t in switches)
                 start = loop.time()
-                await running.server.close()  # the order of __main__.serve
-                await running.bridge.close()
+                await running.bridge.close()  # the order of __main__.serve (S19.6)
+                await running.server.close()
                 assert loop.time() - start < 1
-                switches = [t for t in asyncio.all_tasks() if not t.done()
-                            and "switch" in getattr(t.get_coro(), "__qualname__", "")]
-                assert not switches
+                assert all(t.done() for t in switches)
                 sent = len(pi.written)
                 await asyncio.sleep(0.3)
                 assert len(launcher.launches) == 1

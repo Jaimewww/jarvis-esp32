@@ -246,6 +246,7 @@ def test_pi_that_cannot_start_is_an_error_and_a_later_send_retries() -> None:
 
         bridge = Bridge(flaky, emit, model="m")
         await bridge.send("hola")
+        await wait_for(lambda: idle_count(frames) == 1)  # the launch runs on its own task (S19.5)
         assert frames == [
             {"type": "agent_state", "state": "working"},
             {"type": "error", "code": "agent_unavailable", "message": frames[1]["message"]},

@@ -48,8 +48,10 @@ async def serve(config: Config) -> None:
         logger.info("token file %s, model %s:%s", config.token_path.expanduser(), config.pi.model, config.pi.thinking)
         await stop.wait()
     finally:
-        await server.close()
+        # The bridge first: a Pi that exits while the clients are closed is not relaunched with
+        # the queued prompt, and nothing a client sends afterwards launches Pi (S19.4, S19.6).
         await bridge.close()
+        await server.close()
 
 
 def main(argv: list[str] | None = None) -> int:
