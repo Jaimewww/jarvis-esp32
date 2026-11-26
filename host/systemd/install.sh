@@ -969,7 +969,7 @@ fi
 hold=0
 ((PI_BRIDGE && ENABLE && claude_config_new)) && hold=1
 # What --enable does with the service (review R2-001): ENABLE and not held: switch and start it;
-# held: only the helper, and a running bridge is stopped; no ENABLE: only the hints.
+# held: only the helper, and the bridge is disabled and stopped; no ENABLE: only the hints.
 start_svc=$((ENABLE && !hold))
 input_changed=0
 [[ "${input_state}" == current && "${input_unit_state}" == current ]] || input_changed=1
@@ -1031,18 +1031,24 @@ if ((start_svc)); then
 		step enable --now "${SVC_NAME}"
 	fi
 else
-	((stale)) && say "aviso: la unidad sigue habilitada en ${OTHER_TARGET}; para pasarla a ${WANTED_TARGET}: systemctl --user reenable ${SVC_NAME} (o este script con --enable)."
+	((stale && !hold)) && say "aviso: la unidad sigue habilitada en ${OTHER_TARGET}; para pasarla a ${WANTED_TARGET}: systemctl --user reenable ${SVC_NAME} (o este script con --enable)."
 fi
-# T14 notes 1-2, review R1-001, R3-001: while held, a bridge that is running is stopped, changed or
-# not: running, its agent could write in the empty directory before the Claude Code login, and a
-# try-restart would start the new unit with it. The next --enable starts the current unit, rules
-# and extension. One that is not running is left alone, with nothing said.
+# T14 notes 1-2, reviews R1-001, R3-001, R3-002: while held, the bridge is always disabled and
+# stopped (a no-op when it is off), changed or not: running, starting (a Restart= backoff) or
+# enabled for the next login, its agent could write in the empty directory before the Claude Code
+# login, and a try-restart would start the new unit with it. Its state is read first only to say
+# so when it was not off. The next --enable enables and starts the current unit, rules and
+# extension; disable also removes a stale target link, so no stale warning is due.
 if ((hold)); then
 	if ((DRY_RUN)); then
-		say "[dry-run] systemctl --user stop ${SVC_NAME} (si está corriendo)"
-	elif systemctl --user is-active --quiet "${SVC_NAME}"; then
-		run systemctl --user stop "${SVC_NAME}"
-		say "Se detuvo ${SVC_NAME}, que estaba corriendo: con ${CLAUDE_CONFIG_DIR} vacía, el agente podría escribir en ella antes del inicio de sesión de Claude Code. Arráncalo con los pasos de abajo (toma la unidad, las reglas y la extensión actuales)."
+		say "[dry-run] systemctl --user disable --now ${SVC_NAME}"
+	else
+		svc_state="$(systemctl --user show -p ActiveState --value "${SVC_NAME}" 2>/dev/null)" || svc_state=""
+		svc_enabled="$(systemctl --user is-enabled "${SVC_NAME}" 2>/dev/null)" || true
+		run systemctl --user disable --now "${SVC_NAME}"
+		if [[ "${svc_state}" != inactive && "${svc_state}" != failed ]] || [[ "${svc_enabled}" == enabled* ]]; then
+			say "Se detuvo y deshabilitó ${SVC_NAME} hasta el siguiente --enable, después del inicio de sesión de Claude Code de abajo: con ${CLAUDE_CONFIG_DIR} vacía, el agente podría escribir en ella antes de ese inicio de sesión. Ese --enable lo habilita y arranca con la unidad, las reglas y la extensión actuales."
+		fi
 	fi
 fi
 if ((!ENABLE)); then

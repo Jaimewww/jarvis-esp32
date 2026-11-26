@@ -392,10 +392,12 @@ Con `--enable` sobre esa carpeta vacía el script no habilita ni arranca el puen
 detiene Gentle Dot; solo el ayudante): con el servicio en marcha, un Pi con sesión podría
 escribir en ella antes de que corras `claude`. Imprime `systemctl --user stop
 jarvis-pibridge.service`, la línea de arriba y que vuelvas a correr el script con
-`--enable`; si no vas a usar los modelos de Claude, el comando para arrancarlo igual. Si el
-puente ya estaba corriendo, lo detiene (y lo dice), haya cambios o no: corriendo, el agente
-podría escribir en la carpeta vacía, y reiniciarlo la abriría a la unidad nueva; el siguiente
-`--enable` lo arranca con la unidad, las reglas y la extensión actuales. Es
+`--enable`; si no vas a usar los modelos de Claude, el comando para arrancarlo igual. Además
+deshabilita y detiene el puente (`systemctl --user disable --now`), haya cambios o no, y lo
+dice si estaba corriendo, arrancando o habilitado: corriendo, o al arrancar con la próxima
+sesión, el agente podría escribir en la carpeta vacía, y reiniciarlo la abriría a la unidad
+nueva. Queda así hasta el siguiente `--enable`, después del inicio de sesión, que lo
+habilita y arranca con la unidad, las reglas y la extensión actuales. Es
 lo que pasa también al actualizar una instalación anterior del puente, cuyo Pi ya tiene
 sesión. Si ya tiene contenido, nunca corras `claude` en ella; el script da el mismo
 procedimiento que para Pi:
