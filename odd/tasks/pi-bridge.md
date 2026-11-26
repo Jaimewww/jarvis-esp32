@@ -254,7 +254,12 @@ Gentle Dot as the default; a machine opts into the bridge. Branch `feat/pi-bridg
   skipped. Native review approved (lineage review-66a5cb63f31ffe4d). Independent verify:
   S17.1-S17.3 pass, no blocker (L12).
 - [x] T5 S13 — Fix pass after the T2 verify and review. Route: gentle-ai-worker, same branch: bde49a8. Host 335 passed, 6 skipped; backend 82 passed, 7 skipped; pyright 0 errors. Native review approved (lineage review-03ea5a3391aa7fc2); independent verify: S13.1-S13.6 pass, S13.7 partial (L8).
-- [ ] T6 S14 — Second hardening pass on model switching and backlog. Route: gentle-ai-worker, after the bridge is in use.
+- [ ] T6 S14 items 1-6 — Second hardening pass of the bridge: model requests, model switching,
+  watchdog and close. Route: gentle-ai-worker, branch feat/pi-bridge-hardening on main.
+- [ ] T10 S14 items 7-11 — Installer hardening: agent directory and `HOME`, symlink loop,
+  parent modes, recovery hint, `HOME` with a space. Route: gentle-ai-worker, branch
+  feat/pi-bridge-installer-hardening on feat/pi-bridge-hardening's first commit.
+- [ ] T4 S11 — With the user: install the unit, real Pi login, enable, TUI against the bridge.
 - [ ] T4 S11 — Run the bench and the TUI against the bridge on the user's machine; record the
   numbers. Route: inline with the user.
 
@@ -362,3 +367,8 @@ Gentle Dot as the default; a machine opts into the bridge. Branch `feat/pi-bridg
   deliberately wrong `HOME` at install time and four notes, recorded in S14 items 7-11. Still
   not verified anywhere: the unit started under a real systemd, and a real Pi login. Pushed
   feat/pi-bridge-install and opened the third PR (3/3), stacked on PR #42.
+- L13 (2026-11-26, user request and delivery). User: "si dale mergea, arma el plan, con lo que
+  puedes avanzar tu y luego ya vamos con las pruebas". Merged PR #41, #42 and #43 into main
+  (03abe56, ed3753a, dcc68c6; #42 and #43 retargeted to main first). Plan: S14 now, before the
+  bridge is in use, split by surface into T6 (bridge, items 1-6) and T10 (installer, items
+  7-11); then T4 with the user.
