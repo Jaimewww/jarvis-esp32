@@ -364,7 +364,9 @@ Gentle Dot as the default; a machine opts into the bridge. Branch `feat/pi-bridg
   Independent verify: S21.1-S21.5 pass, four should-fix notes fixed by 93fcf45. Native review
   of 93a0cb0..b9dc0d0 approved with non-blocking findings, fixed by 3c0d36b (the held run stops
   the bridge only when it is running, changed or not; named --enable cases; one symlink
-  refusal). Installer suite 326 passed.
+  refusal). Native review of b9dc0d0..37541d3 approved with three non-blocking findings, fixed
+  by 6a63582 (while held the bridge is always disabled and stopped, so an activating or enabled
+  one cannot come up; the message only when it was not off). Installer suite 328 passed.
 - [ ] T15 — Whisper picks up a lot of noise (L18). Route: inline, after T13/T14 and the tests
   (L19).
 
