@@ -277,9 +277,10 @@ backend no cambian. Medido el 2026-11-25 con el mismo modelo: las preguntas baja
 * `systemd/jarvis-pibridge.service.in` — plantilla de la unidad
   `jarvis-pibridge.service`. En el aislamiento es igual a `gentle-dot.service` (sin
   pantalla, sin bus de sesión, home de solo lectura, el mismo envoltorio Landlock) salvo
-  una línea: `ReadWritePaths=` suma la **carpeta propia del Pi del puente** (ver abajo).
-  Fuera del aislamiento cambia lo propio de otro daemon: el `ExecStart=`, las variables
-  `JARVIS_PI_*`, `PI_CODING_AGENT_DIR` y `PATH`, y `Conflicts=`. Corre con el entorno de
+  una línea: `ReadWritePaths=` suma la **carpeta propia del Pi del puente** y la **carpeta
+  propia de Claude Code del puente** (ver abajo). Fuera del aislamiento cambia lo propio de
+  otro daemon: el `ExecStart=`, las variables `JARVIS_PI_*`, `PI_CODING_AGENT_DIR`,
+  `CLAUDE_CONFIG_DIR` y `PATH`, y `Conflicts=`. Corre con el entorno de
   Python que `install.sh` ya arma para la TUI (`~/.local/share/jarvis/tui/`), así que el
   puente es la copia instalada de `host/jarvis`, no el checkout.
 * Lleva `Conflicts=gentle-dot.service`: arrancar una detiene la otra, en los dos
@@ -351,6 +352,47 @@ La carpeta movida queda como está (no corras Pi en ella; bórrala cuando quiera
 proveedor lo trae una extensión (por ejemplo `pi-claude-bridge`), agrégala con
 `-e <ruta>`. La cuenta queda en la carpeta y se conserva al desinstalar.
 
+**Carpeta propia de Claude Code.** Con los modelos de Claude por suscripción (ver *Modelos
+de Claude por suscripción*, abajo) la extensión `pi-claude-bridge` arranca Claude Code
+(con el Claude Agent SDK), y Claude Code escribe en su carpeta de configuración: las
+sesiones en `projects/`, `.claude.json` y la renovación del token. El puente no le da la
+tuya (`~/.claude` y `~/.claude.json` siguen de **solo lectura**: tu `claude` de la
+terminal, sin aislamiento, ejecuta los hooks y la configuración que encuentra ahí) sino
+una suya, fija, `~/.local/state/jarvis/claude-config` (0700), que la unidad le pasa en
+`CLAUDE_CONFIG_DIR` y es lo único de Claude donde el servicio puede escribir. El script la
+crea siempre con `--pi-bridge`, aunque uses otro modelo, y le aplica exactamente los mismos
+rechazos que a la de Pi (el mismo código): enlace simbólico en la ruta, existe y no es una
+carpeta, permisos para el grupo u otros en ella o escritura en las de arriba, `HOME`
+distinto de tu carpeta personal, caracteres que una unidad no admite. Antes de escribir
+nada. No hay opción ni variable para moverla. El envoltorio Landlock no limita archivos
+(solo sockets abstractos y señales), así que no hace falta abrirle nada.
+
+La regla para iniciar sesión es la misma que con Pi: Claude Code corre fuera del
+aislamiento solo en esa carpeta **vacía, que el agente nunca escribió**, porque ejecutaría
+lo que el agente hubiera dejado (hooks, `statusLine` y `apiKeyHelper` de `settings.json`,
+servidores MCP de `.claude.json`, plugins, agentes y comandos). El script lo imprime antes
+que los pasos de Pi:
+
+```bash
+# carpeta nueva o vacía, antes del primer arranque del servicio con ella
+env CLAUDE_CONFIG_DIR=$HOME/.local/state/jarvis/claude-config claude
+# dentro de Claude Code: /login con tu suscripción y salir
+```
+
+Con `--enable` sobre una carpeta vacía el servicio ya arrancó con ella: el script dice
+que la sesión se inicia con el servicio detenido y antes de mandarle nada a Jarvis
+(`systemctl --user stop jarvis-pibridge.service`, la línea de arriba,
+`systemctl --user start jarvis-pibridge.service`). Si ya tiene contenido, nunca corras
+`claude` en ella; el script da el mismo procedimiento que para Pi:
+
+```bash
+systemctl --user stop jarvis-pibridge.service
+mv ~/.local/state/jarvis/claude-config ~/.local/state/jarvis/claude-config.old-AAAAMMDD-HHMMSS
+host/systemd/install.sh --pi-bridge --node "$(mise where node@24)/bin/node"  # sin --enable: carpeta nueva, vacía, 0700
+env CLAUDE_CONFIG_DIR=$HOME/.local/state/jarvis/claude-config claude  # /login y salir
+systemctl --user start jarvis-pibridge.service
+```
+
 Requisitos: `pi` instalado, el **binario real** de Node 24+, como para Gentle Dot (un
 shim de mise no sirve), y la sesión de arriba. No hace falta el checkout de Gentle Dot.
 
@@ -384,7 +426,7 @@ host/systemd/install.sh --gentle-dot-dir ~/ruta/gentle-dot \
 Es la instalación de siempre: con `--enable`, si el puente está instalado, primero corre
 `systemctl --user disable --now jarvis-pibridge.service` y después habilita Gentle Dot.
 `--uninstall` quita las dos unidades (y el ayudante); no toca `~/.pi` ni `~/.gentle-dot`
-(tampoco la carpeta propia de Pi, con su sesión).
+(tampoco las carpetas propias de Pi y de Claude Code, con sus sesiones).
 
 ### Elegir el modelo
 
@@ -405,6 +447,26 @@ y `systemctl --user restart jarvis-pibridge.service`. Las opciones de
 (`--record-timeout` es `JARVIS_PI_RECORD_TIMEOUT`), con dos excepciones: `--pi` es
 `JARVIS_PI_EXECUTABLE` y `--extension` es `JARVIS_PI_EXTENSIONS` (varias, separadas por
 `:`). El modelo que se elige desde la TUI vale hasta que el servicio se reinicia.
+
+### Modelos de Claude por suscripción
+
+Sin cuenta de OpenAI ni API key, el puente puede usar tu suscripción de Claude con la
+extensión `pi-claude-bridge` (instalada en tu Pi, en
+`~/.pi/agent/npm/node_modules/pi-claude-bridge`; el servicio la lee, no la escribe). El
+repo no cambia de modelo por defecto: se elige con el mismo override
+(`systemctl --user edit jarvis-pibridge.service`):
+
+```ini
+[Service]
+Environment=JARVIS_PI_MODEL=claude-bridge/claude-sonnet-5-5
+Environment=JARVIS_PI_THINKING=low
+Environment=JARVIS_PI_EXTENSIONS=%h/.pi/agent/npm/node_modules/pi-claude-bridge
+```
+
+Antes de reiniciar, inicia sesión en Claude Code una vez en su carpeta propia (ver
+*Carpeta propia de Claude Code*, arriba):
+`env CLAUDE_CONFIG_DIR=$HOME/.local/state/jarvis/claude-config claude`, `/login` y salir.
+Después, `systemctl --user restart jarvis-pibridge.service`.
 
 ### Ver que está corriendo
 
