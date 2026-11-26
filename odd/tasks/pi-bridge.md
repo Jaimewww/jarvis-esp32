@@ -355,10 +355,18 @@ Gentle Dot as the default; a machine opts into the bridge. Branch `feat/pi-bridg
   abort-then-launch-failure, the `switch` assertion, a closed flag in `close()`, abort read
   during a launch, shutdown order in `__main__`. Route: gentle-ai-worker, branch
   feat/pi-bridge-s19 on docs/pi-bridge-real-run (L19).
-- [ ] T14 S21 — Installer leftovers of the T12 verify: `--enable` on an empty Claude Code
+- [x] T14 S21 — Installer leftovers of the T12 verify: `--enable` on an empty Claude Code
   directory, `cd ~ &&` in the printed login, own directories created 755 before the 0700
   creation, upgrade-state test, refusals naming the right directory. Route: gentle-ai-worker,
-  branch feat/pi-bridge-s21 on docs/pi-bridge-real-run (L19).
+  branch feat/pi-bridge-s21 on docs/pi-bridge-real-run (L19): 93a0cb0 (installer, tests,
+  README), 93fcf45 (verify notes: a restart owed during the hold becomes a stop, update hints
+  and stale link kept while held, Pi steps in the Claude-first order, README parent refusals).
+  Independent verify: S21.1-S21.5 pass, four should-fix notes fixed by 93fcf45. Native review
+  of 93a0cb0..b9dc0d0 approved with non-blocking findings, fixed by 3c0d36b (the held run stops
+  the bridge only when it is running, changed or not; named --enable cases; one symlink
+  refusal). Native review of b9dc0d0..37541d3 approved with three non-blocking findings, fixed
+  by 6a63582 (while held the bridge is always disabled and stopped, so an activating or enabled
+  one cannot come up; the message only when it was not off). Installer suite 328 passed.
 - [ ] T15 — Whisper picks up a lot of noise (L18). Route: inline, after T13/T14 and the tests
   (L19).
 
