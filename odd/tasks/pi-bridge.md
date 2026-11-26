@@ -266,6 +266,43 @@ Gentle Dot as the default; a machine opts into the bridge. Branch `feat/pi-bridg
   Pi; (6) in the `__main__` order a Pi relaunched during shutdown gets its prompt before it is
   closed.
 
+- S20 (L16). User: "es que no tengo cuentas aparte de claude, en ese caso deberias intalar
+  claudebridge o un deepseek por api, que renta mas"; chosen: "claude-bridge con carpeta propia
+  (recomendado)". The Pi extension pi-claude-bridge (0.13.0) uses the Claude Agent SDK, which
+  spawns Claude Code; Claude Code writes its config directory (sessions under `projects/`,
+  `.claude.json`, token renewal) and honors `CLAUDE_CONFIG_DIR`.
+  1. With `--pi-bridge` the unit gives Claude Code a directory of its own, fixed at
+     `$HOME/.local/state/jarvis/claude-config`, passed as `CLAUDE_CONFIG_DIR`, the only Claude
+     path the service can write. `~/.claude` and `~/.claude.json` stay read-only. No option or
+     variable moves it (S17 lesson).
+  2. The installer creates it 0700 and applies to it every refusal the Pi agent directory has
+     (S16, S17, S14 items 7-11): symlink in a component, not a directory, group or other
+     permissions on it, writable parents, wrong `HOME`, unit-unsafe characters. Nothing is
+     written before the checks.
+  3. Every sandbox layer of the unit allows writing there and nowhere new (`ReadWritePaths`,
+     the Landlock layer of `jarvis-sandbox-exec`).
+  4. The installer prints the one-time Claude login, before the first start of the service:
+     `env CLAUDE_CONFIG_DIR=<dir> claude` and `/login`, with the same warning as for Pi: once
+     the agent wrote in the directory, do not run `claude` in it; move it aside and log in on a
+     new one.
+  5. host/README.md explains the Claude subscription setup: the drop-in with
+     `JARVIS_PI_MODEL=claude-bridge/claude-sonnet-5-5`, `JARVIS_PI_THINKING=low` and
+     `JARVIS_PI_EXTENSIONS=%h/.pi/agent/npm/node_modules/pi-claude-bridge`, plus the login.
+  Not requested: DeepSeek, a different default model in the repo (stays
+  `openai/gpt-6.1-sol`), an installer option for the model.
+
+- S21 (L17, left for a later pass, none is a blocker): (1) with `--enable` on an empty Claude
+  Code directory the installer starts the service and then tells the user to stop it and run
+  `claude` there; emptiness is not checked again, and a Pi already logged in could have
+  written hooks or settings in between (`install.sh:1032-1036`): until fixed, install without
+  `--enable`, log in, then enable; (2) the printed `claude` login command sets no working
+  directory: run from `~/Jarvis` or `~/.gentle-dot` it could load project files the agent can
+  write; prefix it with `cd ~ &&`; (3) `XDG_CONFIG_HOME` or `--bin-dir` pointing inside an own
+  directory makes the installer create it 755 and non-empty before the 0700 creation
+  (`install.sh:644,725` before `:945`); same at the parent commit for `pi-agent`; (4) no test
+  for the upgrade state: Pi directory with a login, Claude Code directory new; (5) refusals on
+  the shared parents name only the Pi directory.
+
 ## Tasks
 
 - [x] T1 S2,S3,S4,S5 — Bridge core: server, auth, one turn with deltas, abort, Pi process
@@ -307,6 +344,11 @@ Gentle Dot as the default; a machine opts into the bridge. Branch `feat/pi-bridg
   continued), same branch: d164557. Host 362 passed, 6 skipped; pyright 0 errors. Native review
   approved (lineage review-bed6eb353178c6bd). Independent verify: S18.1-S18.5 pass, no blocker
   (L15). Leftovers: S19, no task yet.
+- [x] T12 S20 — Claude Code config directory of the bridge. Route: gentle-ai-worker, branch
+  feat/pi-bridge-claude on main: b5fdce1 (installer, unit, tests), b0f9ba6 (docs). Installer
+  suite 301 passed; host 362 passed, 6 skipped. Native review approved (lineage
+  review-1fda5d26b526cedf). Independent verify: S20.1-S20.5 pass, no blocker (L17).
+  Leftovers: S21, no task yet.
 - [ ] T4 S11 — Run the bench and the TUI against the bridge on the user's machine; record the
   numbers. Route: inline with the user.
 
@@ -437,3 +479,22 @@ Gentle Dot as the default; a machine opts into the bridge. Branch `feat/pi-bridg
   the verify ended and the review closed approved with six advisories, recorded with the
   verify notes as S19. Pushed feat/pi-bridge-hardening and opened its PR. Still not verified
   anywhere: a real `pi` subprocess on these paths, and real systemd.
+- L16 (2026-11-26, delivery, evidence and user decision). Merged PR #45 (9e7b1f8) and PR #44
+  (8b8db5f) into main. T4 started on the user's machine: installed and enabled from main,
+  the unit started under real systemd and listened; the first real turn failed with "OAuth
+  refresh failed for openai [...] invalid_grant" (the user had copied the login file of their
+  own Pi; the copy was moved aside and the directory recreated empty). User: "es que no tengo
+  cuentas aparte de claude, en ese caso deberias intalar claudebridge o un deepseek por api,
+  que renta mas"; answered the question "claude-bridge con carpeta propia (recomendado)". Read
+  of pi-claude-bridge 0.13.0: `@anthropic-ai/claude-agent-sdk` 0.3.321 with its linux-x64
+  binary package installed beside it, `CLAUDE_CONFIG_DIR` read at `src/index.ts:527,542`.
+  Spike figures of 2026-11-25 for claude-bridge/claude-sonnet-5-5 low, outside the sandbox:
+  questions 3.06-3.36 s, volume 3.89/3.95 s. Recorded as S20, task T12.
+- L17 (2026-11-26, evidence, T12). b5fdce1 and b0f9ba6: one shared `check_own_dir` for both
+  own directories. Native review approved with two advisories. Independent verify: 29 refusal
+  cases each leave the HOME tree identical with no unit written and no `pi-agent` created;
+  pre-set `CLAUDE_CONFIG_DIR`, `XDG_*` and the old agent-directory variables change nothing in
+  the unit; Gentle Dot install identical to 41f4a96 over 11 steps; no blocker, two should-fix
+  and notes recorded as S21. Still open for the real run: whether Claude Code writes outside
+  `CLAUDE_CONFIG_DIR`, whether the SDK's bundled binary starts under the sandbox, whether the
+  Pi of the bridge needs a login of its own for `claude-bridge/` models.

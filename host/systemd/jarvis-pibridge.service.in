@@ -1,8 +1,8 @@
 # Jarvis Pi bridge as a systemd user service (odd/tasks/pi-bridge.md S10; docs/decisiones.md D24).
 #
 # Template: host/systemd/install.sh --pi-bridge replaces @PI@, @SEARCH_PATH@, @TUI_VENV@,
-# @TUI_ROOT@, @SANDBOX_EXEC@, @UNIT_DIR@, @STOP_PATH@, @TUI_LAUNCHER@, @AGENT_HOME@ and
-# @PI_AGENT_DIR@ and writes the result to ~/.config/systemd/user/jarvis-pibridge.service. Do not install this
+# @TUI_ROOT@, @SANDBOX_EXEC@, @UNIT_DIR@, @STOP_PATH@, @TUI_LAUNCHER@, @AGENT_HOME@,
+# @PI_AGENT_DIR@ and @CLAUDE_CONFIG_DIR@ and writes the result to ~/.config/systemd/user/jarvis-pibridge.service. Do not install this
 # file by hand.
 #
 # The bridge (host/jarvis/pibridge, `python -m jarvis.pibridge`) speaks Gentle Dot's
@@ -55,6 +55,12 @@ Environment=JARVIS_PI_AGENTS_MD=@AGENT_HOME@/AGENTS.md
 # tmp/ and bin/) is one of the bridge's own, not ~/.pi/agent; the bridge passes its
 # environment to the Pi child. Empty until the user logs Pi in there once (install.sh says how).
 Environment=PI_CODING_AGENT_DIR=@PI_AGENT_DIR@
+# S20: Claude Code (started by the pi-claude-bridge extension through the Claude Agent SDK,
+# which passes it this environment) keeps its config there (sessions under projects/,
+# .claude.json, token renewal) instead of ~/.claude and ~/.claude.json, which stay read-only:
+# the user's unsandboxed Claude Code runs the hooks and settings it finds in them. Empty until
+# the user logs Claude Code in there once (install.sh says how).
+Environment=CLAUDE_CONFIG_DIR=@CLAUDE_CONFIG_DIR@
 # Not in gentle-dot.service, which starts node by its absolute path: pi is a
 # `#!/usr/bin/env node` script, so the directories of pi and node (often a version
 # manager's, unknown to the user manager) go first; the rest is the system's.
@@ -138,9 +144,10 @@ ProtectHome=read-only
 # directory, e.g. trust.json.lock, odd/tasks/pi-bridge.md L4). The user's ~/.pi stays
 # read-only (S15.1): writable, the agent could plant extensions or packages that the user's
 # unsandboxed Pi loads. Extra extensions under ~/.pi (JARVIS_PI_EXTENSIONS) are still
-# readable. No "-": install.sh creates all three, and a missing one fails the start
-# (226/NAMESPACE) instead of silently dropping it.
-ReadWritePaths=%h/.gentle-dot %h/Jarvis @PI_AGENT_DIR@
+# readable. Last, Claude Code's own config directory (CLAUDE_CONFIG_DIR above), for the same
+# reason; ~/.claude and ~/.claude.json stay read-only (S20). No "-": install.sh creates all
+# four, and a missing one fails the start (226/NAMESPACE) instead of silently dropping it.
+ReadWritePaths=%h/.gentle-dot %h/Jarvis @PI_AGENT_DIR@ @CLAUDE_CONFIG_DIR@
 # Read-only on top: the user units, the stop key and the TUI launcher (named here because
 # XDG_CONFIG_HOME or --bin-dir may point outside the home), and the agent's own extensions
 # and rules inside its writable ~/.gentle-dot. No "-": install.sh creates every path first,
