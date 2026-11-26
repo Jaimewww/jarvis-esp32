@@ -9,11 +9,13 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import pytest
 from fake_pi import FakeLauncher, FakePi, reply
 from pibridge_harness import bridge_at, raw, run, wait_for
 from websockets.asyncio.client import ClientConnection
 
 from jarvis.pibridge.server import MAX_PI_REQUESTS
+from jarvis.pibridge import turns
 from jarvis.pibridge.turns import COMMAND_TIMEOUT_S, Bridge
 
 Frames = list[dict[str, Any]]
@@ -333,5 +335,195 @@ def test_close_stops_a_pi_whose_launch_was_running() -> None:
         assert pi.closed and pi.exit_code is not None
         assert "prompt" not in written(pi)
         assert not [f for f in frames if f["type"] in ("user_message", "message_delta", "message_done")]
+
+    run(scenario())
+
+
+# --- S18.1 Shutdown during a model_set ----------------------------------------------------
+
+
+def test_shutdown_during_model_sets_launches_no_pi_and_leaves_no_switch_running(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        launcher = FakeLauncher()
+        loop = asyncio.get_running_loop()
+        async with bridge_at(launcher, tmp_path / "token") as running:
+            await running.bridge.start()
+            pi = launcher.current
+            pi.mute.add("set_thinking_level")  # the first switch waits on Pi
+            async with contextlib.AsyncExitStack() as clients:
+                first = await clients.enter_async_context(raw(running))
+                second = await clients.enter_async_context(raw(running))
+                await first.send(model_set("anthropic", "claude-x", "medium"))
+                await wait_for(lambda: "set_thinking_level" in written(pi))
+                await second.send(model_set("openai", "plain"))  # waits for the first
+                await asyncio.sleep(0.05)
+                start = loop.time()
+                await running.server.close()  # the order of __main__.serve
+                await running.bridge.close()
+                assert loop.time() - start < 1
+                switches = [t for t in asyncio.all_tasks() if not t.done()
+                            and "switch" in getattr(t.get_coro(), "__qualname__", "")]
+                assert not switches
+                sent = len(pi.written)
+                await asyncio.sleep(0.3)
+                assert len(launcher.launches) == 1
+                assert pi.closed and pi.exit_code is not None
+                assert len(pi.written) == sent  # nothing more went to Pi after close()
+                assert running.bridge.model == "openai/test-model"
+
+    run(scenario())
+
+
+# --- S18.2 abort right after model_set and send -------------------------------------------
+
+
+def test_abort_drops_a_send_still_waiting_behind_its_model_set(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        launcher = FakeLauncher(reply("ok"))
+        async with bridge_at(launcher, tmp_path / "token") as running:
+            await running.bridge.start()
+            pi = launcher.current
+            release = asyncio.Event()
+
+            async def hold(_pi: FakePi, record: dict[str, Any]) -> bool:
+                if record["type"] == "set_model":
+                    await release.wait()
+                return False
+
+            pi.intercept = hold
+            async with raw(running) as socket, raw(running) as other:
+                await socket.send(model_set("anthropic", "claude-x"))
+                await socket.send(json.dumps({"type": "send", "text": "hola"}))
+                await socket.send(json.dumps({"type": "abort"}))
+                await wait_for(lambda: "set_model" in written(pi))
+                await asyncio.sleep(0.1)
+                release.set()
+                seen = await frames_until(socket, lambda s: bool(of(s, "models")))
+                seen += await quiet(socket)
+                assert [f["type"] for f in seen] == ["models"]
+                assert [f["type"] for f in await quiet(other)] == ["models"]
+                assert "prompt" not in written(pi)
+                assert running.bridge.agent_state == "idle"
+                # The next send works.
+                await socket.send(json.dumps({"type": "send", "text": "otra"}))
+                turn = await frames_until(socket, lambda s: {"type": "agent_state", "state": "idle"} in s)
+                assert [f["text"] for f in of(turn, "user_message")] == ["otra"]
+                assert [f["text"] for f in of(turn, "message_done")] == ["ok"]
+                assert [r["message"] for r in pi.written if r["type"] == "prompt"] == ["otra"]
+                assert len(launcher.launches) == 1
+
+    run(scenario())
+
+
+# --- S18.3 A failed switch on a silent Pi -------------------------------------------------
+
+
+@pytest.mark.parametrize("thinking", [None, "high"])
+def test_a_failed_switch_on_a_silent_pi_is_answered_within_one_command_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, thinking: str | None
+) -> None:
+    timeout = 0.3
+    monkeypatch.setattr(turns, "COMMAND_TIMEOUT_S", timeout)
+
+    async def scenario() -> None:
+        launcher = FakeLauncher()
+        loop = asyncio.get_running_loop()
+        async with bridge_at(launcher, tmp_path / "token") as running:
+            await running.bridge.start()
+            pi = launcher.current
+            switched = False
+
+            async def silent_after_switch(_pi: FakePi, record: dict[str, Any]) -> bool:
+                nonlocal switched
+                if switched:
+                    return True  # never answered
+                switched = record["type"] == "set_model"
+                return False
+
+            pi.intercept = silent_after_switch
+            async with raw(running) as first, raw(running) as second:
+                start = loop.time()
+                await first.send(model_set("anthropic", "claude-x", thinking))
+                await wait_for(lambda: "set_model" in written(pi))
+                await second.send(model_set("openai", "plain"))  # waits for the lock
+                first_seen = await frames_until(first, lambda s: bool(of(s, "error")))
+                first_at = loop.time() - start
+                second_seen = await frames_until(second, lambda s: bool(of(s, "error")))
+                second_at = loop.time() - start
+                assert [f["code"] for f in of(first_seen, "error")] == ["agent_unavailable"]
+                assert [f["code"] for f in of(second_seen, "error")] == ["agent_unavailable"]
+                assert timeout <= first_at < timeout * 1.7
+                assert second_at < timeout * 2.7  # the lock was held for one timeout only
+                assert not of(first_seen, "models") and not of(second_seen, "models")
+                assert written(pi).count("set_model") == 1  # no put-back to a silent Pi
+                assert len(launcher.launches) == 1
+
+    run(scenario())
+
+
+# --- S18.4 abort during a launch ----------------------------------------------------------
+
+
+def test_abort_during_a_launch_ends_the_turn_and_the_next_send_works(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        launcher = FakeLauncher(reply("ok"))
+        launched = asyncio.Event()
+
+        async def gated(_pi: FakePi) -> None:
+            await launched.wait()
+
+        launcher.on_launch = gated
+        loop = asyncio.get_running_loop()
+        async with bridge_at(launcher, tmp_path / "token") as running, \
+                raw(running) as sender, raw(running) as stopper:
+            # The sender's read loop waits for the launch its send started; the abort comes from
+            # the other client (the TUI and the backend share the bridge).
+            await sender.send(json.dumps({"type": "send", "text": "hola"}))
+            for socket in (sender, stopper):
+                assert await frames_until(socket, lambda s: bool(of(s, "agent_state"))) == [
+                    {"type": "agent_state", "state": "working"}]
+            start = loop.time()
+            await stopper.send(json.dumps({"type": "abort"}))
+            for socket in (sender, stopper):
+                seen = await frames_until(socket, lambda s: bool(of(s, "agent_state")))
+                assert seen == [{"type": "agent_state", "state": "idle"}]
+            assert loop.time() - start < 0.5  # the launch has not finished
+            assert not launcher.launches and running.bridge.agent_state == "idle"
+            launched.set()
+            await wait_for(lambda: bool(launcher.launches))
+            assert not await quiet(sender) and not await quiet(stopper)
+            assert "prompt" not in written(launcher.current)
+            await sender.send(json.dumps({"type": "send", "text": "otra"}))
+            turn = await frames_until(sender, lambda s: {"type": "agent_state", "state": "idle"} in s)
+            assert not of(turn, "error")
+            assert [f["text"] for f in of(turn, "user_message")] == ["otra"]
+            assert [f["text"] for f in of(turn, "message_done")] == ["ok"]
+            assert [r["message"] for r in launcher.current.written if r["type"] == "prompt"] == ["otra"]
+            assert len(launcher.launches) == 1 and not launcher.current.closed
+
+    run(scenario())
+
+
+# --- S18.5 A send refused for a full queue ------------------------------------------------
+
+
+def test_a_send_refused_for_a_full_request_queue_gets_queue_full(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        launcher = FakeLauncher()
+        async with bridge_at(launcher, tmp_path / "token") as running:
+            await running.bridge.start()
+            pi = launcher.current
+            pi.mute.add("get_available_models")  # the model_set waits on Pi
+            async with raw(running) as socket:
+                await socket.send(model_set("openai", "plain"))
+                await wait_for(lambda: "get_available_models" in written(pi))
+                for _ in range(MAX_PI_REQUESTS):
+                    await socket.send(json.dumps({"type": "models_list"}))
+                await socket.send(json.dumps({"type": "send", "text": "hola"}))
+                seen = await frames_until(socket, lambda s: bool(of(s, "error")))
+                seen += await quiet(socket)
+                assert [f["code"] for f in of(seen, "error")] == ["queue_full"]
+                assert [f["type"] for f in seen] == ["error"]
+                assert written(pi).count("get_available_models") == 1 and "prompt" not in written(pi)
 
     run(scenario())

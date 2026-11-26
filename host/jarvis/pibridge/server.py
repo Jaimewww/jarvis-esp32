@@ -11,10 +11,11 @@ browser page; Jarvis's clients send none) is refused with HTTP 403 before any of
 a request (history, the conversation list, the account, an ``error``) goes to its sender
 only. A request the bridge does not support gets an ``error`` frame (S9). The requests that
 wait for Pi (``models_list``, ``model_set``) run in order on their own task per connection, so
-they never hold up that client's next frame, ``abort`` above all (S13.7). Beyond
-``MAX_PI_REQUESTS`` waiting, one more gets a ``busy`` error; a ``send`` that follows a
-``model_set`` of the same client waits for it; a request that fails unexpectedly is answered
-with ``internal_error`` (S14.1, S14.3, S14.4).
+they never hold up that client's next frame, ``abort`` above all (S13.7). A ``send`` that
+follows a ``model_set`` of the same client waits for it there, and ``abort`` drops the client's
+sends still waiting (S14.3, S18.2). Beyond
+``MAX_PI_REQUESTS`` waiting, one more gets ``busy`` (``queue_full`` for a ``send``); a request
+that fails unexpectedly is answered with ``internal_error`` (S14.1, S18.5, S14.4).
 """
 
 from __future__ import annotations
@@ -46,6 +47,7 @@ MAX_FRAME_BYTES: Final = 2 * 1024 * 1024
 #: Pi requests of one client that may wait behind the one running; one more is refused (S14.1).
 MAX_PI_REQUESTS: Final = 8
 _PI_REQUESTS: Final = frozenset({"models_list", "model_set"})
+QUEUE_FULL_MESSAGE: Final = "Too many messages are waiting; try again when this reply ends."
 
 #: websockets logs every frame at debug level, and the hello frame holds the token:
 #: its logger never goes below info, whatever the log level is.
@@ -217,11 +219,19 @@ class BridgeServer:
                     try:
                         requests.put_nowait(payload)
                     except asyncio.QueueFull:
-                        await self._error(ws, "busy", "Too many requests are waiting for Pi; try again shortly.")
+                        if kind == "send":
+                            await self._error(ws, "queue_full", QUEUE_FULL_MESSAGE)  # S18.5
+                        else:
+                            await self._error(ws, "busy", "Too many requests are waiting for Pi; try again shortly.")
                         continue
                     if kind == "model_set":
                         switches += 1
                 else:
+                    if kind == "abort":  # it also drops this client's sends still waiting (S18.2)
+                        waiting = [requests.get_nowait() for _ in range(requests.qsize())]
+                        for request in waiting:
+                            if request.get("type") != "send":
+                                requests.put_nowait(request)
                     await self._dispatch(ws, payload)
         except ConnectionClosed:
             pass
@@ -241,7 +251,7 @@ class BridgeServer:
         if kind == "send":
             text = payload.get("text")
             if isinstance(text, str) and text.strip() and not await self._agent.send(text):
-                await self._error(ws, "queue_full", "Too many messages are waiting; try again when this reply ends.")
+                await self._error(ws, "queue_full", QUEUE_FULL_MESSAGE)
         elif kind == "abort":
             await self._agent.abort()
         elif kind == "ui_response":

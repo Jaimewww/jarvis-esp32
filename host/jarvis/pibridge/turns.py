@@ -45,7 +45,7 @@ from typing import Any
 
 from . import models as model_frames
 from . import questions
-from .models import Choice, ModelError
+from .models import Choice, ModelError, NoAnswer
 from .pi import PiLauncher, PiProcess
 
 logger = logging.getLogger(__name__)
@@ -126,6 +126,7 @@ class Bridge:
         self._clients = 0
         self._launching = asyncio.Lock()
         self._switching = asyncio.Lock()  # one model_set at a time, whatever the client (S14.2)
+        self._switches: set[asyncio.Task[Any]] = set()  # the tasks running a model_set
         self._last_record = 0.0
         self._watchdog: asyncio.Task[None] | None = None
 
@@ -166,7 +167,9 @@ class Bridge:
             self._queue.clear()
             await self._emit_queue()
         process = self._process
-        if process is None:
+        if process is None or self._launching.locked():
+            # Pi is still launching: its prompt is not written yet, so the turn ends now (S18.4).
+            await self._finish(turn)
             return
         with contextlib.suppress(OSError):
             await process.write({"id": f"abort-{next(self._ids)}", "type": "abort"})
@@ -231,8 +234,20 @@ class Bridge:
         )
 
     async def set_model(self, provider: str, model_id: str, thinking: str | None) -> dict[str, Any]:
-        """Switch Pi's model (and thinking level); the new ``models`` frame, or ``ModelError``."""
+        """Switch Pi's model (and thinking level); the new ``models`` frame, or ``ModelError``.
 
+        ``close()`` cancels the task that runs it, so no switch outlives the bridge (S18.1).
+        """
+
+        task = asyncio.current_task()
+        assert task is not None
+        self._switches.add(task)
+        try:
+            return await self._switch(provider, model_id, thinking)
+        finally:
+            self._switches.discard(task)
+
+    async def _switch(self, provider: str, model_id: str, thinking: str | None) -> dict[str, Any]:
         listed = await self._data({"type": "get_available_models"})
         available = [m for m in listed.get("models") or [] if isinstance(m, dict)]
         target = model_frames.find(available, provider, model_id)
@@ -246,11 +261,15 @@ class Bridge:
             previous = await model_frames.running(self._command)
             try:
                 await model_frames.apply(self._command, Choice(provider, model_id, thinking), previous)
+            except NoAnswer:
+                raise  # a silent Pi gets nothing more: one command timeout per switch (S18.3)
             except ModelError:
                 await self._settle(previous)
                 raise
             try:
                 frame = await self.models()
+            except NoAnswer:
+                raise
             except ModelError:
                 await model_frames.put_back(self._command, previous)  # whole or nothing (S14.2)
                 await self._settle(previous)
@@ -313,11 +332,17 @@ class Bridge:
             await process.write({**record, "id": command_id})
             return await asyncio.wait_for(future, COMMAND_TIMEOUT_S)
         except (OSError, ConnectionError, TimeoutError) as error:
-            raise ModelError("agent_unavailable", "Pi did not answer.") from error
+            raise NoAnswer("agent_unavailable", "Pi did not answer.") from error
         finally:
             self._commands.pop(command_id, None)
 
     async def close(self) -> None:
+        switches = list(self._switches)  # first: a switch left running would launch Pi again (S18.1)
+        for task in switches:
+            task.cancel()
+        for task in switches:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
         self._stop_watchdog()
         self._turn = None  # a turn whose launch is running gives up its prompt
         self._fail_commands()  # nothing waits for a command timeout on shutdown (S13.7)
@@ -346,7 +371,7 @@ class Bridge:
             await self._finish(turn)
             return
         if self._turn is not turn:
-            return  # the bridge closed during the launch: no prompt for a Pi that stops (S14.6)
+            return  # aborted or closed during the launch: no prompt (S14.6, S18.4)
         # The watchdog counts from a running Pi: a slow launch is not a stuck turn (S14.5).
         self._last_record = asyncio.get_running_loop().time()
         self._watchdog = asyncio.ensure_future(self._watch(turn))

@@ -37,6 +37,10 @@ class ModelError(RuntimeError):
         self.message = message
 
 
+class NoAnswer(ModelError):
+    """Pi did not answer a command (silent, gone or closed): send that Pi nothing more (S18.3)."""
+
+
 @dataclass(frozen=True, slots=True)
 class Choice:
     """A model and thinking level (``None``: leave Pi's level as it is)."""
@@ -89,6 +93,8 @@ async def apply(command: Command, choice: Choice, previous: Choice | None) -> No
         done = await command({"type": "set_thinking_level", "level": choice.thinking})
         if done.get("success") is not True:
             raise ModelError("thinking_unavailable", error_of(done, "Pi refused that thinking level."))
+    except NoAnswer:
+        raise
     except ModelError:
         await put_back(command, previous)
         raise
