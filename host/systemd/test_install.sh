@@ -837,6 +837,8 @@ readonly BH="${SANDBOX}/bridge-home" BC="${SANDBOX}/bridge-config"
 readonly PIA="${BH}/.local/state/jarvis/pi-agent"
 # The default of an earlier run of this branch, inside ~/.gentle-dot (gentle-dot.service writes it).
 readonly OLD_PIA="${BH}/.gentle-dot/pi-agent"
+# S20.1: Claude Code's own config directory (CLAUDE_CONFIG_DIR), fixed, next to the Pi one.
+readonly CCD="${BH}/.local/state/jarvis/claude-config"
 readonly BUNIT="${BC}/systemd/user/jarvis-pibridge.service" GUNIT="${BC}/systemd/user/gentle-dot.service"
 readonly BRIDGE_TPL="${HERE}/jarvis-pibridge.service.in" GD_TPL="${HERE}/gentle-dot.service.in"
 # The TUI package with the bridge in it (jarvis.pibridge is part of host/jarvis).
@@ -867,6 +869,18 @@ relogin_printed() {
   4. ${LOGIN_STEP}
   5. systemctl --user start jarvis-pibridge.service" ]]
 }
+# S20.4: the printed Claude Code login (directory new or empty) and re-login procedure (otherwise).
+readonly CLAUDE_STEP="env CLAUDE_CONFIG_DIR=${CCD} claude y dentro escribe /login; luego sal de Claude Code."
+readonly CLAUDE_FIRST="Solo para los modelos de Claude por suscripción (claude-bridge): inicia sesión en Claude Code del puente una sola vez y ANTES del primer arranque del servicio con ${CCD}, que está vacía y donde el agente nunca escribió (este script no copia ni lee credenciales):"
+readonly CLAUDE_ENABLED="jarvis-pibridge.service ya arrancó con ${CCD}, que estaba vacía. Para usar los modelos de Claude por suscripción (claude-bridge), inicia sesión en Claude Code una sola vez, con el servicio detenido y antes de mandarle nada a Jarvis (este script no copia ni lee credenciales):"
+readonly CLAUDE_RELOGIN="${CCD} ya tiene contenido: si Claude Code del puente ya inició sesión, no hace falta nada más. Para volver a iniciar sesión no corras claude en esa carpeta: el agente pudo escribir en ella y Claude Code ejecutaría fuera del aislamiento lo que hubiera dejado (hooks, statusLine y apiKeyHelper de settings.json, servidores MCP de .claude.json, plugins, agentes y comandos). En su lugar:"
+claude_relogin_printed() {
+	[[ "$(after "${CLAUDE_RELOGIN}" 5 | sed -E 's/\.old-[0-9]{8}-[0-9]{6}$/.old-STAMP/')" == "  1. systemctl --user stop jarvis-pibridge.service
+  2. mv ${CCD} ${CCD}.old-STAMP
+  3. Vuelve a correr este script con las mismas opciones, sin --enable: crea ${CCD} nueva, vacía y 0700.
+  4. ${CLAUDE_STEP}
+  5. systemctl --user start jarvis-pibridge.service" ]]
+}
 # tree_of DIR...: every path under DIR, to prove a refusal wrote nothing.
 tree_of() { find "$@" 2>/dev/null | LC_ALL=C sort; }
 
@@ -879,12 +893,16 @@ check "bridge dry-run exits 0, prints the bridge unit, writes and calls nothing"
 	'[[ ${RC} -eq 0 && ! -e "${BC}" && -z "$(ls -A "${BH}")" && ! -s "${CALLS}" ]] &&
 	 grep -qxF "[dry-run] escribir ${BUNIT}:" <<<"${OUT}" && ! grep -qF "escribir ${GUNIT}" <<<"${OUT}" &&
 	 grep -qxF "[dry-run] mkdir -m 0700 ${PIA}" <<<"${OUT}" && ! grep -qF "${BH}/.pi" <<<"${OUT}"'
+check "S20.2 bridge dry-run names the Claude Code directory it would create, creates nothing" \
+	'[[ ${RC} -eq 0 && -z "$(ls -A "${BH}")" ]] && grep -qxF "[dry-run] mkdir -m 0700 ${CCD}" <<<"${OUT}"'
 bridged "${BRIDGE[@]}" --check
 check "bridge --check needs no Gentle Dot checkout and names pi, node and the unit" \
 	'[[ ${RC} -eq 0 && ! -e "${BC}" ]] && grep -qxF "OK: puente de Pi con ${STUBS}/pi y node v24.11.0 (${STUBS}/node); la unidad iría a ${BUNIT}" <<<"${OUT}"'
 # S10: --check says whether the agent directory exists, never whether it holds a login.
 check "bridge --check reports the missing Pi agent directory" \
 	'grep -qxF "Carpeta de Pi del puente: falta ${PIA} (install.sh la crea, 0700)" <<<"${OUT}"'
+check "S20.2 bridge --check reports the missing Claude Code directory" \
+	'grep -qxF "Carpeta de Claude Code del puente: falta ${CCD} (install.sh la crea, 0700)" <<<"${OUT}"'
 
 reset_calls
 bridged "${BRIDGE[@]}"
@@ -895,16 +913,23 @@ check "bridge unit has no placeholders left" '! grep -q "@[A-Z_]*@" "${BUNIT}"'
 # S10, S15.1: the bridge's Pi gets its own agent directory; ~/.pi is neither created nor writable.
 check "bridge install creates the Pi agent directory 0700, an empty one, and no ~/.pi" \
 	'[[ -d "${PIA}" && "$(stat -c %a "${PIA}")" == 700 && -z "$(ls -A "${PIA}")" && ! -e "${BH}/.pi" ]]'
+check "S20.2 bridge install creates the Claude Code directory 0700, an empty one, and no ~/.claude or ~/.claude.json" \
+	'[[ -d "${CCD}" && "$(stat -c %a "${CCD}")" == 700 && -z "$(ls -A "${CCD}")" && ! -e "${BH}/.claude" && ! -e "${BH}/.claude.json" ]]'
 # S16.2, S17.1: the fixed directory lives under ~/.local/state, its parents made 0700, the old one not made.
 check "the default Pi agent directory is ~/.local/state/jarvis/pi-agent, parents created 0700" \
 	'[[ "$(stat -c %a "${BH}/.local/state")" == 700 && "$(stat -c %a "${BH}/.local/state/jarvis")" == 700 && ! -e "${OLD_PIA}" ]]'
 # S16.3: a directory created in this run gets the first-login steps, before the first start.
 check "bridge install without --enable prints the first login, before the first start, and no re-login" \
 	'[[ "$(after "${FIRST_LOGIN}" 2)" == "  1. ${LOGIN_STEP}"$'"'"'\n'"'"'"${FIRST_START}" ]] && ! grep -qF "${RELOGIN}" <<<"${OUT}" && ! grep -q "mv " <<<"${OUT}"'
+check "S20.4 bridge install without --enable prints the Claude Code login before the Pi steps, and no re-login" \
+	'[[ "$(after "${CLAUDE_FIRST}" 1)" == "  - ${CLAUDE_STEP}" ]] && ! grep -qF "${CLAUDE_RELOGIN}" <<<"${OUT}" && ! grep -qF "${CLAUDE_ENABLED}" <<<"${OUT}" &&
+	 [[ "$(grep -nxF "${CLAUDE_FIRST}" <<<"${OUT}" | cut -d: -f1)" -lt "$(grep -nxF "${FIRST_LOGIN}" <<<"${OUT}" | cut -d: -f1)" ]]'
 check "no old agent directory, no notice about it" '! grep -qF "${OLD_PIA}" <<<"${OUT}"'
 bridged "${BRIDGE[@]}" --check
 check "bridge --check reports the existing Pi agent directory" \
 	'[[ ${RC} -eq 0 ]] && grep -qxF "Carpeta de Pi del puente: ${PIA}" <<<"${OUT}"'
+check "S20.2 bridge --check reports the existing Claude Code directory" \
+	'[[ ${RC} -eq 0 ]] && grep -qxF "Carpeta de Claude Code del puente: ${CCD}" <<<"${OUT}"'
 check "bridge install creates every other path the bridge unit names" \
 	'(for p in "${BC}/systemd/user" "${BH}/.local/bin/jarvis-stop" "${BH}/.local/bin/jarvis" "${BH}/.gentle-dot/agent/extensions" \
 		"${BH}/.gentle-dot/agent/AGENTS.md" "${BH}/.gentle-dot/agent/extensions/jarvis-pc-control/index.ts" "${BH}/.gentle-dot" "${BH}/Jarvis" \
@@ -917,7 +942,7 @@ for directive in "${b_exec}" "WorkingDirectory=%h/Jarvis" "Environment=JARVIS_PI
 	"Environment=JARVIS_PI_EXECUTABLE=${STUBS}/pi" "Environment=PATH=${STUBS}:/usr/local/bin:/usr/bin" \
 	"Environment=JARVIS_PI_PC_CONTROL=${BH}/.gentle-dot/agent/extensions/jarvis-pc-control/index.ts" \
 	"Environment=JARVIS_PI_AGENTS_MD=${BH}/.gentle-dot/agent/AGENTS.md" "SyslogIdentifier=jarvis-pibridge" \
-	"Environment=PI_CODING_AGENT_DIR=${PIA}" "ReadWritePaths=%h/.gentle-dot %h/Jarvis ${PIA}" \
+	"Environment=PI_CODING_AGENT_DIR=${PIA}" "Environment=CLAUDE_CONFIG_DIR=${CCD}" "ReadWritePaths=%h/.gentle-dot %h/Jarvis ${PIA} ${CCD}" \
 	"ReadOnlyPaths=${BC}/systemd/user ${BH}/.local/bin/jarvis-stop ${BH}/.local/bin/jarvis ${BH}/.gentle-dot/agent/extensions ${BH}/.gentle-dot/agent/AGENTS.md"; do
 	check "bridge unit sets ${directive}" 'grep -qxF -- "${directive}" <<<"${b_svc}"'
 done
@@ -933,14 +958,24 @@ gd_hardening="$(grep -E "${hardening_re}" "${GD_TPL}" | grep -v "^ReadWritePaths
 b_hardening="$(grep -E "${hardening_re}" "${BRIDGE_TPL}" | grep -v "^ReadWritePaths=")"
 OUT="$(diff <(printf '%s\n' "${gd_hardening}") <(printf '%s\n' "${b_hardening}"))" || true
 check "bridge template repeats every hardening line of gentle-dot.service.in" '[[ -z "${OUT}" && -n "${b_hardening}" ]]'
-check "ReadWritePaths= differs from Gentle Dot only by the bridge's Pi agent directory" \
-	'[[ "$(grep "^ReadWritePaths=" "${BRIDGE_TPL}")" == "$(grep "^ReadWritePaths=" "${GD_TPL}") @PI_AGENT_DIR@" ]]'
+check "S20.3 ReadWritePaths= differs from Gentle Dot only by the bridge's Pi agent and Claude Code directories" \
+	'[[ "$(grep "^ReadWritePaths=" "${BRIDGE_TPL}")" == "$(grep "^ReadWritePaths=" "${GD_TPL}") @PI_AGENT_DIR@ @CLAUDE_CONFIG_DIR@" ]]'
+# S20.3: the Landlock layer (jarvis-sandbox-exec) handles no filesystem access, so it adds no
+# writable path of its own and needs none for the Claude Code directory: only the scopes.
+check "S20.3 the Landlock wrapper restricts no filesystem access (handled_access_fs 0), only the two scopes" \
+	'grep -qxF '"'"'    attr = struct.pack("=QQQ", 0, 0, LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET | LANDLOCK_SCOPE_SIGNAL)'"'"' "${SBX_SRC}" &&
+	 ! grep -qE "LANDLOCK_ACCESS_FS|landlock_add_rule|SYS_LANDLOCK_ADD_RULE" "${SBX_SRC}"'
 # S15.1: no directive of the bridge unit names ~/.pi (comments may, e.g. JARVIS_PI_EXTENSIONS).
 check "no directive of the bridge template or unit names ~/.pi" \
 	'! grep -v "^#" "${BRIDGE_TPL}" | grep -qE "(%h|~)/\.pi(/|[[:space:]]|$)" && ! grep -v "^#" "${BUNIT}" | grep -qF "${BH}/.pi"'
 check "the bridge unit sets PI_CODING_AGENT_DIR once, to the directory it may write" \
 	'[[ "$(grep -c "^Environment=PI_CODING_AGENT_DIR=" "${BUNIT}")" == 1 ]] &&
-	 [[ "$(sed -n "s/^Environment=PI_CODING_AGENT_DIR=//p" "${BUNIT}")" == "$(sed -n "s/^ReadWritePaths=%h\/.gentle-dot %h\/Jarvis //p" "${BUNIT}")" ]]'
+	 [[ "$(sed -n "s/^Environment=PI_CODING_AGENT_DIR=//p" "${BUNIT}")" == "$(sed -n "s/^ReadWritePaths=%h\/.gentle-dot %h\/Jarvis \([^ ]*\) .*/\1/p" "${BUNIT}")" ]]'
+# S20.1: Claude Code gets its own directory, the only Claude path the unit can write.
+check "S20.1 the bridge unit sets CLAUDE_CONFIG_DIR once, to the last directory it may write, and no directive names ~/.claude" \
+	'[[ "$(grep -c "^Environment=CLAUDE_CONFIG_DIR=" "${BUNIT}")" == 1 ]] &&
+	 [[ "$(sed -n "s/^Environment=CLAUDE_CONFIG_DIR=//p" "${BUNIT}")" == "$(sed -n "s/^ReadWritePaths=.* //p" "${BUNIT}")" ]] &&
+	 ! grep -v "^#" "${BRIDGE_TPL}" | grep -qE "(%h|~)/\.claude(\.json)?(/|[[:space:]]|$)" && ! grep -v "^#" "${BUNIT}" | grep -qE "${BH}/\.claude(\.json)?(/|[[:space:]]|$)"'
 check "gentle-dot.service.in has no Conflicts= (it works both ways from the bridge unit)" '! grep -q "^Conflicts=" "${GD_TPL}"'
 check "every sandbox directive in the bridge unit has a comment right above it" \
 	'awk '"'"'/^\[Service\]/{s=1} /^\[Install\]/{s=0} s && /^(PrivateUsers|PrivateDevices|PrivateTmp|TemporaryFileSystem|RuntimeDirectory|BindReadOnlyPaths|InaccessiblePaths|ReadOnlyPaths|UnsetEnvironment|ProtectHome|ReadWritePaths|Environment=PATH)=/ && prev !~ /^#/ && prevkey !~ /^RuntimeDirectory/ {bad=1; print} {prev=$0; prevkey=$0} END{exit bad}'"'"' "${BUNIT}"'
@@ -980,8 +1015,12 @@ check "--pi-bridge --enable stops and disables Gentle Dot first, then enables th
 # S16.3: --enable on an empty directory enables as asked, then says the agent cannot act yet.
 check "--enable on an empty Pi agent directory says the agent cannot act until the login exists" \
 	'[[ "$(after "${ENABLED_LOGIN}" 2)" == "  1. ${LOGIN_STEP}"$'"'"'\n'"'"'"  2. systemctl --user restart jarvis-pibridge.service" ]] && ! grep -qF "${FIRST_LOGIN}" <<<"${OUT}" && ! grep -qF "${RELOGIN}" <<<"${OUT}"'
+check "S20.4 --enable on an empty Claude Code directory says to log in with the service stopped" \
+	'[[ "$(after "${CLAUDE_ENABLED}" 3)" == "  1. systemctl --user stop jarvis-pibridge.service"$'"'"'\n'"'"'"  2. ${CLAUDE_STEP}"$'"'"'\n'"'"'"  3. systemctl --user start jarvis-pibridge.service" ]] &&
+	 ! grep -qF "${CLAUDE_FIRST}" <<<"${OUT}" && ! grep -qF "${CLAUDE_RELOGIN}" <<<"${OUT}"'
 # From here the directory has an entry, as after Pi ran in it (the installer never opens it).
 : >"${PIA}/settings.json" && chmod 000 "${PIA}/settings.json"
+: >"${CCD}/.claude.json" && chmod 000 "${CCD}/.claude.json"
 printf '# stale\n' >>"${BUNIT}"
 reset_calls
 bridged "${BRIDGE[@]}" --enable
@@ -998,6 +1037,9 @@ check "--pi-bridge without --enable calls nothing and says how to switch" \
 check "a Pi agent directory with entries gets the re-login procedure, not the first login" \
 	'relogin_printed && ! grep -qF "${FIRST_LOGIN}" <<<"${OUT}" && ! grep -qF "${ENABLED_LOGIN}" <<<"${OUT}" &&
 	 [[ "$(grep -cF "${LOGIN_STEP}" <<<"${OUT}")" == 1 ]]'
+check "S20.4 a Claude Code directory with entries gets the re-login procedure, never the login command alone" \
+	'claude_relogin_printed && ! grep -qF "${CLAUDE_FIRST}" <<<"${OUT}" && ! grep -qF "${CLAUDE_ENABLED}" <<<"${OUT}" &&
+	 [[ "$(grep -cF "${CLAUDE_STEP}" <<<"${OUT}")" == 1 ]]'
 # S16.2: the old default of an earlier run is named, neither moved nor deleted.
 mkdir -m 0700 "${OLD_PIA}" && printf 'old\n' >"${OLD_PIA}/auth.json" && chmod 000 "${OLD_PIA}/auth.json"
 reset_calls
@@ -1005,7 +1047,7 @@ bridged "${BRIDGE[@]}"
 check "an old ~/.gentle-dot/pi-agent is mentioned, kept in place and unused" \
 	'[[ ${RC} -eq 0 && -f "${OLD_PIA}/auth.json" && "$(stat -c %a "${OLD_PIA}/auth.json")" == 0 ]] &&
 	 grep -qxF "Aviso: ${OLD_PIA} es la carpeta del Pi del puente de una versión anterior de este script y ya no se usa; ahora es ${PIA}. Este script no la mueve, no la borra ni mira lo que tiene; no corras Pi en ella (el agente pudo escribir ahí) y bórrala cuando quieras." <<<"${OUT}" &&
-	 grep -qxF "ReadWritePaths=%h/.gentle-dot %h/Jarvis ${PIA}" "${BUNIT}"'
+	 grep -qxF "ReadWritePaths=%h/.gentle-dot %h/Jarvis ${PIA} ${CCD}" "${BUNIT}"'
 chmod 600 "${OLD_PIA}/auth.json" && rm -rf "${OLD_PIA}"
 reset_calls
 HOME_DIR="${BH}" CFG="${BC}" TUI_SRC_OVERRIDE="${TUI_B_SRC}" sandboxed "${BASE[@]}" --enable
@@ -1047,7 +1089,7 @@ check "JARVIS_PIBRIDGE_AGENT_DIR has no effect on the bridge install" \
 	'[[ ${RC} -eq 0 ]] && grep -qxF "    | Environment=PI_CODING_AGENT_DIR=${h}/.local/state/jarvis/pi-agent" <<<"${OUT}" && ! grep -qF "elsewhere" <<<"${OUT}"'
 STATE_DIR="${SANDBOX}/xdg-state" bridged_in "${h}" "${BRIDGE[@]}" --dry-run
 check "XDG_STATE_HOME has no effect on the bridge install" \
-	'[[ ${RC} -eq 0 ]] && grep -qxF "    | ReadWritePaths=%h/.gentle-dot %h/Jarvis ${h}/.local/state/jarvis/pi-agent" <<<"${OUT}" &&
+	'[[ ${RC} -eq 0 ]] && grep -qxF "    | ReadWritePaths=%h/.gentle-dot %h/Jarvis ${h}/.local/state/jarvis/pi-agent ${h}/.local/state/jarvis/claude-config" <<<"${OUT}" &&
 	 grep -qxF "[dry-run] mkdir -m 0700 ${h}/.local/state/jarvis/pi-agent" <<<"${OUT}" && ! grep -qF "xdg-state" <<<"${OUT}"'
 # S17.2: a symlink in any component below $HOME is refused before anything is written.
 for case in local:.local state:.local/state jarvis:.local/state/jarvis pi:.local/state/jarvis/pi-agent harmless:.local/state/jarvis/pi-agent; do
@@ -1081,7 +1123,7 @@ for sub in Jarvis .gentle-dot; do
 	bridged_in "${h}" "${BRIDGE[@]}" --enable
 	check "refuses HOME=~/${sub} (not the passwd home), writes no unit, creates nothing, calls nothing" \
 		'[[ ${RC} -ne 0 && ! -s "${CALLS}" && "$(tree_of "${real_home}")" == "${before}" ]] &&
-		 grep -qxF "error: HOME es ${h}, pero tu carpeta personal es ${real_home} (getent passwd): systemd usa esa (%h) en las demás rutas de la unidad y la carpeta del Pi del puente quedaría fuera de su lugar. Vuelve a correr este script con HOME=${real_home}." <<<"${OUT}"'
+		 grep -qxF "error: HOME es ${h}, pero tu carpeta personal es ${real_home} (getent passwd): systemd usa esa (%h) en las demás rutas de la unidad y las carpetas del Pi y de Claude Code del puente quedarían fuera de su lugar. Vuelve a correr este script con HOME=${real_home}." <<<"${OUT}"'
 done
 rm -f "${PASSWD_HOME}"
 # S14.9: a parent of the agent directory that group or others can write is refused: they could
@@ -1110,7 +1152,8 @@ mkdir -p "${SANDBOX}/real-home" && ln -s "${SANDBOX}/real-home" "${SANDBOX}/home
 bridged_in "${SANDBOX}/home-symlink" "${BRIDGE[@]}" --dry-run
 check "a symlinked HOME is not refused; the unit carries the path through HOME" \
 	'[[ ${RC} -eq 0 ]] && grep -qxF "    | Environment=PI_CODING_AGENT_DIR=${SANDBOX}/home-symlink/.local/state/jarvis/pi-agent" <<<"${OUT}" &&
-	 grep -qxF "    | ReadWritePaths=%h/.gentle-dot %h/Jarvis ${SANDBOX}/home-symlink/.local/state/jarvis/pi-agent" <<<"${OUT}"'
+	 grep -qxF "    | ReadWritePaths=%h/.gentle-dot %h/Jarvis ${SANDBOX}/home-symlink/.local/state/jarvis/pi-agent ${SANDBOX}/home-symlink/.local/state/jarvis/claude-config" <<<"${OUT}" &&
+	 grep -qxF "    | Environment=CLAUDE_CONFIG_DIR=${SANDBOX}/home-symlink/.local/state/jarvis/claude-config" <<<"${OUT}"'
 
 # S16.4: an existing agent directory that group or others can enter is refused, with the fix.
 for mode in 750 705 710; do
@@ -1128,6 +1171,40 @@ mkdir -p "${h}/.local/state/jarvis" && : >"${h}/.local/state/jarvis/pi-agent"
 bridged_in "${h}" "${BRIDGE[@]}" --check
 check "refuses a Pi agent directory that exists but is not a directory" \
 	'[[ ${RC} -ne 0 ]] && grep -qxF "error: ${h}/.local/state/jarvis/pi-agent existe pero no es una carpeta; muévelo" <<<"${OUT}"'
+
+# S20.2: the Claude Code directory goes through the same checks as the Pi agent directory (one
+# code path for both: HOME, unit-safe characters, symlinks, parents, mode). The ones that can
+# only fail on the Claude Code path are pinned here; a refusal writes no unit and creates nothing.
+for case in real:"" harmless:""; do
+	name="${case%%:*}" h="${SANDBOX}/csym-${name}/home"
+	target="${SANDBOX}/csym-${name}/target"
+	[[ "${name}" != real ]] || target="${h}/.claude"
+	mkdir -p "${target}" "${h}/.local/state/jarvis" && chmod 700 "${target}" && ln -s "${target}" "${h}/.local/state/jarvis/claude-config"
+	reset_calls
+	before="$(tree_of "${SANDBOX}/csym-${name}")"
+	bridged_in "${h}" "${BRIDGE[@]}" --enable
+	check "S20.2 refuses a symlinked ~/.local/state/jarvis/claude-config (${name}), writes no unit, creates nothing, calls nothing" \
+		'[[ ${RC} -ne 0 && ! -s "${CALLS}" && "$(tree_of "${SANDBOX}/csym-${name}")" == "${before}" ]] &&
+		 grep -qxF "error: ${h}/.local/state/jarvis/claude-config pasa por un enlace simbólico (${h}/.local/state/jarvis/claude-config apunta a ${target}): la carpeta de Claude Code del puente es fija y el servicio escribiría donde apunta el enlace. Quita el enlace y vuelve a correr este script." <<<"${OUT}"'
+done
+for mode in 750 705 710; do
+	h="${SANDBOX}/copen-${mode}"
+	mkdir -p "${h}/.local/state/jarvis/claude-config" && chmod "${mode}" "${h}/.local/state/jarvis/claude-config"
+	reset_calls
+	before="$(tree_of "${h}")"
+	bridged_in "${h}" "${BRIDGE[@]}" --enable
+	check "S20.2 refuses an existing Claude Code directory with mode ${mode}, says chmod 700, writes no unit, creates nothing, calls nothing" \
+		'[[ ${RC} -ne 0 && ! -s "${CALLS}" && "$(tree_of "${h}")" == "${before}" && "$(stat -c %a "${h}/.local/state/jarvis/claude-config")" == "${mode}" ]] &&
+		 grep -qxF "error: ${h}/.local/state/jarvis/claude-config tiene permisos ${mode}: el grupo u otros usuarios pueden entrar y Claude Code guarda ahí su inicio de sesión. Corrige con: chmod 700 ${h}/.local/state/jarvis/claude-config" <<<"${OUT}"'
+done
+h="${SANDBOX}/cnot-a-dir"
+mkdir -p "${h}/.local/state/jarvis" && : >"${h}/.local/state/jarvis/claude-config"
+reset_calls
+before="$(tree_of "${h}")"
+bridged_in "${h}" "${BRIDGE[@]}" --enable
+check "S20.2 refuses a Claude Code directory that exists but is not a directory, writes no unit, creates nothing, calls nothing" \
+	'[[ ${RC} -ne 0 && ! -s "${CALLS}" && "$(tree_of "${h}")" == "${before}" ]] &&
+	 grep -qxF "error: ${h}/.local/state/jarvis/claude-config existe pero no es una carpeta; muévelo" <<<"${OUT}"'
 
 # S15.4: the Gentle Dot options are refused with --pi-bridge, like --pi without it.
 for opt in "--gentle-dot-dir ${GD}" --allow-unpinned --allow-dirty; do
@@ -1191,6 +1268,16 @@ rm -f "${FAIL_CMD}" "${BC}/systemd/user/default.target.wants/jarvis-pibridge.ser
 # The default install (Gentle Dot) never creates or names a Pi agent directory.
 check "the default install made no Pi agent directory and no ~/.pi" \
 	'[[ ! -e "${FAKE_HOME}/.gentle-dot/pi-agent" && ! -e "${FAKE_HOME}/.local/state" && ! -e "${FAKE_HOME}/.pi" ]] && ! grep -q "PI_CODING_AGENT_DIR" "${GUNIT}" "${GD_TPL}"'
+# S20: a Gentle Dot install renders exactly as before: the template with its own placeholders
+# only, no Claude Code directory named or created, the same two writable folders.
+reset_calls
+sandboxed "${BASE[@]}"
+gd_default="$(sed -e "s|@NODE@|${STUBS}/node|g" -e "s|@GENTLE_DOT_DIR@|${GD}|g" -e "s|@SANDBOX_EXEC@|${SBX}|g" \
+	-e "s|@UNIT_DIR@|${FAKE_CONFIG}/systemd/user|g" -e "s|@STOP_PATH@|${STOP}|g" -e "s|@TUI_LAUNCHER@|${TUI_LAUNCHER}|g" \
+	-e "s|@AGENT_HOME@|${FAKE_HOME}/.gentle-dot/agent|g" "${GD_TPL}")"
+check "S20 a Gentle Dot install renders the unit as before: no CLAUDE_CONFIG_DIR, no claude-config, ReadWritePaths unchanged" \
+	'[[ ${RC} -eq 0 && "$(<"${UNIT}")" == "${gd_default}" && ! -e "${FAKE_HOME}/.local/state" ]] &&
+	 ! grep -qE "CLAUDE_CONFIG_DIR|claude-config" "${UNIT}" "${GD_TPL}" && ! grep -qE "CLAUDE_CONFIG_DIR|claude-config" <<<"${OUT}" && grep -qxF "ReadWritePaths=%h/.gentle-dot %h/Jarvis" "${UNIT}"'
 
 if command -v systemd-analyze >/dev/null 2>&1; then
 	set +e
@@ -1205,7 +1292,7 @@ fi
 reset_calls
 HOME_DIR="${BH}" CFG="${BC}" sandboxed --uninstall
 check "uninstall removes gentle-dot, the helper and the bridge unit, resets all three, keeps the Pi agent directory" \
-	'[[ ${RC} -eq 0 && ! -e "${GUNIT}" && ! -e "${BUNIT}" && -d "${PIA}" ]] &&
+	'[[ ${RC} -eq 0 && ! -e "${GUNIT}" && ! -e "${BUNIT}" && -d "${PIA}" && -d "${CCD}" ]] &&
 	 [[ "$(calls)" == $'"'"'--user disable --now gentle-dot.service\n--user disable --now jarvis-input.service\n--user disable --now jarvis-pibridge.service\n--user daemon-reload\n--user reset-failed gentle-dot.service jarvis-input.service jarvis-pibridge.service'"'"' ]] &&
 	 grep -qxF "Se conserva la copia ${BUNIT}.bak." <<<"${OUT}"'
 
