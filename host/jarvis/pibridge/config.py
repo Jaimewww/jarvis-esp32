@@ -20,6 +20,8 @@ DEFAULT_TOKEN_PATH: Final = Path("~/.gentle-dot/token")
 DEFAULT_EXECUTABLE: Final = "pi"
 DEFAULT_MODEL: Final = "openai/gpt-6.1-sol"
 DEFAULT_THINKING: Final = "low"
+DEFAULT_RECORD_TIMEOUT: Final = 120.0
+DEFAULT_QUEUE_CAP: Final = 16
 DEFAULT_PC_CONTROL: Final = REPO_HOST / "gentle-dot" / "extensions" / "pc-control.ts"
 DEFAULT_AGENTS_MD: Final = REPO_HOST / "gentle-dot" / "AGENTS.md"
 #: Replaces Pi's coding-assistant prompt; the Jarvis rules come from AGENTS.md.
@@ -36,6 +38,8 @@ class Config:
     token_path: Path
     pi: PiSettings
     log_level: str
+    record_timeout: float = DEFAULT_RECORD_TIMEOUT
+    queue_cap: int = DEFAULT_QUEUE_CAP
 
 
 def _parser(env: Mapping[str, str]) -> argparse.ArgumentParser:
@@ -86,6 +90,21 @@ def _parser(env: Mapping[str, str]) -> argparse.ArgumentParser:
         default=default("SYSTEM_PROMPT", DEFAULT_SYSTEM_PROMPT),
         help="system prompt that replaces Pi's default",
     )
+    parser.add_argument(
+        "--record-timeout",
+        type=float,
+        default=default("RECORD_TIMEOUT", str(DEFAULT_RECORD_TIMEOUT)),
+        help="seconds a turn may go without a Pi record before it ends with an error and Pi "
+        "restarts; a question waiting for the user does not count (JARVIS_PI_RECORD_TIMEOUT, "
+        "default %(default)s)",
+    )
+    parser.add_argument(
+        "--queue-cap",
+        type=int,
+        default=default("QUEUE_CAP", str(DEFAULT_QUEUE_CAP)),
+        help="messages that may wait behind the running turn; one more gets an error "
+        "(JARVIS_PI_QUEUE_CAP, default %(default)s)",
+    )
     parser.add_argument("--log-level", default=default("LOG_LEVEL", "INFO"), help="logging level (default %(default)s)")
     return parser
 
@@ -109,4 +128,6 @@ def parse_config(argv: Sequence[str] | None = None, environ: Mapping[str, str] |
             system_prompt=args.system_prompt,
         ),
         log_level=args.log_level.upper(),
+        record_timeout=args.record_timeout,
+        queue_cap=args.queue_cap,
     )

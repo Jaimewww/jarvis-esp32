@@ -47,6 +47,18 @@ class StubAgent:
     async def abort(self) -> None:
         self.aborts += 1
 
+    async def answer(self, request_id: str, response: dict[str, Any]) -> None:
+        pass
+
+    async def models(self) -> dict[str, Any]:
+        return {"type": "models", "groups": []}
+
+    async def set_model(self, provider: str, model_id: str, thinking: str | None) -> dict[str, Any]:
+        return await self.models()
+
+    async def clients_changed(self, count: int) -> None:
+        pass
+
 
 async def first_reply(url: str, first: str | None) -> tuple[int | None, list[dict[str, Any]]]:
     """Send ``first`` (or nothing) and return the close code and the frames received."""

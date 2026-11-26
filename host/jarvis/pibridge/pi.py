@@ -37,7 +37,7 @@ class PiProcess(Protocol):
         ...
 
     async def read(self) -> dict[str, Any] | None:
-        """The next record from Pi, or ``None`` when its output ended (Pi exited)."""
+        """The next record from Pi, or ``None`` when its output ended (Pi exited or was stopped)."""
         ...
 
     async def close(self) -> None: ...
@@ -76,19 +76,22 @@ def pi_command(settings: PiSettings) -> list[str]:
 class SubprocessPi:
     """``pi --mode rpc`` as an asyncio child process; its stderr goes to ours."""
 
-    def __init__(self, process: asyncio.subprocess.Process) -> None:
+    def __init__(self, process: asyncio.subprocess.Process, *, grace: float = CLOSE_GRACE_S,
+                 limit: int = MAX_RECORD_BYTES) -> None:
         self._process = process
+        self._grace = grace
+        self._limit = limit
 
     @classmethod
-    async def spawn(cls, argv: list[str]) -> SubprocessPi:
+    async def spawn(cls, argv: list[str], *, grace: float = CLOSE_GRACE_S, limit: int = MAX_RECORD_BYTES) -> SubprocessPi:
         process = await asyncio.create_subprocess_exec(
             *argv,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
-            limit=MAX_RECORD_BYTES,
+            limit=limit,
         )
         logger.info("started pi (pid %d)", process.pid)
-        return cls(process)
+        return cls(process, grace=grace, limit=limit)
 
     @property
     def exit_code(self) -> int | None:
@@ -109,11 +112,16 @@ class SubprocessPi:
             try:
                 line = await stdout.readuntil(b"\n")
             except asyncio.IncompleteReadError:
-                await self._process.wait()
+                # Output ended; Pi normally exits with it. One that keeps running is stopped.
+                try:
+                    await asyncio.wait_for(self._process.wait(), self._grace)
+                except TimeoutError:
+                    logger.warning("pi closed its output but kept running; stopping it")
+                    await self._stop()
                 return None
             except asyncio.LimitOverrunError as error:
                 await stdout.readexactly(error.consumed)  # drop it; its tail fails to parse
-                logger.warning("skipped a pi record larger than %d bytes", MAX_RECORD_BYTES)
+                logger.warning("skipped a pi record larger than %d bytes", self._limit)
                 continue
             try:
                 record = json.loads(line)
@@ -129,16 +137,22 @@ class SubprocessPi:
         if process.stdin is not None:
             process.stdin.close()  # Pi's orderly shutdown
         try:
-            await asyncio.wait_for(process.wait(), CLOSE_GRACE_S)
+            await asyncio.wait_for(process.wait(), self._grace)
+        except TimeoutError:
+            await self._stop()
+
+    async def _stop(self) -> None:
+        """SIGTERM, then SIGKILL after the grace period."""
+
+        process = self._process
+        with contextlib.suppress(ProcessLookupError):
+            process.terminate()
+        try:
+            await asyncio.wait_for(process.wait(), self._grace)
         except TimeoutError:
             with contextlib.suppress(ProcessLookupError):
-                process.terminate()
-            try:
-                await asyncio.wait_for(process.wait(), CLOSE_GRACE_S)
-            except TimeoutError:
-                with contextlib.suppress(ProcessLookupError):
-                    process.kill()
-                await process.wait()
+                process.kill()
+            await process.wait()
 
 
 def subprocess_launcher(settings: PiSettings) -> PiLauncher:
