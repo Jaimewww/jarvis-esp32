@@ -327,14 +327,18 @@ conviene instalar sin `--enable`:
 
 ```bash
 host/systemd/install.sh --pi-bridge --node "$(mise where node@24)/bin/node"
-env PI_CODING_AGENT_DIR=$HOME/.local/state/jarvis/pi-agent "$(command -v pi)" -ne -ns -np -nc --no-themes
+cd ~ && env PI_CODING_AGENT_DIR=$HOME/.local/state/jarvis/pi-agent "$(command -v pi)" -ne -ns -np -nc --no-themes
 # dentro de Pi: /login, elegir el proveedor (el del modelo, por defecto openai) y salir
 systemctl --user enable --now jarvis-input.service jarvis-pibridge.service
 ```
 
-Con `--enable` sobre una carpeta vacía el script habilita y arranca el servicio igual
-(Pi ya arrancó en esa carpeta) y avisa que es inofensivo: sin sesión no corre ningún
-modelo, así que ninguna herramienta puede actuar. Inicia sesión con la línea de arriba y luego
+Los dos inicios de sesión (Pi y Claude Code) empiezan con `cd ~ &&`: corridos desde
+`~/Jarvis` o `~/.gentle-dot` podrían cargar archivos de proyecto que el agente puede escribir.
+
+Con `--enable` sobre una carpeta de Pi vacía (y la de Claude Code con contenido; si está
+vacía, ver abajo) el script habilita y arranca el servicio igual (Pi ya arrancó en esa
+carpeta) y avisa que es inofensivo: sin sesión no corre ningún modelo, así que ninguna
+herramienta puede actuar. Inicia sesión con la línea de arriba y luego
 `systemctl --user restart jarvis-pibridge.service`.
 
 *Volver a iniciar sesión* (otra cuenta, sesión vencida; la carpeta ya tiene contenido):
@@ -344,7 +348,7 @@ nunca corras Pi en la carpeta vieja. El script imprime estos pasos:
 systemctl --user stop jarvis-pibridge.service
 mv ~/.local/state/jarvis/pi-agent ~/.local/state/jarvis/pi-agent.old-AAAAMMDD-HHMMSS  # el script da el nombre con la hora
 host/systemd/install.sh --pi-bridge --node "$(mise where node@24)/bin/node"  # sin --enable: crea una carpeta nueva, vacía, 0700
-env PI_CODING_AGENT_DIR=$HOME/.local/state/jarvis/pi-agent "$(command -v pi)" -ne -ns -np -nc --no-themes  # /login y salir
+cd ~ && env PI_CODING_AGENT_DIR=$HOME/.local/state/jarvis/pi-agent "$(command -v pi)" -ne -ns -np -nc --no-themes  # /login y salir
 systemctl --user start jarvis-pibridge.service
 ```
 
@@ -363,7 +367,12 @@ una suya, fija, `~/.local/state/jarvis/claude-config` (0700), que la unidad le p
 crea siempre con `--pi-bridge`, aunque uses otro modelo, y le aplica exactamente los mismos
 rechazos que a la de Pi (el mismo código): enlace simbólico en la ruta, existe y no es una
 carpeta, permisos para el grupo u otros en ella o escritura en las de arriba, `HOME`
-distinto de tu carpeta personal, caracteres que una unidad no admite. Antes de escribir
+distinto de tu carpeta personal, caracteres que una unidad no admite. También rechaza un
+`XDG_CONFIG_HOME`, `--bin-dir` o `--agent-home` dentro de cualquiera de las dos (los
+crearía 755 y con contenido antes que ellas). Un enlace simbólico en `~/.local`,
+`~/.local/state` o `~/.local/state/jarvis` se rechaza nombrando las dos carpetas; si una
+de esas no es una carpeta o el grupo u otros pueden escribir en ella, el rechazo nombra esa
+de arriba. Antes de escribir
 nada. No hay opción ni variable para moverla. El envoltorio Landlock no limita archivos
 (solo sockets abstractos y señales), así que no hace falta abrirle nada.
 
@@ -375,21 +384,29 @@ que los pasos de Pi:
 
 ```bash
 # carpeta nueva o vacía, antes del primer arranque del servicio con ella
-env CLAUDE_CONFIG_DIR=$HOME/.local/state/jarvis/claude-config claude
+cd ~ && env CLAUDE_CONFIG_DIR=$HOME/.local/state/jarvis/claude-config claude
 # dentro de Claude Code: /login con tu suscripción y salir
 ```
 
-Con `--enable` sobre una carpeta vacía el servicio ya arrancó con ella: el script dice
-que la sesión se inicia con el servicio detenido y antes de mandarle nada a Jarvis
-(`systemctl --user stop jarvis-pibridge.service`, la línea de arriba,
-`systemctl --user start jarvis-pibridge.service`). Si ya tiene contenido, nunca corras
-`claude` en ella; el script da el mismo procedimiento que para Pi:
+Con `--enable` sobre esa carpeta vacía el script no habilita ni arranca el puente (ni
+detiene Gentle Dot; solo el ayudante): con el servicio en marcha, un Pi con sesión podría
+escribir en ella antes de que corras `claude`. Imprime `systemctl --user stop
+jarvis-pibridge.service`, la línea de arriba y que vuelvas a correr el script con
+`--enable`; si no vas a usar los modelos de Claude, el comando para arrancarlo igual. Además
+deshabilita y detiene el puente (`systemctl --user disable --now`), haya cambios o no, y lo
+dice si estaba corriendo, arrancando o habilitado: corriendo, o al arrancar con la próxima
+sesión, el agente podría escribir en la carpeta vacía, y reiniciarlo la abriría a la unidad
+nueva. Queda así hasta el siguiente `--enable`, después del inicio de sesión, que lo
+habilita y arranca con la unidad, las reglas y la extensión actuales. Es
+lo que pasa también al actualizar una instalación anterior del puente, cuyo Pi ya tiene
+sesión. Si ya tiene contenido, nunca corras `claude` en ella; el script da el mismo
+procedimiento que para Pi:
 
 ```bash
 systemctl --user stop jarvis-pibridge.service
 mv ~/.local/state/jarvis/claude-config ~/.local/state/jarvis/claude-config.old-AAAAMMDD-HHMMSS
 host/systemd/install.sh --pi-bridge --node "$(mise where node@24)/bin/node"  # sin --enable: carpeta nueva, vacía, 0700
-env CLAUDE_CONFIG_DIR=$HOME/.local/state/jarvis/claude-config claude  # /login y salir
+cd ~ && env CLAUDE_CONFIG_DIR=$HOME/.local/state/jarvis/claude-config claude  # /login y salir
 systemctl --user start jarvis-pibridge.service
 ```
 
@@ -409,7 +426,8 @@ rechazan junto con `--pi-bridge`. Instala lo mismo que la opción por defecto (r
 extensión, parada, ayudante, TUI) salvo la unidad: escribe
 `~/.config/systemd/user/jarvis-pibridge.service` (la anterior, si era distinta, en `.bak`)
 y crea la carpeta propia de Pi (0700) si falta; `--check` dice si esa carpeta existe (no
-mira si tiene una sesión). Con `--enable`, si `gentle-dot.service` está instalado,
+mira si tiene una sesión). Con `--enable` (salvo con la carpeta de Claude Code vacía, ver
+arriba), si `gentle-dot.service` está instalado,
 primero corre `systemctl --user disable --now gentle-dot.service` y después habilita y
 arranca el puente; la unidad de Gentle Dot queda en su lugar. Si ese `disable --now` o el
 arranque del puente fallan, puede no quedar ninguno de los dos corriendo: el script dice
@@ -463,10 +481,10 @@ Environment=JARVIS_PI_THINKING=low
 Environment=JARVIS_PI_EXTENSIONS=%h/.pi/agent/npm/node_modules/pi-claude-bridge
 ```
 
-Antes de reiniciar, inicia sesión en Claude Code una vez en su carpeta propia (ver
-*Carpeta propia de Claude Code*, arriba):
-`env CLAUDE_CONFIG_DIR=$HOME/.local/state/jarvis/claude-config claude`, `/login` y salir.
-Después, `systemctl --user restart jarvis-pibridge.service`.
+Antes, con el servicio detenido (`systemctl --user stop jarvis-pibridge.service`), inicia
+sesión en Claude Code una vez en su carpeta propia (ver *Carpeta propia de Claude Code*,
+arriba): `cd ~ && env CLAUDE_CONFIG_DIR=$HOME/.local/state/jarvis/claude-config claude`,
+`/login` y salir. Después, `systemctl --user start jarvis-pibridge.service`.
 
 ### Ver que está corriendo
 
