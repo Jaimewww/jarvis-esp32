@@ -325,3 +325,67 @@ def test_a_send_whose_launch_runs_after_close_began_does_not_prompt_pi() -> None
         assert [f["code"] for f in frames if f["type"] == "error"] == ["agent_unavailable"]
 
     run(scenario())
+
+
+# --- Review findings on ad26857 ------------------------------------------------------------
+
+
+def test_close_ends_while_a_prompt_write_is_blocked_on_a_pi_that_stopped_reading() -> None:
+    async def scenario() -> None:
+        frames: Frames = []
+
+        async def emit(frame: dict[str, Any]) -> None:
+            frames.append(frame)
+
+        launcher = FakeLauncher()
+        writing = asyncio.Event()
+
+        async def stuck_stdin(pi: FakePi) -> None:
+            write, close = pi.write, pi.close
+            stopped = asyncio.Event()
+
+            async def blocking(record: Any) -> None:
+                if record.get("type") == "prompt":
+                    writing.set()
+                    await stopped.wait()  # the pipe is full until Pi is stopped
+                    raise BrokenPipeError("pi stopped")
+                await write(record)
+
+            async def closing() -> None:
+                stopped.set()
+                await close()
+
+            pi.write = blocking  # type: ignore[method-assign]
+            pi.close = closing  # type: ignore[method-assign]
+
+        launcher.on_launch = stuck_stdin
+        bridge = Bridge(launcher, emit, model="openai/m")
+        await bridge.send("a long prompt")
+        await asyncio.wait_for(writing.wait(), 1)
+        await asyncio.wait_for(bridge.close(), 1)
+        (pi,) = launcher.launches
+        assert pi.closed and pi.exit_code is not None
+
+    run(scenario())
+
+
+def test_close_stops_pi_even_when_a_launch_task_was_cancelled() -> None:
+    async def scenario() -> None:
+        frames: Frames = []
+
+        async def emit(frame: dict[str, Any]) -> None:
+            frames.append(frame)
+
+        launcher = FakeLauncher(reply("ok"))
+        bridge = Bridge(launcher, emit, model="openai/m")
+        await bridge.start()
+        await bridge.send("hola")
+        (prompting,) = [t for t in asyncio.all_tasks()
+                        if getattr(t.get_coro(), "__qualname__", "") == "Bridge._prompt"]
+        prompting.cancel()
+        await asyncio.wait_for(bridge.close(), 1)
+        (pi,) = launcher.launches
+        assert pi.closed and pi.exit_code is not None
+        assert "prompt" not in written(pi)
+
+    run(scenario())

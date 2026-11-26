@@ -374,12 +374,20 @@ class Bridge:
         self._stop_watchdog()
         self._turn = None  # a turn whose launch is running gives up its prompt
         self._fail_commands()  # nothing waits for a command timeout on shutdown (S13.7)
-        for start in list(self._starts):  # a launch is not cut half way: it ends, then stops
-            with contextlib.suppress(Exception):
-                await start
+        # Pi stops before the turn tasks are awaited: a prompt write blocked on a Pi that stopped
+        # reading fails then, instead of holding close() forever. The closed flag keeps any prompt
+        # from reaching a Pi from here on.
+        await self._stop_process()
+        # A launch is not cut half way: it ends, then stops. A task that failed or was cancelled
+        # does not keep close() from stopping that Pi.
+        await asyncio.gather(*self._starts, return_exceptions=True)
         async with self._launching:  # a launch already running ends first, then stops (S14.6)
-            process, reader = self._process, self._reader
-            self._process = self._reader = None
+            pass
+        await self._stop_process()
+
+    async def _stop_process(self) -> None:
+        process, reader = self._process, self._reader
+        self._process = self._reader = None
         if reader is not None:
             reader.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
