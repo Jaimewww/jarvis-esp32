@@ -252,6 +252,20 @@ Gentle Dot as the default; a machine opts into the bridge. Branch `feat/pi-bridg
      get `busy` instead of `queue_full`." A `send` refused for a full queue gets `queue_full`,
      the code clients already know for it.
 
+- S19 (L15, left for a later pass, none is a blocker): (1) after a `set_model` that Pi accepted
+  and then answered nothing for one command timeout, `ready.model` and `auth_providers` name
+  the previous model while a Pi that recovers runs the new one, until Pi is relaunched;
+  `models_list` shows the truth (`turns.py:264-272`); (2) a launch that fails after an `abort`
+  already ended its turn may emit an error for a finished turn or end a newer one; no test for
+  abort-then-launch-failure or a second `send` during the aborted launch (`turns.py:170-172`);
+  (3) the "no switch still running" assertion filters tasks by a name containing `switch` and
+  may match nothing (`test_pibridge_hardening.py:364-366`); (4) `close()` sets no closed flag:
+  a `model_set` that starts after it, when `bridge.close()` runs before `server.close()`,
+  could launch Pi (`turns.py:340-345`); (5) an `abort` of the client that sent the `send` is
+  read only after the launch ends, as at dcc68c6: up to two command timeouts on a silent new
+  Pi; (6) in the `__main__` order a Pi relaunched during shutdown gets its prompt before it is
+  closed.
+
 ## Tasks
 
 - [x] T1 S2,S3,S4,S5 — Bridge core: server, auth, one turn with deltas, abort, Pi process
@@ -281,13 +295,18 @@ Gentle Dot as the default; a machine opts into the bridge. Branch `feat/pi-bridg
   skipped. Native review approved (lineage review-66a5cb63f31ffe4d). Independent verify:
   S17.1-S17.3 pass, no blocker (L12).
 - [x] T5 S13 — Fix pass after the T2 verify and review. Route: gentle-ai-worker, same branch: bde49a8. Host 335 passed, 6 skipped; backend 82 passed, 7 skipped; pyright 0 errors. Native review approved (lineage review-03ea5a3391aa7fc2); independent verify: S13.1-S13.6 pass, S13.7 partial (L8).
-- [ ] T6 S14 items 1-6 — Second hardening pass of the bridge: model requests, model switching,
-  watchdog and close. Route: gentle-ai-worker, branch feat/pi-bridge-hardening on main.
-- [ ] T10 S14 items 7-11 — Installer hardening: agent directory and `HOME`, symlink loop,
+- [x] T6 S14 items 1-6 — Second hardening pass of the bridge: model requests, model switching,
+  watchdog and close. Route: gentle-ai-worker, branch feat/pi-bridge-hardening on main:
+  45fee37. Host 356 passed, 6 skipped. Native review approved; verify found one blocker (L14),
+  fixed by T11.
+- [x] T10 S14 items 7-11 — Installer hardening: agent directory and `HOME`, symlink loop,
   parent modes, recovery hint, `HOME` with a space. Route: gentle-ai-worker, branch
-  feat/pi-bridge-installer-hardening on feat/pi-bridge-hardening's first commit.
-- [ ] T11 S18 — Fix pass after the T6 verify and review. Route: gentle-ai-worker (same worker
-  continued), same branch.
+  feat/pi-bridge-installer-hardening on feat/pi-bridge-hardening's first commit: 3ac41e2,
+  README 7799533. Installer suite 284 passed. Review approved, verify pass (L14). PR #44.
+- [x] T11 S18 — Fix pass after the T6 verify and review. Route: gentle-ai-worker (same worker
+  continued), same branch: d164557. Host 362 passed, 6 skipped; pyright 0 errors. Native review
+  approved (lineage review-bed6eb353178c6bd). Independent verify: S18.1-S18.5 pass, no blocker
+  (L15). Leftovers: S19, no task yet.
 - [ ] T4 S11 — Run the bench and the TUI against the bridge on the user's machine; record the
   numbers. Route: inline with the user.
 
@@ -409,3 +428,12 @@ Gentle Dot as the default; a machine opts into the bridge. Branch `feat/pi-bridg
   advisories); independent verify: S14.1, S14.3, S14.4, S14.5 pass, S14.2 and S14.6 partial with
   one blocker (a Pi launched after `close()`), no deadlock found. Findings recorded as S18,
   task T11. Still not verified anywhere: a real `pi` subprocess on the new paths, real systemd.
+- L15 (2026-11-26, evidence, T11). d164557: S18.1, S18.2, S18.3 and S18.5 fixed; for S18.4 the
+  worker reported the same-client abort as not fixable without changing an existing test.
+  Independent verify: S18.1-S18.5 pass, no blocker, no should-fix; close takes 0.001-0.002 s
+  in six shutdown runs with no Pi launched after it; the same-client abort behaves the same at
+  dcc68c6, so it is a pre-existing limit. Native review: the first reviewer run stopped on the
+  relay's 120 s stream-idle bound with no verdict; the reoffered slots were captured once after
+  the verify ended and the review closed approved with six advisories, recorded with the
+  verify notes as S19. Pushed feat/pi-bridge-hardening and opened its PR. Still not verified
+  anywhere: a real `pi` subprocess on these paths, and real systemd.
