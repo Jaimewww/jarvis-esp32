@@ -122,7 +122,8 @@ y crea la carpeta propia del Pi del puente, ~/.local/state/jarvis/pi-agent, y la
 quedan de solo lectura para el servicio. Si algo de esas rutas bajo ~ es un enlace simbólico,
 no instala. No copia credenciales: si una carpeta está vacía dice cómo iniciar sesión ahí una
 vez, antes del primer arranque; si ya tiene contenido, cómo volver a hacerlo sin correr Pi ni
-Claude Code en ella.
+Claude Code en ella. Con --enable y la carpeta de Claude Code vacía no habilita ni arranca el
+puente: primero esa sesión, después otra vez --enable.
 El puente corre con el entorno de Python de la TUI. --gentle-dot-dir, --allow-unpinned y
 --allow-dirty no valen con --pi-bridge. Gentle Dot y el puente usan el mismo puerto: --enable
 detiene y deshabilita el otro y deja su unidad instalada, así que volver es correr este script
@@ -355,6 +356,11 @@ if ((PI_BRIDGE)); then
 		# parent that group or others can write lets them swap the directory below it.
 		for part in ${own_sub//\// }; do
 			sub="${sub:+${sub}/}${part}" p="${HOME%/}/${sub}"
+			# S21.5: every parent of an own directory is shared by both (same parent, S20), so a
+			# refusal on one names both.
+			if [[ -L "${p}" && "${sub}" != "${own_sub}" ]]; then
+				die "${PI_AGENT_DIR} y ${CLAUDE_CONFIG_DIR} pasan por un enlace simbólico (${p} apunta a $(readlink -- "${p}")): la carpeta del Pi y la de Claude Code del puente son fijas y el servicio escribiría donde apunta el enlace. Quita el enlace y vuelve a correr este script."
+			fi
 			[[ ! -L "${p}" ]] ||
 				die "${dir} pasa por un enlace simbólico (${p} apunta a $(readlink -- "${p}")): ${name} es fija y el servicio escribiría donde apunta el enlace. Quita el enlace y vuelve a correr este script."
 			[[ -e "${p}" ]] || break
@@ -362,7 +368,7 @@ if ((PI_BRIDGE)); then
 			[[ "${sub}" != "${own_sub}" ]] || break
 			mode="$(stat -c %a -- "${p}")" || die "no se pudo leer el modo de ${p}"
 			(((8#${mode} & 8#022) == 0)) ||
-				die "${p} tiene permisos ${mode}: el grupo u otros usuarios pueden escribir en ella y cambiar ${name} por otra. Corrige con: chmod go-w ${p}"
+				die "${p} tiene permisos ${mode}: el grupo u otros usuarios pueden escribir en ella y cambiar la carpeta del Pi o la de Claude Code del puente por otra. Corrige con: chmod go-w ${p}"
 		done
 		# S16.4: the login is kept there; only the mode is read, nothing in it is opened.
 		if [[ -d "${dir}" ]]; then
@@ -373,6 +379,17 @@ if ((PI_BRIDGE)); then
 	}
 	check_own_dir "${PI_AGENT_SUB}" "la carpeta del Pi del puente" "Pi"
 	check_own_dir "${CLAUDE_CONFIG_SUB}" "la carpeta de Claude Code del puente" "Claude Code"
+	# S21.3: the folders this script writes must not be inside an own directory: they would be
+	# made 755 and non-empty before it is created empty and 0700. Compared resolved ("..", symlinks).
+	for pair in "XDG_CONFIG_HOME:${CONFIG_HOME}" "--bin-dir (o JARVIS_BIN_DIR):${BIN_DIR}" "--agent-home (o GENTLE_DOT_AGENT_HOME):${AGENT_HOME}"; do
+		label="${pair%%:*}" p="${pair#*:}"
+		p_real="$(realpath -m -- "${p}")" || die "no se pudo resolver ${p}"
+		for own in "${PI_AGENT_DIR}:la carpeta del Pi del puente" "${CLAUDE_CONFIG_DIR}:la carpeta de Claude Code del puente"; do
+			own_real="$(realpath -m -- "${own%%:*}")" || die "no se pudo resolver ${own%%:*}"
+			[[ "${p_real%/}/" != "${own_real}/"* ]] ||
+				die "${label} es ${p}, dentro de ${own%%:*} (${own#*:}): este script escribiría ahí antes de crearla vacía y 0700. Indica otra carpeta, fuera de ella."
+		done
+	done
 else
 	[[ -n "${GD_DIR}" ]] || die "falta --gentle-dot-dir (o GENTLE_DOT_DIR): la ruta del checkout de Gentle Dot"
 	[[ -d "${GD_DIR}" ]] || die "no existe el directorio ${GD_DIR}"
@@ -947,6 +964,10 @@ if ((PI_BRIDGE)); then
 		if ((DRY_RUN)); then say "[dry-run] mkdir -m 0700 ${own_dir}"; else (umask 077 && mkdir -p -- "${own_dir}"); fi
 	done
 fi
+# S21.1: with Claude Code's directory still empty, --enable leaves the bridge as it was: once it
+# runs there (a Pi with a login can act), the agent could write in it before the user runs claude.
+hold=0
+((PI_BRIDGE && ENABLE && claude_config_new)) && hold=1
 input_changed=0
 [[ "${input_state}" == current && "${input_unit_state}" == current ]] || input_changed=1
 
@@ -968,6 +989,8 @@ if ((ENABLE)); then
 		((input_changed)) && run systemctl --user try-restart "${INPUT_UNIT_NAME}"
 		run systemctl --user enable --now "${INPUT_UNIT_NAME}"
 	fi
+fi
+if ((ENABLE && !hold)); then
 	# S10: Gentle Dot and the bridge listen on the same port. The other one, when installed,
 	# is stopped and disabled first (its unit file stays, so switching back is one more run);
 	# Conflicts= in the bridge's unit also stops it if something starts it later.
@@ -1004,7 +1027,7 @@ if ((ENABLE)); then
 	else
 		step enable --now "${SVC_NAME}"
 	fi
-else
+elif ((!ENABLE)); then
 	((stale)) && say "aviso: la unidad sigue habilitada en ${OTHER_TARGET}; para pasarla a ${WANTED_TARGET}: systemctl --user reenable ${SVC_NAME} (o este script con --enable)."
 	((ext_changed)) && say "La extensión de control de la PC se carga al arrancar el motor: si el servicio ya corre, reinícialo para aplicarla: systemctl --user try-restart ${SVC_NAME} (o este script con --enable)."
 	((rules_changed)) && say "Las reglas del agente se leen al arrancar el motor: si el servicio ya corre, reinícialo para aplicarlas: systemctl --user try-restart ${SVC_NAME} (o este script con --enable)."
@@ -1028,12 +1051,17 @@ fi
 # run outside the sandbox executes what the agent may have left there (hooks, statusLine and
 # apiKeyHelper of settings.json, MCP servers of .claude.json, plugins, agents, commands).
 if ((PI_BRIDGE)); then
-	claude_step="env CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG_DIR} claude y dentro escribe /login; luego sal de Claude Code."
-	if ((claude_config_new && ENABLE)); then
-		say "${SVC_NAME} ya arrancó con ${CLAUDE_CONFIG_DIR}, que estaba vacía. Para usar los modelos de Claude por suscripción (claude-bridge), inicia sesión en Claude Code una sola vez, con el servicio detenido y antes de mandarle nada a Jarvis (este script no copia ni lee credenciales):"
+	# S21.2: from the home, never from ~/Jarvis or ~/.gentle-dot, whose project files the agent can write.
+	claude_step="cd ~ && env CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG_DIR} claude y dentro escribe /login; luego sal de Claude Code."
+	if ((hold)); then
+		# The stop also makes the next --enable start the new unit (a running one is not restarted).
+		alt_cmd=""
+		[[ ! -e "${ALT_PATH}" ]] || alt_cmd="systemctl --user disable --now ${ALT_NAME} && "
+		say "${SVC_NAME} no se habilitó ni arrancó: ${CLAUDE_CONFIG_DIR} está vacía. Para los modelos de Claude por suscripción (claude-bridge), inicia sesión en Claude Code del puente una sola vez, con el servicio detenido y antes de que arranque con esa carpeta: con el servicio en marcha, el agente podría escribir en ella antes de que corras claude (este script no copia ni lee credenciales):"
 		say "  1. systemctl --user stop ${SVC_NAME}"
 		say "  2. ${claude_step}"
-		say "  3. systemctl --user start ${SVC_NAME}"
+		say "  3. Vuelve a correr este script con las mismas opciones, con --enable: habilita y arranca el servicio."
+		say "Si no vas a usar los modelos de Claude por suscripción, arráncalo así, sin esa sesión: ${alt_cmd}systemctl --user enable --now ${SVC_NAME}"
 	elif ((claude_config_new)); then
 		say "Solo para los modelos de Claude por suscripción (claude-bridge): inicia sesión en Claude Code del puente una sola vez y ANTES del primer arranque del servicio con ${CLAUDE_CONFIG_DIR}, que está vacía y donde el agente nunca escribió (este script no copia ni lee credenciales):"
 		say "  - ${claude_step}"
@@ -1047,8 +1075,9 @@ if ((PI_BRIDGE)); then
 	fi
 fi
 if ((PI_BRIDGE)); then
-	login_step="env PI_CODING_AGENT_DIR=${PI_AGENT_DIR} ${PI_BIN} -ne -ns -np -nc --no-themes y dentro escribe /login; luego sal de Pi."
-	if ((pi_agent_new && ENABLE)); then
+	# S21.2: the same for Pi, which may also load project files from its working directory.
+	login_step="cd ~ && env PI_CODING_AGENT_DIR=${PI_AGENT_DIR} ${PI_BIN} -ne -ns -np -nc --no-themes y dentro escribe /login; luego sal de Pi."
+	if ((pi_agent_new && ENABLE && !hold)); then
 		say "${SVC_NAME} quedó habilitado y ya arrancó con ${PI_AGENT_DIR}, que estaba vacía: es inofensivo, porque sin sesión iniciada no corre ningún modelo y ninguna herramienta puede actuar (este script no copia ni lee credenciales). Para que el agente funcione, inicia sesión una sola vez, ahora:"
 		say "  1. ${login_step}"
 		say "  2. systemctl --user restart ${SVC_NAME}"
