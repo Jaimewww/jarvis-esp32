@@ -127,6 +127,16 @@ EOF
 # node stubs: a current one and one that is too old.
 printf '#!/usr/bin/env bash\necho v24.11.0\n' >"${STUBS}/node"
 printf '#!/usr/bin/env bash\necho v20.19.0\n' >"${STUBS}/node20"
+# getent stub (S14.7): the passwd home is ${PASSWD_HOME}'s content while it exists, else the HOME
+# the installer runs with, so every case above runs in its own home as before.
+readonly PASSWD_HOME="${SANDBOX}/passwd-home"
+cat >"${STUBS}/getent" <<EOF
+#!/usr/bin/env bash
+[[ "\$1" == passwd ]] || exit 2
+h="\${HOME}"
+[[ ! -e "${PASSWD_HOME}" ]] || h="\$(<"${PASSWD_HOME}")"
+printf 'user:x:%s:%s::%s:/bin/sh\n' "\$2" "\$2" "\${h}"
+EOF
 # id stub that claims root, used only by the root-refusal case.
 mkdir -p "${SANDBOX}/rootbin"
 printf '#!/usr/bin/env bash\necho 0\n' >"${SANDBOX}/rootbin/id"
@@ -1045,14 +1055,55 @@ for case in local:.local state:.local/state jarvis:.local/state/jarvis pi:.local
 	target="${SANDBOX}/sym-${name}/target"
 	[[ "${name}" != pi ]] || target="${h}/.pi/agent"
 	mkdir -p "${target}" "$(dirname -- "${h}/${link}")" && chmod 700 "${target}" && ln -s "${target}" "${h}/${link}"
-	real="$(realpath -m -- "${h}/.local/state/jarvis/pi-agent")"
 	reset_calls
 	before="$(tree_of "${SANDBOX}/sym-${name}")"
 	bridged_in "${h}" "${BRIDGE[@]}" --enable
 	check "refuses a symlinked ~/${link} (${name}), writes and calls nothing" \
 		'[[ ${RC} -ne 0 && ! -s "${CALLS}" && "$(tree_of "${SANDBOX}/sym-${name}")" == "${before}" ]] &&
-		 grep -qxF "error: ${h}/.local/state/jarvis/pi-agent pasa por un enlace simbólico (resuelta es ${real}): la carpeta del Pi del puente es fija y el servicio escribiría donde apunta el enlace. Quita el enlace y vuelve a correr este script." <<<"${OUT}"'
+		 grep -qxF "error: ${h}/.local/state/jarvis/pi-agent pasa por un enlace simbólico (${h}/${link} apunta a ${target}): la carpeta del Pi del puente es fija y el servicio escribiría donde apunta el enlace. Quita el enlace y vuelve a correr este script." <<<"${OUT}"'
 done
+# S14.8: a symlink loop resolves to itself under realpath -m; it is refused like any symlink,
+# before the unit is written (it used to fail later, at mkdir).
+h="${SANDBOX}/sym-loop/home" && mkdir -p "${h}/.local" && ln -s state "${h}/.local/state"
+reset_calls
+before="$(tree_of "${SANDBOX}/sym-loop")"
+bridged_in "${h}" "${BRIDGE[@]}" --enable
+check "refuses a symlink loop at ~/.local/state, writes no unit, creates nothing, calls nothing" \
+	'[[ ${RC} -ne 0 && ! -s "${CALLS}" && "$(tree_of "${SANDBOX}/sym-loop")" == "${before}" ]] &&
+	 grep -qxF "error: ${h}/.local/state/jarvis/pi-agent pasa por un enlace simbólico (${h}/.local/state apunta a state): la carpeta del Pi del puente es fija y el servicio escribiría donde apunta el enlace. Quita el enlace y vuelve a correr este script." <<<"${OUT}"'
+# S14.7: HOME must be the passwd home, the one systemd names %h in the unit's other writable
+# paths: with HOME=~/Jarvis or ~/.gentle-dot the agent directory would land inside one of them.
+for sub in Jarvis .gentle-dot; do
+	real_home="${SANDBOX}/home-${sub#.}" h="${SANDBOX}/home-${sub#.}/${sub}"
+	mkdir -p "${h}" && printf '%s' "${real_home}" >"${PASSWD_HOME}"
+	reset_calls
+	before="$(tree_of "${real_home}")"
+	bridged_in "${h}" "${BRIDGE[@]}" --enable
+	check "refuses HOME=~/${sub} (not the passwd home), writes no unit, creates nothing, calls nothing" \
+		'[[ ${RC} -ne 0 && ! -s "${CALLS}" && "$(tree_of "${real_home}")" == "${before}" ]] &&
+		 grep -qxF "error: HOME es ${h}, pero tu carpeta personal es ${real_home} (getent passwd): systemd usa esa (%h) en las demás rutas de la unidad y la carpeta del Pi del puente quedaría fuera de su lugar. Vuelve a correr este script con HOME=${real_home}." <<<"${OUT}"'
+done
+rm -f "${PASSWD_HOME}"
+# S14.9: a parent of the agent directory that group or others can write is refused: they could
+# rename the directory below it and put another in its place.
+for sub in .local .local/state .local/state/jarvis; do
+	h="${SANDBOX}/parent-${sub//\//-}/home"
+	mkdir -p "${h}/${sub}" && chmod 777 "${h}/${sub}"
+	reset_calls
+	before="$(tree_of "${h}")"
+	bridged_in "${h}" "${BRIDGE[@]}" --enable
+	check "refuses ~/${sub} with mode 777, says chmod go-w, writes no unit, creates nothing, calls nothing" \
+		'[[ ${RC} -ne 0 && ! -s "${CALLS}" && "$(tree_of "${h}")" == "${before}" ]] &&
+		 grep -qxF "error: ${h}/${sub} tiene permisos 777: el grupo u otros usuarios pueden escribir en ella y cambiar la carpeta del Pi del puente por otra. Corrige con: chmod go-w ${h}/${sub}" <<<"${OUT}"'
+done
+# S14.11: the agent path goes verbatim into the unit; a HOME with a space is refused on it.
+h="${SANDBOX}/space home/home" && mkdir -p "${h}"
+reset_calls
+before="$(tree_of "${SANDBOX}/space home")"
+bridged_in "${h}" "${BRIDGE[@]}" --enable
+check "refuses a HOME with a space on the Pi agent path, writes no unit, creates nothing, calls nothing" \
+	'[[ ${RC} -ne 0 && ! -s "${CALLS}" && "$(tree_of "${SANDBOX}/space home")" == "${before}" ]] &&
+	 grep -qxF "error: ruta con caracteres no admitidos en una unidad (espacios, %, comillas…): ${h}/.local/state/jarvis/pi-agent" <<<"${OUT}"'
 # A symlinked HOME is compared below itself: the install goes on as before, the unit names the
 # path through $HOME as written (systemd resolves it to the same directory).
 mkdir -p "${SANDBOX}/real-home" && ln -s "${SANDBOX}/real-home" "${SANDBOX}/home-symlink"
@@ -1096,7 +1147,7 @@ check "bridge refuses a Node older than 24" \
 # neither service runs and how to recover.
 # svc_failed CMD UNIT OTHER: the message when CMD on UNIT fails after OTHER was disabled (S17.3).
 svc_failed() {
-	printf 'error: falló systemctl --user %s y %s ya se detuvo y deshabilitó: ahora no corre ninguno de los dos. Para ver por qué: journalctl --user -u %s. Para volver a %s: systemctl --user enable --now %s. Para reintentar: este script con las mismas opciones.' "$1" "$3" "$2" "$3" "$3"
+	printf 'error: falló systemctl --user %s y %s ya se detuvo y deshabilitó: ahora no corre ninguno de los dos. Para ver por qué: journalctl --user -u %s. Para volver a %s: systemctl --user disable --now %s && systemctl --user enable --now %s. Para reintentar: este script con las mismas opciones.' "$1" "$3" "$2" "$3" "$2" "$3"
 }
 printf 'jarvis-pibridge.service' >"${FAIL_ENABLE}"
 reset_calls
@@ -1119,7 +1170,7 @@ bridged "${BRIDGE[@]}" --enable
 check "a failed disable --now of Gentle Dot says nothing runs and how to recover" \
 	'[[ ${RC} -ne 0 && ! -e "${FAIL_DISABLE}" ]] &&
 	 [[ "$(calls)" == $'"'"'--user enable --now jarvis-input.service\n--user disable --now gentle-dot.service'"'"' ]] &&
-	 grep -qxF "error: falló systemctl --user disable --now gentle-dot.service, así que jarvis-pibridge.service no se arrancó y gentle-dot.service pudo quedar detenido: puede que no corra ninguno de los dos. Para ver por qué: journalctl --user -u gentle-dot.service. Para volver a gentle-dot.service: systemctl --user enable --now gentle-dot.service. Para reintentar: este script con las mismas opciones." <<<"${OUT}"'
+	 grep -qxF "error: falló systemctl --user disable --now gentle-dot.service, así que jarvis-pibridge.service no se arrancó y gentle-dot.service pudo quedar detenido: puede que no corra ninguno de los dos. Para ver por qué: journalctl --user -u gentle-dot.service. Para volver a gentle-dot.service: systemctl --user disable --now jarvis-pibridge.service && systemctl --user enable --now gentle-dot.service. Para reintentar: este script con las mismas opciones." <<<"${OUT}"'
 rm -f "${FAIL_DISABLE}"
 # S17.3: the message names the step that failed: try-restart (a changed unit) and start (after reenable).
 printf '# stale\n' >>"${BUNIT}"
@@ -1132,7 +1183,7 @@ mkdir -p "${BC}/systemd/user/default.target.wants" && ln -s ../jarvis-pibridge.s
 printf '%s' "--user start jarvis-pibridge.service" >"${FAIL_CMD}"
 reset_calls
 bridged "${BRIDGE[@]}" --enable
-check "a failed start of the bridge after Gentle Dot was disabled names the start" \
+check "a failed start of the bridge after Gentle Dot was disabled names the start; the way back disables the bridge first" \
 	'[[ ${RC} -ne 0 && ! -e "${FAIL_CMD}" ]] && grep -qxF -- "--user reenable jarvis-pibridge.service" "${CALLS}" &&
 	 grep -qxF "$(svc_failed "start jarvis-pibridge.service" jarvis-pibridge.service gentle-dot.service)" <<<"${OUT}"'
 rm -f "${FAIL_CMD}" "${BC}/systemd/user/default.target.wants/jarvis-pibridge.service"

@@ -299,7 +299,11 @@ cambiar de lugar, y la unidad la nombra tal cual. Antes de escribir nada, el scr
 niega a instalar si algo de esa ruta bajo `~` es un enlace simbólico (`~/.local`,
 `~/.local/state`, `~/.local/state/jarvis` o la propia carpeta; dice la ruta y adónde
 apunta), si existe pero no es una carpeta, o si ya existe con permisos para el grupo u
-otros (dice el `chmod 700` que la arregla). Si quedó `~/.gentle-dot/pi-agent` de una versión anterior
+otros (dice el `chmod 700` que la arregla). También se niega si `HOME` no es tu carpeta
+personal según `getent passwd` (systemd usa esa en las demás rutas de la unidad; dice con
+qué `HOME` volver a correrlo), si el grupo u otros pueden escribir en `~/.local`,
+`~/.local/state` o `~/.local/state/jarvis` (dice el `chmod go-w` que lo arregla), o si la
+ruta tiene caracteres que una unidad no admite (espacios, `%`, comillas…). Si quedó `~/.gentle-dot/pi-agent` de una versión anterior
 del script, no la mueve ni la borra: avisa que ya no se usa (no corras Pi en ella). El
 home sigue visible, así que las extensiones extra de `~/.pi/agent/npm/...` que nombres en
 `JARVIS_PI_EXTENSIONS` se siguen cargando (solo lectura).

@@ -29,7 +29,8 @@
 # gentle-dot.service, the same files otherwise, and, when missing, the bridge's own Pi agent
 # directory (PI_CODING_AGENT_DIR, fixed: ~/.local/state/jarvis/pi-agent, its missing parents
 # included, 0700; S10, S15.1, S17): outside ~/.pi and every path either unit can write, refused
-# when a component below $HOME is a symlink. It copies or reads no credentials: Pi is logged in there once by the user, while the
+# when $HOME is not the passwd home, a component below $HOME is a symlink or a parent is
+# writable by group or others (S14). It copies or reads no credentials: Pi is logged in there once by the user, while the
 # directory is still empty (the steps are printed; S16.3). It needs no Gentle Dot
 # checkout. --enable disables and stops whichever of the two units it is not
 # installing (both listen on 127.0.0.1:4317) and leaves its file in place; --uninstall
@@ -324,14 +325,31 @@ if ((PI_BRIDGE)); then
 	SEARCH_PATH="${SEARCH_PATH}:/usr/local/bin:/usr/bin"
 	[[ -f "${TUI_SRC_DIR}/pibridge/__main__.py" ]] ||
 		die "falta el puente ${TUI_SRC_DIR}/pibridge/__main__.py (paquete jarvis de host/, se arranca con python -m jarvis.pibridge)"
-	# S17.2: the unit names the agent directory as written and systemd resolves it: a symlink
-	# below $HOME would point the write access elsewhere (a symlinked $HOME itself is resolved
-	# first, as for every other path of the unit). Nothing is written before this check.
-	pi_agent_real="$(realpath -m -- "${PI_AGENT_DIR}")"
-	home_real="$(realpath -m -- "${HOME}")"
-	[[ "${pi_agent_real}" == "${home_real%/}/${PI_AGENT_SUB}" ]] ||
-		die "${PI_AGENT_DIR} pasa por un enlace simbólico (resuelta es ${pi_agent_real}): la carpeta del Pi del puente es fija y el servicio escribiría donde apunta el enlace. Quita el enlace y vuelve a correr este script."
-	[[ ! -e "${PI_AGENT_DIR}" || -d "${PI_AGENT_DIR}" ]] || die "${PI_AGENT_DIR} existe pero no es una carpeta; muévelo"
+	# S14.11: the agent path goes verbatim into the unit, like the paths checked below.
+	[[ "${PI_AGENT_DIR}" =~ ${UNIT_SAFE_RE} ]] ||
+		die "ruta con caracteres no admitidos en una unidad (espacios, %, comillas…): ${PI_AGENT_DIR}"
+	# S14.7: the unit's other writable paths are %h/..., the passwd home; the agent directory is
+	# made and named from $HOME, so the two must be the same or it could land inside ~/Jarvis.
+	passwd_home="$(getent passwd "$(id -u)" | cut -d: -f6)" || passwd_home=""
+	[[ -n "${passwd_home}" ]] || die "no se pudo leer tu carpeta personal (getent passwd $(id -u))"
+	[[ "${HOME%/}" == "${passwd_home%/}" ]] ||
+		die "HOME es ${HOME}, pero tu carpeta personal es ${passwd_home} (getent passwd): systemd usa esa (%h) en las demás rutas de la unidad y la carpeta del Pi del puente quedaría fuera de su lugar. Vuelve a correr este script con HOME=${passwd_home}."
+	# S17.2, S14.8: the unit names the agent directory as written and systemd resolves it: a
+	# symlink below $HOME (a loop included) would point the write access elsewhere. S14.9: a
+	# parent that group or others can write lets them swap the directory below it. Nothing is
+	# written before these checks.
+	sub=""
+	for part in ${PI_AGENT_SUB//\// }; do
+		sub="${sub:+${sub}/}${part}" p="${HOME%/}/${sub}"
+		[[ ! -L "${p}" ]] ||
+			die "${PI_AGENT_DIR} pasa por un enlace simbólico (${p} apunta a $(readlink -- "${p}")): la carpeta del Pi del puente es fija y el servicio escribiría donde apunta el enlace. Quita el enlace y vuelve a correr este script."
+		[[ -e "${p}" ]] || break
+		[[ -d "${p}" ]] || die "${p} existe pero no es una carpeta; muévelo"
+		[[ "${sub}" != "${PI_AGENT_SUB}" ]] || break
+		parent_mode="$(stat -c %a -- "${p}")" || die "no se pudo leer el modo de ${p}"
+		(((8#${parent_mode} & 8#022) == 0)) ||
+			die "${p} tiene permisos ${parent_mode}: el grupo u otros usuarios pueden escribir en ella y cambiar la carpeta del Pi del puente por otra. Corrige con: chmod go-w ${p}"
+	done
 	# S16.4: Pi keeps its login there; only the mode is read, nothing in it is opened.
 	if [[ -d "${PI_AGENT_DIR}" ]]; then
 		pi_agent_mode="$(stat -L -c %a -- "${PI_AGENT_DIR}")" || die "no se pudo leer el modo de ${PI_AGENT_DIR}"
@@ -932,7 +950,8 @@ if ((ENABLE)); then
 	alt_off=0
 	# step ARGS...: systemctl --user ARGS. Once the other unit is off, a failure leaves nothing on
 	# the port: say which step failed, that neither runs and how to recover (S15.2, S17.3);
-	# otherwise exit with the command's status, as before.
+	# otherwise exit with the command's status, as before. The way back disables this unit
+	# first: enable (or reenable) may have succeeded before the start failed (S14.10).
 	step() {
 		local rc unit="${*: -1}" what
 		run systemctl --user "$@" && return 0
@@ -941,7 +960,7 @@ if ((ENABLE)); then
 		what="falló systemctl --user $* y ${ALT_NAME} ya se detuvo y deshabilitó: ahora no corre ninguno de los dos"
 		[[ "${unit}" != "${ALT_NAME}" ]] ||
 			what="falló systemctl --user $*, así que ${SVC_NAME} no se arrancó y ${ALT_NAME} pudo quedar detenido: puede que no corra ninguno de los dos"
-		die "${what}. Para ver por qué: journalctl --user -u ${unit}. Para volver a ${ALT_NAME}: systemctl --user enable --now ${ALT_NAME}. Para reintentar: este script con las mismas opciones."
+		die "${what}. Para ver por qué: journalctl --user -u ${unit}. Para volver a ${ALT_NAME}: systemctl --user disable --now ${SVC_NAME} && systemctl --user enable --now ${ALT_NAME}. Para reintentar: este script con las mismas opciones."
 	}
 	if [[ -e "${ALT_PATH}" ]]; then
 		# S16.4: a failed disable --now may have stopped it already: same message.
