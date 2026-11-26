@@ -259,7 +259,6 @@ Gentle Dot as the default; a machine opts into the bridge. Branch `feat/pi-bridg
 - [ ] T10 S14 items 7-11 — Installer hardening: agent directory and `HOME`, symlink loop,
   parent modes, recovery hint, `HOME` with a space. Route: gentle-ai-worker, branch
   feat/pi-bridge-installer-hardening on feat/pi-bridge-hardening's first commit.
-- [ ] T4 S11 — With the user: install the unit, real Pi login, enable, TUI against the bridge.
 - [ ] T4 S11 — Run the bench and the TUI against the bridge on the user's machine; record the
   numbers. Route: inline with the user.
 
