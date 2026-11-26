@@ -90,11 +90,11 @@ async def apply(command: Command, choice: Choice, previous: Choice | None) -> No
         if done.get("success") is not True:
             raise ModelError("thinking_unavailable", error_of(done, "Pi refused that thinking level."))
     except ModelError:
-        await _put_back(command, previous)
+        await put_back(command, previous)
         raise
 
 
-async def _put_back(command: Command, previous: Choice | None) -> None:
+async def put_back(command: Command, previous: Choice | None) -> None:
     if previous is None:
         logger.warning("could not put pi back on its previous model: it was not known")
         return
