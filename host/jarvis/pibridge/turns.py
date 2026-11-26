@@ -88,6 +88,10 @@ class _Turn:
     tools: dict[str, _Tool] = field(default_factory=dict)
 
 
+def _unavailable(reason: str) -> dict[str, Any]:
+    return {"type": "error", "code": "agent_unavailable", "message": f"Pi did not start: {reason}"}
+
+
 def _text_of(message: dict[str, Any]) -> str | None:
     content = message.get("content")
     if isinstance(content, str):
@@ -153,6 +157,11 @@ class Bridge:
     async def send(self, text: str) -> bool:
         """Run ``text`` now or after the running turn; ``False`` when the queue is full."""
 
+        if self._closed:  # during or after close(): no turn, nothing goes to Pi (S19.4)
+            await self._set_state("working")
+            await self._emit(_unavailable("the bridge is shutting down"))
+            await self._set_state("idle")
+            return True
         if self._turn is not None:
             if len(self._queue) >= self._queue_cap:
                 return False
@@ -395,10 +404,7 @@ class Bridge:
             process = await self._ensure_process()
         except Exception as error:  # noqa: BLE001 - any launch failure ends the turn
             logger.warning("could not start pi: %s", error)
-            if self._turn is not turn:
-                return  # its turn already ended (aborted, closed): nothing to report (S19.2)
-            await self._emit({"type": "error", "code": "agent_unavailable", "message": f"Pi did not start: {error}"})
-            await self._finish(turn)
+            await self._fail_start(turn, error)
             return
         if self._turn is not turn:
             return  # aborted or closed during the launch: no prompt (S14.6, S18.4)
@@ -410,6 +416,15 @@ class Bridge:
             await process.write({"id": turn.request_id, "type": "prompt", "message": turn.text})
         except OSError:
             pass  # Pi is gone; its reader ends the turn
+        except Exception as error:  # noqa: BLE001 - the turn must not wait for the stuck-turn timeout
+            logger.exception("could not prompt pi")
+            await self._fail_start(turn, error)
+
+    async def _fail_start(self, turn: _Turn, error: Exception) -> None:
+        if self._turn is not turn:
+            return  # its turn already ended (aborted, closed): nothing to report (S19.2)
+        await self._emit(_unavailable(str(error)))
+        await self._finish(turn)
 
     async def _finish(self, turn: _Turn) -> None:
         if self._turn is not turn:
@@ -494,11 +509,11 @@ class Bridge:
 
     async def _ensure_process(self) -> PiProcess:
         async with self._launching:
+            if self._closed:  # not even a Pi already running: close() is stopping it
+                raise RuntimeError("the bridge is shutting down")
             process = self._process
             if process is not None and process.exit_code is None:
                 return process
-            if self._closed:
-                raise RuntimeError("the bridge is shutting down")
             process = await self._launcher()
             self._process = process
             self._reader = asyncio.ensure_future(self._read(process))

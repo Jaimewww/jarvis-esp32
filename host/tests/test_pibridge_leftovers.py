@@ -228,3 +228,100 @@ def test_a_pi_that_exits_during_shutdown_gets_no_prompt(tmp_path: Path, monkeypa
         assert all(pi.exit_code is not None for pi in launcher.launches)
 
     run(scenario())
+
+
+# --- Verify notes on c7ffff9 ---------------------------------------------------------------
+
+
+def test_a_send_during_close_does_not_prompt_pi_and_ends_idle() -> None:
+    async def scenario() -> None:
+        frames: Frames = []
+
+        async def emit(frame: dict[str, Any]) -> None:
+            frames.append(frame)
+
+        launcher = FakeLauncher(reply("ok"), reply("ok"))
+        bridge = Bridge(launcher, emit, model="openai/m")
+        await bridge.start()
+        pi = launcher.current
+        pi.mute.add("get_state")  # the switch waits on Pi: close() waits for it to be cancelled
+        switching = asyncio.ensure_future(bridge.set_model("anthropic", "claude-x", None))
+        await wait_for(lambda: "get_state" in written(pi))
+        closing = asyncio.ensure_future(bridge.close())
+        await asyncio.sleep(0)  # close() has started
+        await bridge.send("during close")
+        await asyncio.wait_for(closing, 1)
+        await asyncio.sleep(0.05)
+        during = [f for f in frames if f["type"] in ("agent_state", "error")]
+        frames.clear()
+        await bridge.send("after close")
+        await asyncio.sleep(0.05)
+        after = [f for f in frames if f["type"] in ("agent_state", "error")]
+        assert "prompt" not in written(pi)
+        assert len(launcher.launches) == 1
+        assert during == after
+        assert [f["type"] for f in during] == ["agent_state", "error", "agent_state"]
+        assert during[1]["code"] == "agent_unavailable" and "shutting down" in during[1]["message"]
+        assert during[-1] == IDLE and bridge.agent_state == "idle"
+        assert switching.done()
+
+    run(scenario())
+
+
+def test_an_unexpected_failure_writing_the_prompt_ends_the_turn(caplog: pytest.LogCaptureFixture) -> None:
+    async def scenario() -> None:
+        frames: Frames = []
+
+        async def emit(frame: dict[str, Any]) -> None:
+            frames.append(frame)
+
+        launcher = FakeLauncher()
+
+        async def broken_prompt(pi: FakePi) -> None:
+            write = pi.write
+
+            async def failing(record: Any) -> None:
+                if record.get("type") == "prompt":
+                    raise RuntimeError("transport broke")
+                await write(record)
+
+            pi.write = failing  # type: ignore[method-assign]
+
+        launcher.on_launch = broken_prompt
+        bridge = Bridge(launcher, emit, model="openai/m")
+        await bridge.send("hola")
+        await wait_for(lambda: IDLE in frames, timeout=1)
+        errors = [f for f in frames if f["type"] == "error"]
+        assert [f["code"] for f in errors] == ["agent_unavailable"]
+        assert "transport broke" in errors[0]["message"]
+        assert frames[0] == WORKING and frames[-1] == IDLE
+        assert "transport broke" in caplog.text
+        await bridge.close()
+
+    run(scenario())
+
+
+def test_a_send_whose_launch_runs_after_close_began_does_not_prompt_pi() -> None:
+    async def scenario() -> None:
+        frames: Frames = []
+
+        async def emit(frame: dict[str, Any]) -> None:
+            frames.append(frame)
+
+        launcher = FakeLauncher(reply("ok"))
+        bridge = Bridge(launcher, emit, model="openai/m")
+        await bridge.start()
+        pi = launcher.current
+        pi.mute.add("get_state")
+        switching = asyncio.ensure_future(bridge.set_model("anthropic", "claude-x", None))
+        await wait_for(lambda: "get_state" in written(pi))
+        await bridge.send("hola")  # its launch task has not run yet
+        await bridge.close()  # flags itself closed before that task runs
+        await asyncio.sleep(0.05)
+        assert "prompt" not in written(pi)
+        assert len(launcher.launches) == 1 and switching.done()
+        states = [f for f in frames if f["type"] == "agent_state"]
+        assert states == [WORKING, IDLE]
+        assert [f["code"] for f in frames if f["type"] == "error"] == ["agent_unavailable"]
+
+    run(scenario())
