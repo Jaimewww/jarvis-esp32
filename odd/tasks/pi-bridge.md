@@ -291,6 +291,18 @@ Gentle Dot as the default; a machine opts into the bridge. Branch `feat/pi-bridg
   Not requested: DeepSeek, a different default model in the repo (stays
   `openai/gpt-6.1-sol`), an installer option for the model.
 
+- S21 (L17, left for a later pass, none is a blocker): (1) with `--enable` on an empty Claude
+  Code directory the installer starts the service and then tells the user to stop it and run
+  `claude` there; emptiness is not checked again, and a Pi already logged in could have
+  written hooks or settings in between (`install.sh:1032-1036`): until fixed, install without
+  `--enable`, log in, then enable; (2) the printed `claude` login command sets no working
+  directory: run from `~/Jarvis` or `~/.gentle-dot` it could load project files the agent can
+  write; prefix it with `cd ~ &&`; (3) `XDG_CONFIG_HOME` or `--bin-dir` pointing inside an own
+  directory makes the installer create it 755 and non-empty before the 0700 creation
+  (`install.sh:644,725` before `:945`); same at the parent commit for `pi-agent`; (4) no test
+  for the upgrade state: Pi directory with a login, Claude Code directory new; (5) refusals on
+  the shared parents name only the Pi directory.
+
 ## Tasks
 
 - [x] T1 S2,S3,S4,S5 — Bridge core: server, auth, one turn with deltas, abort, Pi process
@@ -332,8 +344,11 @@ Gentle Dot as the default; a machine opts into the bridge. Branch `feat/pi-bridg
   continued), same branch: d164557. Host 362 passed, 6 skipped; pyright 0 errors. Native review
   approved (lineage review-bed6eb353178c6bd). Independent verify: S18.1-S18.5 pass, no blocker
   (L15). Leftovers: S19, no task yet.
-- [ ] T12 S20 — Claude Code config directory of the bridge. Route: gentle-ai-worker, branch
-  feat/pi-bridge-claude on main.
+- [x] T12 S20 — Claude Code config directory of the bridge. Route: gentle-ai-worker, branch
+  feat/pi-bridge-claude on main: b5fdce1 (installer, unit, tests), b0f9ba6 (docs). Installer
+  suite 301 passed; host 362 passed, 6 skipped. Native review approved (lineage
+  review-1fda5d26b526cedf). Independent verify: S20.1-S20.5 pass, no blocker (L17).
+  Leftovers: S21, no task yet.
 - [ ] T4 S11 — Run the bench and the TUI against the bridge on the user's machine; record the
   numbers. Route: inline with the user.
 
@@ -475,3 +490,11 @@ Gentle Dot as the default; a machine opts into the bridge. Branch `feat/pi-bridg
   binary package installed beside it, `CLAUDE_CONFIG_DIR` read at `src/index.ts:527,542`.
   Spike figures of 2026-11-25 for claude-bridge/claude-sonnet-5-5 low, outside the sandbox:
   questions 3.06-3.36 s, volume 3.89/3.95 s. Recorded as S20, task T12.
+- L17 (2026-11-26, evidence, T12). b5fdce1 and b0f9ba6: one shared `check_own_dir` for both
+  own directories. Native review approved with two advisories. Independent verify: 29 refusal
+  cases each leave the HOME tree identical with no unit written and no `pi-agent` created;
+  pre-set `CLAUDE_CONFIG_DIR`, `XDG_*` and the old agent-directory variables change nothing in
+  the unit; Gentle Dot install identical to 41f4a96 over 11 steps; no blocker, two should-fix
+  and notes recorded as S21. Still open for the real run: whether Claude Code writes outside
+  `CLAUDE_CONFIG_DIR`, whether the SDK's bundled binary starts under the sandbox, whether the
+  Pi of the bridge needs a login of its own for `claude-bridge/` models.
