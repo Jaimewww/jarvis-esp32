@@ -351,6 +351,16 @@ Gentle Dot as the default; a machine opts into the bridge. Branch `feat/pi-bridg
   Leftovers: S21, no task yet.
 - [x] T4 S11 — Run the bench and the TUI against the bridge on the user's machine; record the
   numbers. Route: inline with the user. Done with Claude by subscription (L18).
+- [ ] T13 S19 — Bridge leftovers of the T11 verify: model state after a silent `set_model`,
+  abort-then-launch-failure, the `switch` assertion, a closed flag in `close()`, abort read
+  during a launch, shutdown order in `__main__`. Route: gentle-ai-worker, branch
+  feat/pi-bridge-s19 on docs/pi-bridge-real-run (L19).
+- [ ] T14 S21 — Installer leftovers of the T12 verify: `--enable` on an empty Claude Code
+  directory, `cd ~ &&` in the printed login, own directories created 755 before the 0700
+  creation, upgrade-state test, refusals naming the right directory. Route: gentle-ai-worker,
+  branch feat/pi-bridge-s21 on docs/pi-bridge-real-run (L19).
+- [ ] T15 — Whisper picks up a lot of noise (L18). Route: inline, after T13/T14 and the tests
+  (L19).
 
 ## Log
 
@@ -517,3 +527,7 @@ Gentle Dot as the default; a machine opts into the bridge. Branch `feat/pi-bridg
   anota y continuamos leugo". Open: Whisper picks up a lot of noise (not investigated yet);
   the old OpenAI copy `~/.local/state/jarvis/pi-agent.old-20261126-105432` is still there
   (the safety policy blocked deleting it; the user removes it by hand).
+- L19 (2026-11-26, user): "primeor dale en lo que puedes avanzar automatico, luego pruebas y
+  lo de whisper al final". The user removed `pi-agent.old-20261126-105432` ("listo ya
+  borre"). Plan: T13 (S19) and T14 (S21) now as two parallel writers, then the tests, then
+  T15 (Whisper noise).
