@@ -77,14 +77,35 @@ mkdir -p "${STUBS}" "${FAKE_HOME}" "${GD}/packages/daemon/src" "${GD}/node_modul
 : >"${CALLS}"
 
 # systemctl stub: records its arguments, never touches a manager. While the file
-# ${FAIL_RELOAD} exists, the next `daemon-reload` fails once and removes it.
+# ${FAIL_RELOAD} exists, the next `daemon-reload` fails once and removes it. While
+# ${FAIL_ENABLE} exists, the next `enable --now <unit named in it>` fails once.
 readonly FAIL_RELOAD="${SANDBOX}/fail-reload"
+readonly FAIL_ENABLE="${SANDBOX}/fail-enable"
+# While ${FAIL_DISABLE} exists, the next `disable --now <unit named in it>` fails once (S16.4).
+readonly FAIL_DISABLE="${SANDBOX}/fail-disable"
+# While ${FAIL_CMD} exists, the next call whose arguments are exactly its content fails once (S17.3).
+readonly FAIL_CMD="${SANDBOX}/fail-cmd"
 cat >"${STUBS}/systemctl" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >>"${CALLS}"
 if [[ "\$*" == "--user daemon-reload" && -e "${FAIL_RELOAD}" ]]; then
 	rm -f -- "${FAIL_RELOAD}"
 	echo "Failed to reload daemon: stub" >&2
+	exit 1
+fi
+if [[ -e "${FAIL_ENABLE}" && "\$*" == "--user enable --now \$(<"${FAIL_ENABLE}")" ]]; then
+	rm -f -- "${FAIL_ENABLE}"
+	echo "Failed to enable unit: stub" >&2
+	exit 1
+fi
+if [[ -e "${FAIL_DISABLE}" && "\$*" == "--user disable --now \$(<"${FAIL_DISABLE}")" ]]; then
+	rm -f -- "${FAIL_DISABLE}"
+	echo "Failed to disable unit: stub" >&2
+	exit 1
+fi
+if [[ -e "${FAIL_CMD}" && "\$*" == "\$(<"${FAIL_CMD}")" ]]; then
+	rm -f -- "${FAIL_CMD}"
+	echo "Failed: stub" >&2
 	exit 1
 fi
 EOF
@@ -119,7 +140,9 @@ check() { if eval "$2"; then ok "$1"; else ko "$1" "${OUT:-}"; fi; }
 # sandboxed ARGS...: run install.sh with the sandbox environment; sets OUT and RC.
 sandboxed() {
 	set +e
-	OUT="$(env -i PATH="${STUBS}:/usr/bin:/bin" HOME="${FAKE_HOME}" XDG_CONFIG_HOME="${CFG:-${FAKE_CONFIG}}" \
+	# STATE_DIR / AGENT_ENV, when set, become XDG_STATE_HOME / JARVIS_PIBRIDGE_AGENT_DIR; else unset.
+	OUT="$(env -i PATH="${STUBS}:/usr/bin:/bin" HOME="${HOME_DIR:-${FAKE_HOME}}" XDG_CONFIG_HOME="${CFG:-${FAKE_CONFIG}}" ${STATE_DIR:+XDG_STATE_HOME="${STATE_DIR}"} \
+		${AGENT_ENV:+JARVIS_PIBRIDGE_AGENT_DIR="${AGENT_ENV}"} \
 		JARVIS_INPUT_SRC_DIR="${INPUT_SRC_OVERRIDE:-${INPUT_SRC}}" JARVIS_TUI_SRC_DIR="${TUI_SRC_OVERRIDE:-${TUI_SRC}}" \
 		JARVIS_TUI_REQUIREMENTS="${TUI_REQ_SRC}" JARVIS_TUI_PYTHON="${STUBS}/python3-tui" bash "${INSTALL}" "$@" 2>&1)"
 	RC=$?
@@ -794,6 +817,346 @@ else
 	check "outside the wrapper the abstract socket answers" 'grep -qxF "plain: connected" <<<"${OUT}"'
 	check "inside the wrapper the abstract socket is blocked (EPERM)" 'grep -qE "^wrapped: blocked 1 0" <<<"${OUT}"'
 fi
+
+# 11. Pi bridge (odd/tasks/pi-bridge.md S10, S15): --pi-bridge installs jarvis-pibridge.service
+# instead of gentle-dot.service, with the same sandbox plus the bridge's own Pi agent directory
+# (PI_CODING_AGENT_DIR) writable; ~/.pi stays read-only; the two never run together.
+# Its own home and config, so the cases above stay as they were.
+readonly BH="${SANDBOX}/bridge-home" BC="${SANDBOX}/bridge-config"
+# The bridge's Pi agent directory, fixed (S17.1): outside every path either unit can write.
+readonly PIA="${BH}/.local/state/jarvis/pi-agent"
+# The default of an earlier run of this branch, inside ~/.gentle-dot (gentle-dot.service writes it).
+readonly OLD_PIA="${BH}/.gentle-dot/pi-agent"
+readonly BUNIT="${BC}/systemd/user/jarvis-pibridge.service" GUNIT="${BC}/systemd/user/gentle-dot.service"
+readonly BRIDGE_TPL="${HERE}/jarvis-pibridge.service.in" GD_TPL="${HERE}/gentle-dot.service.in"
+# The TUI package with the bridge in it (jarvis.pibridge is part of host/jarvis).
+readonly TUI_B_SRC="${SANDBOX}/tui-bridge-src/jarvis"
+mkdir -p "${TUI_B_SRC}/pibridge" "${BH}"
+printf '"""fake tui"""\n' >"${TUI_B_SRC}/__init__.py"
+printf 'print("tui")\n' >"${TUI_B_SRC}/tui.py"
+: >"${TUI_B_SRC}/pibridge/__init__.py"
+printf 'import os, sys\nprint("bridge", __name__, sys.flags.isolated, sys.dont_write_bytecode, os.getcwd() not in sys.path)\n' >"${TUI_B_SRC}/pibridge/__main__.py"
+printf '#!/usr/bin/env node\n' >"${STUBS}/pi"
+chmod +x "${STUBS}/pi"
+readonly BRIDGE=(--pi-bridge --pi "${STUBS}/pi" --node "${STUBS}/node")
+# bridged ARGS...: sandboxed in the bridge's home and config, with the bridge-capable TUI.
+bridged() { HOME_DIR="${BH}" CFG="${BC}" TUI_SRC_OVERRIDE="${TUI_B_SRC}" sandboxed "$@"; }
+# S16.3: the printed login steps (directory new or empty) and re-login procedure (otherwise).
+readonly LOGIN_STEP="env PI_CODING_AGENT_DIR=${PIA} ${STUBS}/pi -ne -ns -np -nc --no-themes y dentro escribe /login; luego sal de Pi."
+readonly FIRST_LOGIN="Inicio de sesión del Pi del puente, una sola vez y ANTES del primer arranque del servicio: ${PIA} está vacía y el agente nunca escribió en ella (este script no copia ni lee credenciales)."
+readonly FIRST_START="  2. Arranca el servicio: systemctl --user enable --now jarvis-input.service jarvis-pibridge.service (o este script con --enable)."
+readonly ENABLED_LOGIN="jarvis-pibridge.service quedó habilitado y ya arrancó con ${PIA}, que estaba vacía: es inofensivo, porque sin sesión iniciada no corre ningún modelo y ninguna herramienta puede actuar (este script no copia ni lee credenciales). Para que el agente funcione, inicia sesión una sola vez, ahora:"
+readonly RELOGIN="${PIA} ya tiene contenido: si el Pi del puente ya inició sesión, no hace falta nada más. Para volver a iniciar sesión no corras Pi en esa carpeta: el agente pudo escribir en ella y Pi ejecutaría fuera del aislamiento lo que hubiera dejado (paquetes y npmCommand de settings.json, comandos con ! de auth.json o models.json, herramientas de bin/). En su lugar:"
+# after LINE N: the N lines OUT prints right after LINE.
+after() { grep -A"$2" -xF -- "$1" <<<"${OUT}" | tail -n +2; }
+# relogin_printed: the whole re-login procedure, in order, with a timestamped mv.
+relogin_printed() {
+	[[ "$(after "${RELOGIN}" 5 | sed -E 's/\.old-[0-9]{8}-[0-9]{6}$/.old-STAMP/')" == "  1. systemctl --user stop jarvis-pibridge.service
+  2. mv ${PIA} ${PIA}.old-STAMP
+  3. Vuelve a correr este script con las mismas opciones, sin --enable: crea ${PIA} nueva, vacía y 0700.
+  4. ${LOGIN_STEP}
+  5. systemctl --user start jarvis-pibridge.service" ]]
+}
+# tree_of DIR...: every path under DIR, to prove a refusal wrote nothing.
+tree_of() { find "$@" 2>/dev/null | LC_ALL=C sort; }
+
+sandboxed --help
+check "help documents --pi-bridge and --pi" 'grep -qE "^  --pi-bridge +" <<<"${OUT}" && grep -qE "^  --pi PATH +" <<<"${OUT}"'
+
+reset_calls
+bridged "${BRIDGE[@]}" --dry-run
+check "bridge dry-run exits 0, prints the bridge unit, writes and calls nothing" \
+	'[[ ${RC} -eq 0 && ! -e "${BC}" && -z "$(ls -A "${BH}")" && ! -s "${CALLS}" ]] &&
+	 grep -qxF "[dry-run] escribir ${BUNIT}:" <<<"${OUT}" && ! grep -qF "escribir ${GUNIT}" <<<"${OUT}" &&
+	 grep -qxF "[dry-run] mkdir -m 0700 ${PIA}" <<<"${OUT}" && ! grep -qF "${BH}/.pi" <<<"${OUT}"'
+bridged "${BRIDGE[@]}" --check
+check "bridge --check needs no Gentle Dot checkout and names pi, node and the unit" \
+	'[[ ${RC} -eq 0 && ! -e "${BC}" ]] && grep -qxF "OK: puente de Pi con ${STUBS}/pi y node v24.11.0 (${STUBS}/node); la unidad iría a ${BUNIT}" <<<"${OUT}"'
+# S10: --check says whether the agent directory exists, never whether it holds a login.
+check "bridge --check reports the missing Pi agent directory" \
+	'grep -qxF "Carpeta de Pi del puente: falta ${PIA} (install.sh la crea, 0700)" <<<"${OUT}"'
+
+reset_calls
+bridged "${BRIDGE[@]}"
+check "bridge install exits 0, writes jarvis-pibridge.service 0644 and no gentle-dot.service, only reloads" \
+	'[[ ${RC} -eq 0 && -f "${BUNIT}" && "$(stat -c %a "${BUNIT}")" == 644 && ! -e "${GUNIT}" ]] &&
+	 [[ "$(calls)" == "--user daemon-reload" ]] && grep -qxF "Escrito ${BUNIT}" <<<"${OUT}"'
+check "bridge unit has no placeholders left" '! grep -q "@[A-Z_]*@" "${BUNIT}"'
+# S10, S15.1: the bridge's Pi gets its own agent directory; ~/.pi is neither created nor writable.
+check "bridge install creates the Pi agent directory 0700, an empty one, and no ~/.pi" \
+	'[[ -d "${PIA}" && "$(stat -c %a "${PIA}")" == 700 && -z "$(ls -A "${PIA}")" && ! -e "${BH}/.pi" ]]'
+# S16.2, S17.1: the fixed directory lives under ~/.local/state, its parents made 0700, the old one not made.
+check "the default Pi agent directory is ~/.local/state/jarvis/pi-agent, parents created 0700" \
+	'[[ "$(stat -c %a "${BH}/.local/state")" == 700 && "$(stat -c %a "${BH}/.local/state/jarvis")" == 700 && ! -e "${OLD_PIA}" ]]'
+# S16.3: a directory created in this run gets the first-login steps, before the first start.
+check "bridge install without --enable prints the first login, before the first start, and no re-login" \
+	'[[ "$(after "${FIRST_LOGIN}" 2)" == "  1. ${LOGIN_STEP}"$'"'"'\n'"'"'"${FIRST_START}" ]] && ! grep -qF "${RELOGIN}" <<<"${OUT}" && ! grep -q "mv " <<<"${OUT}"'
+check "no old agent directory, no notice about it" '! grep -qF "${OLD_PIA}" <<<"${OUT}"'
+bridged "${BRIDGE[@]}" --check
+check "bridge --check reports the existing Pi agent directory" \
+	'[[ ${RC} -eq 0 ]] && grep -qxF "Carpeta de Pi del puente: ${PIA}" <<<"${OUT}"'
+check "bridge install creates every other path the bridge unit names" \
+	'(for p in "${BC}/systemd/user" "${BH}/.local/bin/jarvis-stop" "${BH}/.local/bin/jarvis" "${BH}/.gentle-dot/agent/extensions" \
+		"${BH}/.gentle-dot/agent/AGENTS.md" "${BH}/.gentle-dot/agent/extensions/jarvis-pc-control/index.ts" "${BH}/.gentle-dot" "${BH}/Jarvis" \
+		"${BH}/.local/share/jarvis/tui/jarvis/pibridge/__main__.py" "${BH}/.local/share/jarvis/sandbox/jarvis-sandbox-exec" \
+		"${BC}/systemd/user/jarvis-input.service"; do [[ -e "$p" ]] || exit 1; done)'
+b_unit="$(awk '/^\[/{s=$0; next} s=="[Unit]"' "${BUNIT}" 2>/dev/null || true)"
+b_svc="$(awk '/^\[/{s=$0; next} s=="[Service]"' "${BUNIT}" 2>/dev/null || true)"
+b_exec="ExecStart=/usr/bin/python3 -I \"${BH}/.local/share/jarvis/sandbox/jarvis-sandbox-exec\" \"${BH}/.local/share/jarvis/tui/.venv/bin/python\" -I -B -c \"import runpy, sys; sys.path.insert(0, '${BH}/.local/share/jarvis/tui'); runpy.run_module('jarvis.pibridge', run_name='__main__', alter_sys=True)\""
+for directive in "${b_exec}" "WorkingDirectory=%h/Jarvis" "Environment=JARVIS_PI_HOST=127.0.0.1" "Environment=JARVIS_PI_PORT=4317" \
+	"Environment=JARVIS_PI_EXECUTABLE=${STUBS}/pi" "Environment=PATH=${STUBS}:/usr/local/bin:/usr/bin" \
+	"Environment=JARVIS_PI_PC_CONTROL=${BH}/.gentle-dot/agent/extensions/jarvis-pc-control/index.ts" \
+	"Environment=JARVIS_PI_AGENTS_MD=${BH}/.gentle-dot/agent/AGENTS.md" "SyslogIdentifier=jarvis-pibridge" \
+	"Environment=PI_CODING_AGENT_DIR=${PIA}" "ReadWritePaths=%h/.gentle-dot %h/Jarvis ${PIA}" \
+	"ReadOnlyPaths=${BC}/systemd/user ${BH}/.local/bin/jarvis-stop ${BH}/.local/bin/jarvis ${BH}/.gentle-dot/agent/extensions ${BH}/.gentle-dot/agent/AGENTS.md"; do
+	check "bridge unit sets ${directive}" 'grep -qxF -- "${directive}" <<<"${b_svc}"'
+done
+check "bridge unit has a single ExecStart, no ExecStartPre and no model of its own" \
+	'[[ "$(grep -c "^ExecStart=" "${BUNIT}")" == 1 ]] && ! grep -qE "^(ExecStartPre|Environment=JARVIS_PI_(MODEL|THINKING|EXTENSIONS))=" "${BUNIT}"'
+check "bridge unit Conflicts=gentle-dot.service in [Unit]" 'grep -qxF "Conflicts=gentle-dot.service" <<<"${b_unit}"'
+# Same hardening: every sandbox, privilege, start-limit, stop and session line of
+# gentle-dot.service.in is in the bridge template verbatim; the only one that differs is
+# ReadWritePaths= (the bridge's Pi agent directory added). The Gentle Dot template itself is
+# untouched (no Conflicts=).
+hardening_re='^(UMask|NoNewPrivileges|LockPersonality|RestrictRealtime|Private[A-Za-z]*|TemporaryFileSystem|RuntimeDirectory[A-Za-z]*|BindReadOnlyPaths|InaccessiblePaths|ProtectHome|ReadOnlyPaths|ReadWritePaths|UnsetEnvironment|KillMode|TimeoutStopSec|Restart[A-Za-z]*|StartLimit[A-Za-z]*|After|PartOf|WantedBy|Type|StandardOutput|StandardError)='
+gd_hardening="$(grep -E "${hardening_re}" "${GD_TPL}" | grep -v "^ReadWritePaths=")"
+b_hardening="$(grep -E "${hardening_re}" "${BRIDGE_TPL}" | grep -v "^ReadWritePaths=")"
+OUT="$(diff <(printf '%s\n' "${gd_hardening}") <(printf '%s\n' "${b_hardening}"))" || true
+check "bridge template repeats every hardening line of gentle-dot.service.in" '[[ -z "${OUT}" && -n "${b_hardening}" ]]'
+check "ReadWritePaths= differs from Gentle Dot only by the bridge's Pi agent directory" \
+	'[[ "$(grep "^ReadWritePaths=" "${BRIDGE_TPL}")" == "$(grep "^ReadWritePaths=" "${GD_TPL}") @PI_AGENT_DIR@" ]]'
+# S15.1: no directive of the bridge unit names ~/.pi (comments may, e.g. JARVIS_PI_EXTENSIONS).
+check "no directive of the bridge template or unit names ~/.pi" \
+	'! grep -v "^#" "${BRIDGE_TPL}" | grep -qE "(%h|~)/\.pi(/|[[:space:]]|$)" && ! grep -v "^#" "${BUNIT}" | grep -qF "${BH}/.pi"'
+check "the bridge unit sets PI_CODING_AGENT_DIR once, to the directory it may write" \
+	'[[ "$(grep -c "^Environment=PI_CODING_AGENT_DIR=" "${BUNIT}")" == 1 ]] &&
+	 [[ "$(sed -n "s/^Environment=PI_CODING_AGENT_DIR=//p" "${BUNIT}")" == "$(sed -n "s/^ReadWritePaths=%h\/.gentle-dot %h\/Jarvis //p" "${BUNIT}")" ]]'
+check "gentle-dot.service.in has no Conflicts= (it works both ways from the bridge unit)" '! grep -q "^Conflicts=" "${GD_TPL}"'
+check "every sandbox directive in the bridge unit has a comment right above it" \
+	'awk '"'"'/^\[Service\]/{s=1} /^\[Install\]/{s=0} s && /^(PrivateUsers|PrivateDevices|PrivateTmp|TemporaryFileSystem|RuntimeDirectory|BindReadOnlyPaths|InaccessiblePaths|ReadOnlyPaths|UnsetEnvironment|ProtectHome|ReadWritePaths|Environment=PATH)=/ && prev !~ /^#/ && prevkey !~ /^RuntimeDirectory/ {bad=1; print} {prev=$0; prevkey=$0} END{exit bad}'"'"' "${BUNIT}"'
+# The ExecStart code runs the installed jarvis.pibridge as __main__, isolated, from any cwd.
+b_code="$(sed -n "s/^ExecStart=.* -I -B -c \"\(.*\)\"$/\1/p" "${BUNIT}" 2>/dev/null || true)"
+OUT="$(cd "${SANDBOX}" && env -i PATH=/usr/bin:/bin PYTHONPATH=/nonexistent /usr/bin/python3 -I -B -c "${b_code}" 2>&1)" || true
+check "the bridge ExecStart runs jarvis.pibridge as __main__, isolated, without bytecode, cwd off sys.path" \
+	'[[ "${OUT}" == "bridge __main__ 1 True True" ]]'
+
+# Idempotent, and the default install in another home never writes or names the bridge unit.
+reset_calls
+bridged "${BRIDGE[@]}"
+check "second bridge install changes nothing and calls nothing" \
+	'[[ ${RC} -eq 0 && ! -s "${CALLS}" ]] && grep -qxF "Sin cambios: ${BUNIT} ya está al día." <<<"${OUT}"'
+# S16.3: an existing directory with no entries still counts as new.
+check "an existing but empty Pi agent directory still gets the first login" \
+	'grep -qxF "${FIRST_LOGIN}" <<<"${OUT}" && ! grep -qF "${RELOGIN}" <<<"${OUT}"'
+check "the default install wrote no bridge unit" '[[ ! -e "${FAKE_CONFIG}/systemd/user/jarvis-pibridge.service" ]]'
+
+# Switching: Gentle Dot first (the default), then the bridge, then back. --enable disables and
+# stops the other unit before it enables the chosen one; both unit files stay installed.
+reset_calls
+HOME_DIR="${BH}" CFG="${BC}" TUI_SRC_OVERRIDE="${TUI_B_SRC}" sandboxed "${BASE[@]}" --enable
+check "default --enable with the bridge installed stops and disables the bridge, then enables Gentle Dot" \
+	'[[ ${RC} -eq 0 && -f "${GUNIT}" && -f "${BUNIT}" ]] &&
+	 [[ "$(calls)" == $'"'"'--user daemon-reload\n--user enable --now jarvis-input.service\n--user disable --now jarvis-pibridge.service\n--user try-restart gentle-dot.service\n--user enable --now gentle-dot.service'"'"' ]]'
+gd_expected="$(sed -e "s|@NODE@|${STUBS}/node|g" -e "s|@GENTLE_DOT_DIR@|${GD}|g" -e "s|@SANDBOX_EXEC@|${BH}/.local/share/jarvis/sandbox/jarvis-sandbox-exec|g" \
+	-e "s|@UNIT_DIR@|${BC}/systemd/user|g" -e "s|@STOP_PATH@|${BH}/.local/bin/jarvis-stop|g" -e "s|@TUI_LAUNCHER@|${BH}/.local/bin/jarvis|g" \
+	-e "s|@AGENT_HOME@|${BH}/.gentle-dot/agent|g" "${GD_TPL}")"
+check "the default unit rendered next to the bridge is the template with its placeholders only, no Conflicts=" \
+	'[[ "$(<"${GUNIT}")" == "${gd_expected}" ]] && ! grep -q "^Conflicts=" "${GUNIT}"'
+reset_calls
+bridged "${BRIDGE[@]}" --enable
+check "--pi-bridge --enable stops and disables Gentle Dot first, then enables the bridge" \
+	'[[ ${RC} -eq 0 && -f "${GUNIT}" ]] &&
+	 [[ "$(calls)" == $'"'"'--user enable --now jarvis-input.service\n--user disable --now gentle-dot.service\n--user enable --now jarvis-pibridge.service'"'"' ]]'
+# S16.3: --enable on an empty directory enables as asked, then says the agent cannot act yet.
+check "--enable on an empty Pi agent directory says the agent cannot act until the login exists" \
+	'[[ "$(after "${ENABLED_LOGIN}" 2)" == "  1. ${LOGIN_STEP}"$'"'"'\n'"'"'"  2. systemctl --user restart jarvis-pibridge.service" ]] && ! grep -qF "${FIRST_LOGIN}" <<<"${OUT}" && ! grep -qF "${RELOGIN}" <<<"${OUT}"'
+# From here the directory has an entry, as after Pi ran in it (the installer never opens it).
+: >"${PIA}/settings.json" && chmod 000 "${PIA}/settings.json"
+printf '# stale\n' >>"${BUNIT}"
+reset_calls
+bridged "${BRIDGE[@]}" --enable
+check "--pi-bridge --enable on a stale bridge unit: backup, reload, Gentle Dot off, try-restart, enable" \
+	'[[ ${RC} -eq 0 ]] && grep -qxF "# stale" "${BUNIT}.bak" && ! grep -qxF "# stale" "${BUNIT}" &&
+	 [[ "$(calls)" == $'"'"'--user daemon-reload\n--user enable --now jarvis-input.service\n--user disable --now gentle-dot.service\n--user try-restart jarvis-pibridge.service\n--user enable --now jarvis-pibridge.service'"'"' ]]'
+reset_calls
+bridged "${BRIDGE[@]}"
+check "--pi-bridge without --enable calls nothing and says how to switch" \
+	'[[ ${RC} -eq 0 && ! -s "${CALLS}" ]] &&
+	 grep -qxF "aviso: gentle-dot.service sigue instalado y usa el mismo puerto; para dejar solo jarvis-pibridge.service: systemctl --user disable --now gentle-dot.service (o este script con --enable)." <<<"${OUT}" &&
+	 grep -qxF "No se habilitó ni arrancó. Para hacerlo: systemctl --user enable --now jarvis-input.service jarvis-pibridge.service (o este script con --enable)." <<<"${OUT}"'
+# S16.3: a directory with entries gets the re-login procedure only, never the login command alone.
+check "a Pi agent directory with entries gets the re-login procedure, not the first login" \
+	'relogin_printed && ! grep -qF "${FIRST_LOGIN}" <<<"${OUT}" && ! grep -qF "${ENABLED_LOGIN}" <<<"${OUT}" &&
+	 [[ "$(grep -cF "${LOGIN_STEP}" <<<"${OUT}")" == 1 ]]'
+# S16.2: the old default of an earlier run is named, neither moved nor deleted.
+mkdir -m 0700 "${OLD_PIA}" && printf 'old\n' >"${OLD_PIA}/auth.json" && chmod 000 "${OLD_PIA}/auth.json"
+reset_calls
+bridged "${BRIDGE[@]}"
+check "an old ~/.gentle-dot/pi-agent is mentioned, kept in place and unused" \
+	'[[ ${RC} -eq 0 && -f "${OLD_PIA}/auth.json" && "$(stat -c %a "${OLD_PIA}/auth.json")" == 0 ]] &&
+	 grep -qxF "Aviso: ${OLD_PIA} es la carpeta del Pi del puente de una versión anterior de este script y ya no se usa; ahora es ${PIA}. Este script no la mueve, no la borra ni mira lo que tiene; no corras Pi en ella (el agente pudo escribir ahí) y bórrala cuando quieras." <<<"${OUT}" &&
+	 grep -qxF "ReadWritePaths=%h/.gentle-dot %h/Jarvis ${PIA}" "${BUNIT}"'
+chmod 600 "${OLD_PIA}/auth.json" && rm -rf "${OLD_PIA}"
+reset_calls
+HOME_DIR="${BH}" CFG="${BC}" TUI_SRC_OVERRIDE="${TUI_B_SRC}" sandboxed "${BASE[@]}" --enable
+check "switching back with the default --enable: bridge off, Gentle Dot on, bridge unit kept" \
+	'[[ ${RC} -eq 0 && -f "${BUNIT}" ]] &&
+	 [[ "$(calls)" == $'"'"'--user enable --now jarvis-input.service\n--user disable --now jarvis-pibridge.service\n--user enable --now gentle-dot.service'"'"' ]]'
+
+# --headless works for the bridge as for Gentle Dot.
+bridged "${BRIDGE[@]}" --headless --dry-run
+check "bridge --headless renders WantedBy=default.target and no session binding" \
+	'[[ ${RC} -eq 0 ]] && grep -qxF "    | WantedBy=default.target" <<<"${OUT}" && ! grep -q "graphical-session.target" <<<"${OUT}"'
+
+# Refusals specific to the bridge.
+bridged --pi-bridge --pi relative/pi --node "${STUBS}/node" --check
+check "refuses a relative --pi" '[[ ${RC} -ne 0 ]] && grep -qF "ruta absoluta" <<<"${OUT}"'
+reset_calls
+bridged --pi "${STUBS}/pi" --node "${STUBS}/node" --enable
+check "refuses --pi without --pi-bridge and calls nothing" \
+	'[[ ${RC} -ne 0 && ! -s "${CALLS}" ]] && grep -qF -- "--pi solo vale junto con --pi-bridge" <<<"${OUT}"'
+mkdir -p "${SANDBOX}/shims" && cp "${STUBS}/pi" "${SANDBOX}/shims/pi"
+bridged --pi-bridge --pi "${SANDBOX}/shims/pi" --node "${STUBS}/node" --check
+check "refuses a version-manager shim for pi" '[[ ${RC} -ne 0 ]] && grep -q "shim" <<<"${OUT}"'
+bridged --pi-bridge --node "${STUBS}/node" --check
+check "--pi defaults to the pi on PATH" '[[ ${RC} -eq 0 ]] && grep -qF "puente de Pi con ${STUBS}/pi " <<<"${OUT}"'
+HOME_DIR="${BH}" CFG="${BC}" sandboxed "${BRIDGE[@]}" --check
+check "refuses a TUI package without jarvis/pibridge/__main__.py" '[[ ${RC} -ne 0 ]] && grep -qF "pibridge/__main__.py" <<<"${OUT}"'
+
+# S17.1: the Pi agent directory is fixed: no option, no variable, XDG_STATE_HOME not read.
+reset_calls
+bridged "${BRIDGE[@]}" --pi-agent-dir "${SANDBOX}/elsewhere/pi-agent" --enable
+check "--pi-agent-dir is an unknown option, calls nothing" \
+	'[[ ${RC} -ne 0 && ! -s "${CALLS}" ]] && grep -qxF -- "error: opción desconocida: --pi-agent-dir" <<<"${OUT}"'
+# bridged_in HOME ARGS...: sandboxed in another home (and its own config), with the bridge TUI.
+bridged_in() { local h="$1"; shift; HOME_DIR="${h}" CFG="${h}/.config" TUI_SRC_OVERRIDE="${TUI_B_SRC}" sandboxed "$@"; }
+# A fresh home, so the dry-run prints the whole unit.
+h="${SANDBOX}/env-home" && mkdir -p "${h}"
+AGENT_ENV="${SANDBOX}/elsewhere/pi-agent" bridged_in "${h}" "${BRIDGE[@]}" --dry-run
+check "JARVIS_PIBRIDGE_AGENT_DIR has no effect on the bridge install" \
+	'[[ ${RC} -eq 0 ]] && grep -qxF "    | Environment=PI_CODING_AGENT_DIR=${h}/.local/state/jarvis/pi-agent" <<<"${OUT}" && ! grep -qF "elsewhere" <<<"${OUT}"'
+STATE_DIR="${SANDBOX}/xdg-state" bridged_in "${h}" "${BRIDGE[@]}" --dry-run
+check "XDG_STATE_HOME has no effect on the bridge install" \
+	'[[ ${RC} -eq 0 ]] && grep -qxF "    | ReadWritePaths=%h/.gentle-dot %h/Jarvis ${h}/.local/state/jarvis/pi-agent" <<<"${OUT}" &&
+	 grep -qxF "[dry-run] mkdir -m 0700 ${h}/.local/state/jarvis/pi-agent" <<<"${OUT}" && ! grep -qF "xdg-state" <<<"${OUT}"'
+# S17.2: a symlink in any component below $HOME is refused before anything is written.
+for case in local:.local state:.local/state jarvis:.local/state/jarvis pi:.local/state/jarvis/pi-agent harmless:.local/state/jarvis/pi-agent; do
+	name="${case%%:*}" link="${case#*:}" h="${SANDBOX}/sym-${name}/home"
+	target="${SANDBOX}/sym-${name}/target"
+	[[ "${name}" != pi ]] || target="${h}/.pi/agent"
+	mkdir -p "${target}" "$(dirname -- "${h}/${link}")" && chmod 700 "${target}" && ln -s "${target}" "${h}/${link}"
+	real="$(realpath -m -- "${h}/.local/state/jarvis/pi-agent")"
+	reset_calls
+	before="$(tree_of "${SANDBOX}/sym-${name}")"
+	bridged_in "${h}" "${BRIDGE[@]}" --enable
+	check "refuses a symlinked ~/${link} (${name}), writes and calls nothing" \
+		'[[ ${RC} -ne 0 && ! -s "${CALLS}" && "$(tree_of "${SANDBOX}/sym-${name}")" == "${before}" ]] &&
+		 grep -qxF "error: ${h}/.local/state/jarvis/pi-agent pasa por un enlace simbólico (resuelta es ${real}): la carpeta del Pi del puente es fija y el servicio escribiría donde apunta el enlace. Quita el enlace y vuelve a correr este script." <<<"${OUT}"'
+done
+# A symlinked HOME is compared below itself: the install goes on as before, the unit names the
+# path through $HOME as written (systemd resolves it to the same directory).
+mkdir -p "${SANDBOX}/real-home" && ln -s "${SANDBOX}/real-home" "${SANDBOX}/home-symlink"
+bridged_in "${SANDBOX}/home-symlink" "${BRIDGE[@]}" --dry-run
+check "a symlinked HOME is not refused; the unit carries the path through HOME" \
+	'[[ ${RC} -eq 0 ]] && grep -qxF "    | Environment=PI_CODING_AGENT_DIR=${SANDBOX}/home-symlink/.local/state/jarvis/pi-agent" <<<"${OUT}" &&
+	 grep -qxF "    | ReadWritePaths=%h/.gentle-dot %h/Jarvis ${SANDBOX}/home-symlink/.local/state/jarvis/pi-agent" <<<"${OUT}"'
+
+# S16.4: an existing agent directory that group or others can enter is refused, with the fix.
+for mode in 750 705 710; do
+	h="${SANDBOX}/open-${mode}"
+	mkdir -p "${h}/.local/state/jarvis/pi-agent" && chmod "${mode}" "${h}/.local/state/jarvis/pi-agent"
+	reset_calls
+	bridged_in "${h}" "${BRIDGE[@]}" --enable
+	check "refuses an existing Pi agent directory with mode ${mode}, says chmod 700, calls nothing" \
+		'[[ ${RC} -ne 0 && ! -s "${CALLS}" && "$(stat -c %a "${h}/.local/state/jarvis/pi-agent")" == "${mode}" ]] &&
+		 grep -qxF "error: ${h}/.local/state/jarvis/pi-agent tiene permisos ${mode}: el grupo u otros usuarios pueden entrar y Pi guarda ahí su inicio de sesión. Corrige con: chmod 700 ${h}/.local/state/jarvis/pi-agent" <<<"${OUT}"'
+done
+# S15.6: the directory check that remains after S10 (the agent directory, not ~/.pi).
+h="${SANDBOX}/not-a-dir"
+mkdir -p "${h}/.local/state/jarvis" && : >"${h}/.local/state/jarvis/pi-agent"
+bridged_in "${h}" "${BRIDGE[@]}" --check
+check "refuses a Pi agent directory that exists but is not a directory" \
+	'[[ ${RC} -ne 0 ]] && grep -qxF "error: ${h}/.local/state/jarvis/pi-agent existe pero no es una carpeta; muévelo" <<<"${OUT}"'
+
+# S15.4: the Gentle Dot options are refused with --pi-bridge, like --pi without it.
+for opt in "--gentle-dot-dir ${GD}" --allow-unpinned --allow-dirty; do
+	reset_calls
+	# shellcheck disable=SC2086 # word-splitting "--gentle-dot-dir DIR" is intended
+	bridged "${BRIDGE[@]}" ${opt} --enable
+	check "refuses ${opt%% *} with --pi-bridge and calls nothing" \
+		'[[ ${RC} -ne 0 && ! -s "${CALLS}" ]] && grep -qxF -- "error: ${opt%% *} no vale junto con --pi-bridge (es solo para Gentle Dot)" <<<"${OUT}"'
+done
+
+# S15.5: the bridge needs the same Node major as Gentle Dot.
+bridged --pi-bridge --pi "${STUBS}/pi" --node "${STUBS}/node20" --check
+check "bridge refuses a Node older than 24" \
+	'[[ ${RC} -ne 0 ]] && grep -qxF "error: el puente de Pi necesita Node 24+; ${STUBS}/node20 es v20.19.0" <<<"${OUT}"'
+
+# S15.2: when enabling fails after the other unit was disabled, the installer says that
+# neither service runs and how to recover.
+# svc_failed CMD UNIT OTHER: the message when CMD on UNIT fails after OTHER was disabled (S17.3).
+svc_failed() {
+	printf 'error: falló systemctl --user %s y %s ya se detuvo y deshabilitó: ahora no corre ninguno de los dos. Para ver por qué: journalctl --user -u %s. Para volver a %s: systemctl --user enable --now %s. Para reintentar: este script con las mismas opciones.' "$1" "$3" "$2" "$3" "$3"
+}
+printf 'jarvis-pibridge.service' >"${FAIL_ENABLE}"
+reset_calls
+bridged "${BRIDGE[@]}" --enable
+check "a failed bridge enable after Gentle Dot was disabled says nothing runs and how to recover" \
+	'[[ ${RC} -ne 0 ]] &&
+	 [[ "$(calls)" == $'"'"'--user enable --now jarvis-input.service\n--user disable --now gentle-dot.service\n--user enable --now jarvis-pibridge.service'"'"' ]] &&
+	 grep -qxF "$(svc_failed "enable --now jarvis-pibridge.service" jarvis-pibridge.service gentle-dot.service)" <<<"${OUT}"'
+printf 'gentle-dot.service' >"${FAIL_ENABLE}"
+reset_calls
+HOME_DIR="${BH}" CFG="${BC}" TUI_SRC_OVERRIDE="${TUI_B_SRC}" sandboxed "${BASE[@]}" --enable
+check "a failed Gentle Dot enable after the bridge was disabled says nothing runs and how to recover" \
+	'[[ ${RC} -ne 0 ]] &&
+	 grep -qxF "$(svc_failed "enable --now gentle-dot.service" gentle-dot.service jarvis-pibridge.service)" <<<"${OUT}"'
+rm -f "${FAIL_ENABLE}"
+# S16.4: a failing disable --now of the other unit gets the same message as S15.2.
+printf 'gentle-dot.service' >"${FAIL_DISABLE}"
+reset_calls
+bridged "${BRIDGE[@]}" --enable
+check "a failed disable --now of Gentle Dot says nothing runs and how to recover" \
+	'[[ ${RC} -ne 0 && ! -e "${FAIL_DISABLE}" ]] &&
+	 [[ "$(calls)" == $'"'"'--user enable --now jarvis-input.service\n--user disable --now gentle-dot.service'"'"' ]] &&
+	 grep -qxF "error: falló systemctl --user disable --now gentle-dot.service, así que jarvis-pibridge.service no se arrancó y gentle-dot.service pudo quedar detenido: puede que no corra ninguno de los dos. Para ver por qué: journalctl --user -u gentle-dot.service. Para volver a gentle-dot.service: systemctl --user enable --now gentle-dot.service. Para reintentar: este script con las mismas opciones." <<<"${OUT}"'
+rm -f "${FAIL_DISABLE}"
+# S17.3: the message names the step that failed: try-restart (a changed unit) and start (after reenable).
+printf '# stale\n' >>"${BUNIT}"
+printf '%s' "--user try-restart jarvis-pibridge.service" >"${FAIL_CMD}"
+reset_calls
+bridged "${BRIDGE[@]}" --enable
+check "a failed try-restart of the bridge after Gentle Dot was disabled names the restart" \
+	'[[ ${RC} -ne 0 && ! -e "${FAIL_CMD}" ]] && grep -qxF "$(svc_failed "try-restart jarvis-pibridge.service" jarvis-pibridge.service gentle-dot.service)" <<<"${OUT}"'
+mkdir -p "${BC}/systemd/user/default.target.wants" && ln -s ../jarvis-pibridge.service "${BC}/systemd/user/default.target.wants/jarvis-pibridge.service"
+printf '%s' "--user start jarvis-pibridge.service" >"${FAIL_CMD}"
+reset_calls
+bridged "${BRIDGE[@]}" --enable
+check "a failed start of the bridge after Gentle Dot was disabled names the start" \
+	'[[ ${RC} -ne 0 && ! -e "${FAIL_CMD}" ]] && grep -qxF -- "--user reenable jarvis-pibridge.service" "${CALLS}" &&
+	 grep -qxF "$(svc_failed "start jarvis-pibridge.service" jarvis-pibridge.service gentle-dot.service)" <<<"${OUT}"'
+rm -f "${FAIL_CMD}" "${BC}/systemd/user/default.target.wants/jarvis-pibridge.service"
+
+# The default install (Gentle Dot) never creates or names a Pi agent directory.
+check "the default install made no Pi agent directory and no ~/.pi" \
+	'[[ ! -e "${FAKE_HOME}/.gentle-dot/pi-agent" && ! -e "${FAKE_HOME}/.local/state" && ! -e "${FAKE_HOME}/.pi" ]] && ! grep -q "PI_CODING_AGENT_DIR" "${GUNIT}" "${GD_TPL}"'
+
+if command -v systemd-analyze >/dev/null 2>&1; then
+	set +e
+	VERIFY="$(env HOME="${BH}" XDG_CONFIG_HOME="${BC}" systemd-analyze --user verify "${BUNIT}" 2>&1)"
+	VRC=$?
+	set -e
+	OUT="${VERIFY}"
+	check "systemd-analyze --user verify accepts jarvis-pibridge.service" '[[ ${VRC} -eq 0 && -z "${VERIFY}" ]]'
+fi
+
+# Uninstall removes the three units and keeps the bridge's Pi agent directory (its login).
+reset_calls
+HOME_DIR="${BH}" CFG="${BC}" sandboxed --uninstall
+check "uninstall removes gentle-dot, the helper and the bridge unit, resets all three, keeps the Pi agent directory" \
+	'[[ ${RC} -eq 0 && ! -e "${GUNIT}" && ! -e "${BUNIT}" && -d "${PIA}" ]] &&
+	 [[ "$(calls)" == $'"'"'--user disable --now gentle-dot.service\n--user disable --now jarvis-input.service\n--user disable --now jarvis-pibridge.service\n--user daemon-reload\n--user reset-failed gentle-dot.service jarvis-input.service jarvis-pibridge.service'"'"' ]] &&
+	 grep -qxF "Se conserva la copia ${BUNIT}.bak." <<<"${OUT}"'
 
 printf '\n%d passed, %d failed\n' "${PASS}" "${FAIL}"
 ((FAIL == 0))

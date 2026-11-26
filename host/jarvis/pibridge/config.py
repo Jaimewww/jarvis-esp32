@@ -51,7 +51,8 @@ def _parser(env: Mapping[str, str]) -> argparse.ArgumentParser:
         description=(
             "Speak the Gentle Dot WebSocket protocol v1 to Jarvis's clients and drive one "
             "'pi --mode rpc' process underneath. Every option also reads JARVIS_PI_<NAME> "
-            "(for example JARVIS_PI_PORT); the command line wins."
+            "(for example JARVIS_PI_PORT), except two: --pi reads JARVIS_PI_EXECUTABLE and "
+            "--extension adds to JARVIS_PI_EXTENSIONS. The command line wins."
         ),
     )
     parser.add_argument("--host", default=default("HOST", DEFAULT_HOST), help="address to bind (default %(default)s)")

@@ -431,6 +431,78 @@ inocente; la confirmación dependía de cómo redactaba el modelo, no de lo que 
 **Descartado:** preguntar por Enter en cualquier navegador (pregunta en cada búsqueda) y
 seguir preguntando por las palabras del texto escrito.
 
+## D24 — Puente de Pi con el protocolo de Gentle Dot
+
+Una máquina puede reemplazar el daemon de Gentle Dot por un **puente** propio
+(`host/jarvis/pibridge`) que habla el mismo protocolo v1, en el mismo puerto y con el
+mismo token, y por debajo maneja un proceso `pi --mode rpc` con la extensión de control
+de la PC y el `AGENTS.md` de Jarvis (decisión del usuario, S1 y L3 de
+`odd/tasks/pi-bridge.md`: «dejalo gentle dot por defecto pero que en realidad funciona pi
+por default», «Puente con protocolo de Gentle Dot»).
+
+- **Gentle Dot sigue siendo lo predeterminado** del repositorio. El puente se elige por
+  máquina con `host/systemd/install.sh --pi-bridge`, que instala
+  `jarvis-pibridge.service` con el mismo aislamiento que `gentle-dot.service` más
+  escritura en una carpeta de agente propia del Pi del puente
+  (`PI_CODING_AGENT_DIR`, fija: `~/.local/state/jarvis/pi-agent`, 0700). Las dos unidades
+  se excluyen (`Conflicts=`) y el instalador deshabilita una al habilitar la otra.
+- **`~/.pi` queda de solo lectura** para el servicio (S10 y S15.1, L9). Con escritura
+  ahí, el agente podría dejar una extensión en `~/.pi/agent/extensions/` o tocar
+  `npm/node_modules`, y el `pi` del usuario, que corre sin aislamiento, la ejecutaría al
+  arrancar. Por eso el Pi del puente escribe solo en su carpeta; las extensiones extra
+  de `~/.pi` se siguen leyendo. El costo es iniciar sesión una vez en esa carpeta
+  (`/login`, con el comando que imprime el instalador); el instalador no copia ni lee
+  credenciales.
+- **La carpeta de agente es fija y queda fuera de todo lo que alguna unidad puede
+  escribir** (S16.2, L10; S17, L11). Antes estaba en `~/.gentle-dot/pi-agent`, que
+  `gentle-dot.service` puede escribir: su agente podía cambiarla por un enlace a `~/.pi`,
+  y systemd resuelve los enlaces de `ReadWritePaths=`. Ahora es siempre
+  `~/.local/state/jarvis/pi-agent`, sin forma de cambiarla: tres verificaciones seguidas
+  encontraron un camino nuevo a través de una ubicación configurable, que nadie había
+  pedido. La unidad la nombra tal cual en `PI_CODING_AGENT_DIR` y en `ReadWritePaths=`,
+  y el instalador se niega a instalar si esa ruta, resuelta, no es la misma que escrita
+  (un enlace simbólico en `~/.local`, `~/.local/state`, `~/.local/state/jarvis` o en la
+  propia carpeta), o si ya existe con permisos para el grupo u otros. La carpeta vieja,
+  si existe, no se mueve ni se borra.
+- **Pi corre fuera del aislamiento solo en una carpeta que el agente nunca escribió**
+  (S16.3, L10). Para `/login` Pi corre sin aislamiento en esa carpeta y ejecuta lo que
+  haya: paquetes y `npmCommand` de `settings.json`, entradas `!comando` de `auth.json` o
+  `models.json`, herramientas de `bin/`. Las opciones `-ne -ns -np -nc --no-themes` no lo
+  evitan. Por eso el instalador imprime el comando de inicio de sesión solo cuando la
+  carpeta es nueva o está vacía (lo decide por la lista de la carpeta, sin abrir nada) y
+  pide hacerlo antes del primer arranque; si ya tiene contenido, imprime el procedimiento
+  para volver a iniciar sesión: detener el servicio, mover la carpeta a un costado sin
+  correr Pi en ella, volver a correr el instalador para crear una nueva vacía (0700),
+  iniciar sesión y arrancar el servicio. La primera sesión es segura porque sin cuenta el
+  agente no puede actuar.
+- **Los resguardos son otros que en D8.** En una máquina con el puente el agente ya no
+  está «limitado por los resguardos de Gentle Dot» (el diálogo de permiso, la lista de
+  bloqueo y el límite de acciones de D8): quedan solo los de la extensión de control de
+  la PC (D20 y D23) y el aislamiento de la unidad. Además, el Pi del puente conserva las
+  herramientas por defecto de Pi (`read`, `bash`, `edit`, `write`), que actúan dentro de
+  ese aislamiento: home de solo lectura salvo `~/.gentle-dot`, `~/Jarvis` y su carpeta
+  de agente.
+- **Los clientes no cambian:** la TUI, `python -m jarvis.bench` y el adaptador del
+  backend (`GentleDotAgent`) hablan con el puente sin tocar su código.
+- **No cambia D1 ni D14 para las demás máquinas:** Gentle Dot sigue siendo la
+  dependencia externa fijada detrás del adaptador (D1) y el motor de la tarea larga
+  (D14), con una tarea a la vez; el puente también atiende un turno a la vez.
+
+**Por qué:** con el mismo modelo (`openai/gpt-6.1-sol`, razonamiento `low`), el mismo día
+(2026-11-25) y mediana de 3 corridas, Pi responde mucho más rápido. Prueba aparte con Pi
+1.6.1 (L4): preguntas 1,77-2,31 s contra 6,59-7,41 s de Gentle Dot; subir y bajar el
+volumen 4,13 / 4,25 s contra 15,96 / 14,10 s; Spotify 4,80 s contra 13,80 s; Pi se mantuvo
+parejo en 60 turnos. A través del puente, con el `jarvis.bench` sin cambios (L7): 24 de
+24 corridas completas, sin errores, una llamada al modelo por pregunta y dos por pedido
+con herramienta; preguntas 1,89-2,51 s, subir el volumen 4,76 s, bajarlo 4,18 s y Spotify
+4,37 s. Un puente con el mismo protocolo era la única opción con usuarios hoy: `/converse`
+todavía no enruta a ningún agente (`backend/app/main.py`), así que un adaptador nuevo en
+el backend no tendría quién lo llame.
+
+**Descartado:** un adaptador de Pi en el backend (sin llamador por ahora), quedarse solo
+con un plan, y reemplazar Gentle Dot en todas las máquinas (el usuario lo pidió como
+opción, con Gentle Dot por defecto).
+
 ## Decisiones abiertas
 
 - **Motor de la charla de voz** (D14).
