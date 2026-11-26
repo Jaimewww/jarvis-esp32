@@ -354,8 +354,10 @@ Gentle Dot as the default; a machine opts into the bridge. Branch `feat/pi-bridg
 - [x] T13 S19 — Bridge leftovers of the T11 verify: model state after a silent `set_model`,
   abort-then-launch-failure, the `switch` assertion, a closed flag in `close()`, abort read
   during a launch, shutdown order in `__main__`. Route: gentle-ai-worker, branch
-  feat/pi-bridge-s19 on docs/pi-bridge-real-run (L19): bcd96f0. Host 369 passed, 6 skipped;
-  pyright not run (not installed).
+  feat/pi-bridge-s19 on docs/pi-bridge-real-run (L19): bcd96f0, and 599b877 for the two
+  should-fix notes of the verify (a `send` during `close()` prompted the running Pi; an
+  unexpected prompt-write error left the turn `working`). Host 372 passed, 6 skipped; pyright
+  not run (not installed). Independent verify of c7ffff9: S19.1-S19.6 pass, no blocker.
 - [ ] T14 S21 — Installer leftovers of the T12 verify: `--enable` on an empty Claude Code
   directory, `cd ~ &&` in the printed login, own directories created 755 before the 0700
   creation, upgrade-state test, refusals naming the right directory. Route: gentle-ai-worker,
