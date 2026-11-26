@@ -225,6 +225,33 @@ Gentle Dot as the default; a machine opts into the bridge. Branch `feat/pi-bridg
      login no tool runs: say that instead); the neither-is-running message names the step
      that actually failed (`disable` of the other unit or `enable`/`start` of this one).
 
+- S18 (L14, findings of the T6 verify and native review, lineage review-8aa3fff6edad51b8, on
+  45fee37):
+  1. Verify, blocker (`server.py:290`, `turns.py:250-256`): "if the bridge shuts down while a
+     `model_set` is pending, it starts a new Pi after `close()` and never stops it. [...] The
+     shield at `server.py:290` keeps the switch running after the connection is cancelled.
+     `close()` fails its commands, and then `_settle` / `put_back` launch a new Pi through
+     `_command`. The result is 2 launches, the second Pi not closed, and `bridge._process` set
+     again after `close()` returned". Review R3-003: "Nothing tracks or awaits that task
+     afterwards." After `close()` returns no Pi is launched or left running and no switch is
+     still running, also in the real shutdown order of `__main__`.
+  2. Verify, should-fix (`server.py:216` vs `:245`): "I sent `model_set`, `send` and `abort`
+     back to back: the abort did nothing and the turn started anyway". Review R3-002: "At the
+     baseline the send started at once and the abort stopped it." An `abort` cancels a `send`
+     of the same client that still waits behind its `model_set`: that turn never runs and the
+     client ends `idle`.
+  3. Verify, should-fix: "a Pi that goes silent after `set_model` makes the failed switch take
+     3 timeouts (30 s in real time): `models()`, then `put_back`, then `_settle`. Before this
+     commit it took 10 s. `_switching` is held the whole time". A failed switch on a silent Pi
+     is answered within one command timeout, as before 45fee37.
+  4. Review R3-004 and R3-001 (`turns.py:348-352`): "Abort during a launch, which also reaches
+     this branch, has no test"; "A Pi launch that never completes [...] agent_state stays
+     'working'". An `abort` during a launch that has not finished ends the turn with `idle`
+     and the next `send` works. No new timeout is added for the launch itself.
+  5. Verify, note: "A `send` waiting behind a `model_set` counts toward the cap of 8, so it can
+     get `busy` instead of `queue_full`." A `send` refused for a full queue gets `queue_full`,
+     the code clients already know for it.
+
 ## Tasks
 
 - [x] T1 S2,S3,S4,S5 — Bridge core: server, auth, one turn with deltas, abort, Pi process
@@ -259,6 +286,8 @@ Gentle Dot as the default; a machine opts into the bridge. Branch `feat/pi-bridg
 - [ ] T10 S14 items 7-11 — Installer hardening: agent directory and `HOME`, symlink loop,
   parent modes, recovery hint, `HOME` with a space. Route: gentle-ai-worker, branch
   feat/pi-bridge-installer-hardening on feat/pi-bridge-hardening's first commit.
+- [ ] T11 S18 — Fix pass after the T6 verify and review. Route: gentle-ai-worker (same worker
+  continued), same branch.
 - [ ] T4 S11 — Run the bench and the TUI against the bridge on the user's machine; record the
   numbers. Route: inline with the user.
 
@@ -371,3 +400,12 @@ Gentle Dot as the default; a machine opts into the bridge. Branch `feat/pi-bridg
   (03abe56, ed3753a, dcc68c6; #42 and #43 retargeted to main first). Plan: S14 now, before the
   bridge is in use, split by surface into T6 (bridge, items 1-6) and T10 (installer, items
   7-11); then T4 with the user.
+- L14 (2026-11-26, evidence, T6 and T10). T10: 3ac41e2 (installer suite 284 passed), README
+  note 7799533; native review approved (lineage review-c833d9659d05e5fe, four advisories: owner
+  of the parents and mode of HOME not checked, group-writable parents refused under umask 002,
+  HOME compared as text, parent-mode cases only 777); independent verify: S14.7-S14.11 pass,
+  no blocker, Gentle Dot path unchanged over nine steps. T6: 45fee37 (host 356 passed, 6
+  skipped; pyright 0 errors); native review approved (lineage review-8aa3fff6edad51b8, four
+  advisories); independent verify: S14.1, S14.3, S14.4, S14.5 pass, S14.2 and S14.6 partial with
+  one blocker (a Pi launched after `close()`), no deadlock found. Findings recorded as S18,
+  task T11. Still not verified anywhere: a real `pi` subprocess on the new paths, real systemd.
