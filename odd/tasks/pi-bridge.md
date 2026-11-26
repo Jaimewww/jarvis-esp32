@@ -361,8 +361,10 @@ Gentle Dot as the default; a machine opts into the bridge. Branch `feat/pi-bridg
   branch feat/pi-bridge-s21 on docs/pi-bridge-real-run (L19): 93a0cb0 (installer, tests,
   README), 93fcf45 (verify notes: a restart owed during the hold becomes a stop, update hints
   and stale link kept while held, Pi steps in the Claude-first order, README parent refusals).
-  Installer suite 323 passed. Independent verify: S21.1-S21.5 pass, four should-fix notes
-  fixed by 93fcf45. Review pending.
+  Independent verify: S21.1-S21.5 pass, four should-fix notes fixed by 93fcf45. Native review
+  of 93a0cb0..b9dc0d0 approved with non-blocking findings, fixed by 3c0d36b (the held run stops
+  the bridge only when it is running, changed or not; named --enable cases; one symlink
+  refusal). Installer suite 326 passed.
 - [ ] T15 — Whisper picks up a lot of noise (L18). Route: inline, after T13/T14 and the tests
   (L19).
 
