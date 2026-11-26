@@ -45,6 +45,8 @@ class FakePi:
         #: Thinking levels ``set_thinking_level`` refuses.
         self.refused_levels: set[str] = set()
         self.last_answer: dict[str, Any] | None = None
+        #: Sees each command first (it may wait); ``True`` when it answered the command itself.
+        self.intercept: Callable[[FakePi, dict[str, Any]], Awaitable[bool]] | None = None
 
     # PiProcess
 
@@ -68,7 +70,8 @@ class FakePi:
             if not future.done():
                 future.set_result(record)
         elif isinstance(kind, str) and kind not in self.mute:
-            self._command(record, kind)
+            if self.intercept is None or not await self.intercept(self, record):
+                self._command(record, kind)
 
     def _command(self, record: dict[str, Any], kind: str) -> None:
         refused = kind in self.refuse or (kind == "set_thinking_level" and record.get("level") in self.refused_levels)

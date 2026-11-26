@@ -11,7 +11,11 @@ browser page; Jarvis's clients send none) is refused with HTTP 403 before any of
 a request (history, the conversation list, the account, an ``error``) goes to its sender
 only. A request the bridge does not support gets an ``error`` frame (S9). The requests that
 wait for Pi (``models_list``, ``model_set``) run in order on their own task per connection, so
-they never hold up that client's next frame, ``abort`` above all (S13.7).
+they never hold up that client's next frame, ``abort`` above all (S13.7). A ``send`` that
+follows a ``model_set`` of the same client waits for it there, and ``abort`` drops the client's
+sends still waiting (S14.3, S18.2). Beyond
+``MAX_PI_REQUESTS`` waiting, one more gets ``busy`` (``queue_full`` for a ``send``); a request
+that fails unexpectedly is answered with ``internal_error`` (S14.1, S18.5, S14.4).
 """
 
 from __future__ import annotations
@@ -40,9 +44,10 @@ CLOSE_UNAUTHORIZED: Final = 4401
 CLOSE_BAD_PROTOCOL: Final = 4400
 HELLO_TIMEOUT_S: Final = 5.0
 MAX_FRAME_BYTES: Final = 2 * 1024 * 1024
-#: Pi requests of one client that may wait behind the one running; more wait in the read loop.
+#: Pi requests of one client that may wait behind the one running; one more is refused (S14.1).
 MAX_PI_REQUESTS: Final = 8
 _PI_REQUESTS: Final = frozenset({"models_list", "model_set"})
+QUEUE_FULL_MESSAGE: Final = "Too many messages are waiting; try again when this reply ends."
 
 #: websockets logs every frame at debug level, and the hello frame holds the token:
 #: its logger never goes below info, whatever the log level is.
@@ -190,13 +195,43 @@ class BridgeServer:
         await self._hub.admit(ws, self._ready())
         await self._agent.clients_changed(self._hub.size)
         requests: asyncio.Queue[dict[str, Any]] = asyncio.Queue(MAX_PI_REQUESTS)
-        worker = asyncio.ensure_future(self._serve_pi_requests(ws, requests))
+        switches = 0  # this client's model_sets not done yet: a send waits behind them (S14.3)
+
+        async def serve_pi_requests() -> None:
+            nonlocal switches
+            while True:
+                payload = await requests.get()
+                try:
+                    await self._dispatch(ws, payload)
+                except Exception:  # noqa: BLE001 - one failed request must not stop the next
+                    logger.exception("failed to answer a %s", payload.get("type"))
+                    await self._error(ws, "internal_error", f"The bridge failed to answer {payload.get('type')}.")
+                finally:
+                    if payload.get("type") == "model_set":
+                        switches -= 1
+
+        worker = asyncio.ensure_future(serve_pi_requests())
         try:
             async for raw_frame in ws:
                 payload = _decode(raw_frame)
-                if payload is not None and payload.get("type") in _PI_REQUESTS:
-                    await requests.put(payload)
+                kind = payload.get("type") if payload is not None else None
+                if payload is not None and (kind in _PI_REQUESTS or (kind == "send" and switches)):
+                    try:
+                        requests.put_nowait(payload)
+                    except asyncio.QueueFull:
+                        if kind == "send":
+                            await self._error(ws, "queue_full", QUEUE_FULL_MESSAGE)  # S18.5
+                        else:
+                            await self._error(ws, "busy", "Too many requests are waiting for Pi; try again shortly.")
+                        continue
+                    if kind == "model_set":
+                        switches += 1
                 else:
+                    if kind == "abort":  # it also drops this client's sends still waiting (S18.2)
+                        waiting = [requests.get_nowait() for _ in range(requests.qsize())]
+                        for request in waiting:
+                            if request.get("type") != "send":
+                                requests.put_nowait(request)
                     await self._dispatch(ws, payload)
         except ConnectionClosed:
             pass
@@ -208,14 +243,6 @@ class BridgeServer:
             logger.info("client left")
             await self._agent.clients_changed(self._hub.size)
 
-    async def _serve_pi_requests(self, ws: ServerConnection, requests: asyncio.Queue[dict[str, Any]]) -> None:
-        while True:
-            payload = await requests.get()
-            try:
-                await self._dispatch(ws, payload)
-            except Exception:  # noqa: BLE001 - one failed request must not stop the next
-                logger.exception("failed to answer a %s", payload.get("type"))
-
     async def _dispatch(self, ws: ServerConnection, payload: dict[str, Any] | None) -> None:
         if payload is None:
             await self._error(ws, "bad_request", "The bridge reads JSON objects only.")
@@ -224,7 +251,7 @@ class BridgeServer:
         if kind == "send":
             text = payload.get("text")
             if isinstance(text, str) and text.strip() and not await self._agent.send(text):
-                await self._error(ws, "queue_full", "Too many messages are waiting; try again when this reply ends.")
+                await self._error(ws, "queue_full", QUEUE_FULL_MESSAGE)
         elif kind == "abort":
             await self._agent.abort()
         elif kind == "ui_response":
@@ -260,12 +287,17 @@ class BridgeServer:
         ):
             await self._error(ws, "model_unavailable", "A model_set needs a provider and a model id.")
             return
-        try:
-            frame = await self._agent.set_model(provider, model_id, thinking)
-        except ModelError as error:
-            await self._error(ws, error.code, error.message)
-            return
-        await self._hub.broadcast(frame)
+
+        async def switch() -> None:
+            try:
+                frame = await self._agent.set_model(provider, model_id, thinking)
+            except ModelError as error:
+                await self._error(ws, error.code, error.message)
+                return
+            await self._hub.broadcast(frame)
+
+        # A client that leaves half way does not stop the switch: Pi ends whole (S14.2).
+        await asyncio.shield(switch())
 
     def _accounts(self) -> dict[str, Any]:
         """Pi signs in on its own: the running model's provider is the one, ready, account."""
