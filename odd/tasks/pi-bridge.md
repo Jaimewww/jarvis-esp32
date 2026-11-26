@@ -349,8 +349,8 @@ Gentle Dot as the default; a machine opts into the bridge. Branch `feat/pi-bridg
   suite 301 passed; host 362 passed, 6 skipped. Native review approved (lineage
   review-1fda5d26b526cedf). Independent verify: S20.1-S20.5 pass, no blocker (L17).
   Leftovers: S21, no task yet.
-- [ ] T4 S11 — Run the bench and the TUI against the bridge on the user's machine; record the
-  numbers. Route: inline with the user.
+- [x] T4 S11 — Run the bench and the TUI against the bridge on the user's machine; record the
+  numbers. Route: inline with the user. Done with Claude by subscription (L18).
 
 ## Log
 
@@ -498,3 +498,22 @@ Gentle Dot as the default; a machine opts into the bridge. Branch `feat/pi-bridg
   and notes recorded as S21. Still open for the real run: whether Claude Code writes outside
   `CLAUDE_CONFIG_DIR`, whether the SDK's bundled binary starts under the sandbox, whether the
   Pi of the bridge needs a login of its own for `claude-bridge/` models.
+- L18 (2026-11-26, evidence and user report, T4). PR #46 merged (6920823). The user logged
+  Claude Code into `~/.local/state/jarvis/claude-config`; the override sets
+  `JARVIS_PI_MODEL=claude-bridge/claude-sonnet-5-5`, `JARVIS_PI_THINKING=low` and
+  `JARVIS_PI_EXTENSIONS=%h/.pi/agent/npm/node_modules/pi-claude-bridge`. Under real systemd
+  the first turn reached Anthropic (session accepted, the SDK binary starts under the
+  sandbox, the bridge's Pi needs no login of its own for `claude-bridge/` models) and failed
+  only on the subscription's 5-hour limit ("Claude quota exceeded — rate limit (five_hour)");
+  the bridge shares that limit with the user's own Claude use. Claude Code wrote only inside
+  `claude-config`; `~/.claude` and `~/.claude.json` unchanged. Bench after the reset
+  (`--include-pc --only question --only volumen-sube --only volumen-baja --only spotify -n 2`,
+  JSON `/tmp/jarvis-pi-spike/bridge-claude.json`): 16 runs, 0 errors, 15 done; questions
+  1.29-1.60 s median (one model call), volume 2.70/2.72 s, Spotify 3.68 s median / 4.78 s
+  worst (OpenAI through the bridge on 2026-11-25: 1.89-2.51 s, 4.18-4.76 s, 4.37 s). The one
+  not-done run: `pc_open_app("spotify")` was refused (no Spotify desktop app in the app list)
+  and the agent opened `open.spotify.com` instead. User, after trying the TUI: "funciona
+  rapido, pero el whisper esta agarrando mucho ruido, pero bueno por ahora quedamos aca,
+  anota y continuamos leugo". Open: Whisper picks up a lot of noise (not investigated yet);
+  the old OpenAI copy `~/.local/state/jarvis/pi-agent.old-20261126-105432` is still there
+  (the safety policy blocked deleting it; the user removes it by hand).
