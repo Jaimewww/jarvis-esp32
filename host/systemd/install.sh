@@ -347,7 +347,7 @@ if ((PI_BRIDGE)); then
 	# $HOME/SUB (the Pi agent directory, S10-S17, and Claude Code's, S20). NAME names it in the
 	# messages, WHO is the program that keeps its login there. Nothing is written before them.
 	check_own_dir() {
-		local own_sub="$1" name="$2" who="$3" dir="${HOME}/$1" sub="" part p mode
+		local own_sub="$1" name="$2" who="$3" dir="${HOME}/$1" sub="" part p mode what fixed
 		# S14.11: the path goes verbatim into the unit, like the paths checked below.
 		[[ "${dir}" =~ ${UNIT_SAFE_RE} ]] ||
 			die "ruta con caracteres no admitidos en una unidad (espacios, %, comillas…): ${dir}"
@@ -356,13 +356,13 @@ if ((PI_BRIDGE)); then
 		# parent that group or others can write lets them swap the directory below it.
 		for part in ${own_sub//\// }; do
 			sub="${sub:+${sub}/}${part}" p="${HOME%/}/${sub}"
-			# S21.5: every parent of an own directory is shared by both (same parent, S20), so a
-			# refusal on one names both.
-			if [[ -L "${p}" && "${sub}" != "${own_sub}" ]]; then
-				die "${PI_AGENT_DIR} y ${CLAUDE_CONFIG_DIR} pasan por un enlace simbólico (${p} apunta a $(readlink -- "${p}")): la carpeta del Pi y la de Claude Code del puente son fijas y el servicio escribiría donde apunta el enlace. Quita el enlace y vuelve a correr este script."
+			if [[ -L "${p}" ]]; then
+				# S21.5: every parent of an own directory is shared by both (same parent, S20).
+				what="${dir} pasa" fixed="${name} es fija"
+				[[ "${sub}" == "${own_sub}" ]] ||
+					what="${PI_AGENT_DIR} y ${CLAUDE_CONFIG_DIR} pasan" fixed="la carpeta del Pi y la de Claude Code del puente son fijas"
+				die "${what} por un enlace simbólico (${p} apunta a $(readlink -- "${p}")): ${fixed} y el servicio escribiría donde apunta el enlace. Quita el enlace y vuelve a correr este script."
 			fi
-			[[ ! -L "${p}" ]] ||
-				die "${dir} pasa por un enlace simbólico (${p} apunta a $(readlink -- "${p}")): ${name} es fija y el servicio escribiría donde apunta el enlace. Quita el enlace y vuelve a correr este script."
 			[[ -e "${p}" ]] || break
 			[[ -d "${p}" ]] || die "${p} existe pero no es una carpeta; muévelo"
 			[[ "${sub}" != "${own_sub}" ]] || break
@@ -968,6 +968,9 @@ fi
 # runs there (a Pi with a login can act), the agent could write in it before the user runs claude.
 hold=0
 ((PI_BRIDGE && ENABLE && claude_config_new)) && hold=1
+# What --enable does with the service (review R2-001): ENABLE and not held: switch and start it;
+# held: only the helper, and a running bridge is stopped; no ENABLE: only the hints.
+start_svc=$((ENABLE && !hold))
 input_changed=0
 [[ "${input_state}" == current && "${input_unit_state}" == current ]] || input_changed=1
 
@@ -990,7 +993,7 @@ if ((ENABLE)); then
 		run systemctl --user enable --now "${INPUT_UNIT_NAME}"
 	fi
 fi
-if ((ENABLE && !hold)); then
+if ((start_svc)); then
 	# S10: Gentle Dot and the bridge listen on the same port. The other one, when installed,
 	# is stopped and disabled first (its unit file stays, so switching back is one more run);
 	# Conflicts= in the bridge's unit also stops it if something starts it later.
@@ -1030,11 +1033,17 @@ if ((ENABLE && !hold)); then
 else
 	((stale)) && say "aviso: la unidad sigue habilitada en ${OTHER_TARGET}; para pasarla a ${WANTED_TARGET}: systemctl --user reenable ${SVC_NAME} (o este script con --enable)."
 fi
-# T14 notes 1-2: a restart owed while the hold applies becomes a stop (try-restart would start the
-# bridge with the empty directory); the next --enable starts the new unit, rules and extension.
-if ((hold && (changed || rules_changed || ext_changed))); then
-	run systemctl --user stop "${SVC_NAME}"
-	say "Se detuvo ${SVC_NAME} para aplicar los cambios (unidad, reglas o extensión) sin arrancarlo con ${CLAUDE_CONFIG_DIR} vacía: arranca otra vez con los pasos de abajo."
+# T14 notes 1-2, review R1-001, R3-001: while held, a bridge that is running is stopped, changed or
+# not: running, its agent could write in the empty directory before the Claude Code login, and a
+# try-restart would start the new unit with it. The next --enable starts the current unit, rules
+# and extension. One that is not running is left alone, with nothing said.
+if ((hold)); then
+	if ((DRY_RUN)); then
+		say "[dry-run] systemctl --user stop ${SVC_NAME} (si está corriendo)"
+	elif systemctl --user is-active --quiet "${SVC_NAME}"; then
+		run systemctl --user stop "${SVC_NAME}"
+		say "Se detuvo ${SVC_NAME}, que estaba corriendo: con ${CLAUDE_CONFIG_DIR} vacía, el agente podría escribir en ella antes del inicio de sesión de Claude Code. Arráncalo con los pasos de abajo (toma la unidad, las reglas y la extensión actuales)."
+	fi
 fi
 if ((!ENABLE)); then
 	((ext_changed)) && say "La extensión de control de la PC se carga al arrancar el motor: si el servicio ya corre, reinícialo para aplicarla: systemctl --user try-restart ${SVC_NAME} (o este script con --enable)."
