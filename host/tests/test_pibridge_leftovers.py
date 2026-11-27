@@ -362,9 +362,14 @@ def test_close_ends_while_a_prompt_write_is_blocked_on_a_pi_that_stopped_reading
         bridge = Bridge(launcher, emit, model="openai/m")
         await bridge.send("a long prompt")
         await asyncio.wait_for(writing.wait(), 1)
+        before = len(frames)
         await asyncio.wait_for(bridge.close(), 1)
+        for _ in range(5):  # let any late callback of the abandoned turn run
+            await asyncio.sleep(0)
         (pi,) = launcher.launches
         assert pi.closed and pi.exit_code is not None
+        # Review R3-001: clients see nothing for the turn close() abandoned (no late error or state).
+        assert frames[before:] == []
 
     run(scenario())
 
