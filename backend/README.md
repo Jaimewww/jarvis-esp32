@@ -199,9 +199,14 @@ tools/whisper-server.sh            # modelo large-v3-turbo q5_0, español, 127.0
 tools/whisper-server.sh -t 8       # flags extra van a whisper-server (-ng: sin GPU)
 ```
 
+El script siempre arranca con `--vad --vad-model <modelo Silero> --suppress-nst`: sin
+eso el silencio o el ruido salen como texto (" Gracias."). El modelo de VAD se baja una
+vez con el `curl` del encabezado de `tools/whisper-server.sh`.
+
 | Variable | Por defecto |
 |---|---|
 | `JARVIS_WHISPER_MODEL` | `~/.local/share/whisper-models/ggml-large-v3-turbo-q5_0.bin` |
+| `JARVIS_WHISPER_VAD_MODEL` | `~/.local/share/whisper-models/ggml-silero-v5.1.2.bin` |
 | `JARVIS_WHISPER_HOST` / `JARVIS_WHISPER_PORT` | `127.0.0.1` / `8080` |
 | `JARVIS_WHISPER_BIN` | `whisper-server` |
 

@@ -616,7 +616,10 @@ cancela sin mandar nada. La grabación se corta sola a los 60 s y se envía.
   la grabación: un secreto nunca se graba ni se manda.
 
 Requiere `whisper-server` (whisper.cpp) escuchando en local, con el modelo cargado una
-vez. Si está instalado como servicio de usuario (tarea T6):
+vez, y con VAD: sin `--vad --vad-model … --suppress-nst` el silencio o el ruido de la
+pieza salen como texto (" Gracias.") y se mandan al agente. El modelo de VAD se baja una
+vez (`tools/whisper-server.sh` muestra el `curl`). Si está instalado como servicio de
+usuario (tarea T6), su `ExecStart` tiene que llevar esos flags:
 
 ```bash
 systemctl --user start whisper-server
@@ -626,7 +629,8 @@ O a mano:
 
 ```bash
 whisper-server -m ~/.local/share/whisper-models/ggml-large-v3-turbo-q5_0.bin \
-  --host 127.0.0.1 --port 8080
+  --host 127.0.0.1 --port 8080 \
+  --vad --vad-model ~/.local/share/whisper-models/ggml-silero-v5.1.2.bin --suppress-nst
 JARVIS_STT_URL=http://127.0.0.1:8080/inference python -m jarvis.tui
 ```
 
