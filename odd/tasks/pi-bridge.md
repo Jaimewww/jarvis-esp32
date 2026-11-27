@@ -374,10 +374,18 @@ Gentle Dot as the default; a machine opts into the bridge. Branch `feat/pi-bridg
   refusal). Native review of b9dc0d0..37541d3 approved with three non-blocking findings, fixed
   by 6a63582 (while held the bridge is always disabled and stopped, so an activating or enabled
   one cannot come up; the message only when it was not off). Installer suite 328 passed.
-- [ ] T15 — Whisper picks up a lot of noise (L18). Route: inline, after T13/T14 and the tests
+- [x] T15 — Whisper picks up a lot of noise (L18). Route: inline, after T13/T14 and the tests
   (L19). Server side done (L20): `tools/whisper-server.sh` always runs `--vad --vad-model
-  <Silero> --suppress-nst`, docs updated, live unit has the same flags in a drop-in. Open: the
-  user's real-speech check in the TUI.
+  <Silero> --suppress-nst`, docs updated, live unit has the same flags in a drop-in. Real
+  speech "Jarvis" transcribed in the TUI; the whisper log showed VAD kept 1.30 s (0.39-1.69)
+  of a ~2 s clip, 34.4% removed. PR #50 merged (f2125f1).
+- [x] T16 — Non-blocking findings of the native reviews of T13/T14/T15 (L21). Route:
+  gentle-ai-worker, branch chore/review-followups on main f2125f1: cb24f9d (installer: a
+  failing held disable names the command, how to see why and retry; state-read fallback pinned;
+  stub answers `is-active` from the unit state), 9b55d59 (bridge: no frame reaches clients
+  after `close()` abandons a blocked prompt; no code change needed), 4a7ddd2
+  (`tools/whisper-server.sh` test and VAD model sha256 in the docs). Installer suite 331
+  passed; host 374 passed, 6 skipped; backend 84 passed, 7 skipped.
 
 ## Log
 
@@ -560,3 +568,13 @@ Gentle Dot as the default; a machine opts into the bridge. Branch `feat/pi-bridg
   start without the VAD model. A transcript blocklist ("Gracias." etc.) was not added: "gracias"
   is a real thing to say to Jarvis, and with VAD there is no evidence left for it; same for a
   client-side length/RMS gate. Both wait for the user's real-speech check.
+- L21 (2026-11-26, user): "dale con las cosas chicas de una vez" (the non-blocking findings of
+  the native reviews of T13/T14/T15; T16). A, review-6248ca9b655c18cc (cb24f9d): the held
+  `disable --now` of the bridge now dies with the command, `journalctl` and a retry hint
+  (R3-001); a failed state read prints the stop message, pinned (R3-002); the systemctl stub
+  answers `is-active` from the unit state instead of always "active" (R3-003). B,
+  review-9229b51a634609d4 R3-001 (9b55d59): the blocked-prompt `close()` test asserts no frame
+  after `close()` began; it passed, `turns.py` unchanged. C, review-24f07dd7aa0648f8 (4a7ddd2):
+  `backend/tests/test_whisper_server_script.py` covers the missing-VAD refusal and the flag
+  order (R3-002); the VAD download in the script header and both READMEs gives the sha256 and
+  a `sha256sum -c` line (R3-003); R3-001 (old binary without VAD flags) needs no code.
