@@ -201,7 +201,8 @@ tools/whisper-server.sh -t 8       # flags extra van a whisper-server (-ng: sin 
 
 El script siempre arranca con `--vad --vad-model <modelo Silero> --suppress-nst`: sin
 eso el silencio o el ruido salen como texto (" Gracias."). El modelo de VAD se baja una
-vez con el `curl` del encabezado de `tools/whisper-server.sh`.
+vez con el `curl` del encabezado de `tools/whisper-server.sh`; compruébalo con su línea
+`sha256sum -c` (sha256 `29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf`).
 
 | Variable | Por defecto |
 |---|---|
