@@ -375,7 +375,9 @@ Gentle Dot as the default; a machine opts into the bridge. Branch `feat/pi-bridg
   by 6a63582 (while held the bridge is always disabled and stopped, so an activating or enabled
   one cannot come up; the message only when it was not off). Installer suite 328 passed.
 - [ ] T15 — Whisper picks up a lot of noise (L18). Route: inline, after T13/T14 and the tests
-  (L19).
+  (L19). Server side done (L20): `tools/whisper-server.sh` always runs `--vad --vad-model
+  <Silero> --suppress-nst`, docs updated, live unit has the same flags in a drop-in. Open: the
+  user's real-speech check in the TUI.
 
 ## Log
 
@@ -546,3 +548,15 @@ Gentle Dot as the default; a machine opts into the bridge. Branch `feat/pi-bridg
   lo de whisper al final". The user removed `pi-agent.old-20261126-105432` ("listo ya
   borre"). Plan: T13 (S19) and T14 (S21) now as two parallel writers, then the tests, then
   T15 (Whisper noise).
+- L20 (2026-11-26, user and evidence, T15). After the diagnosis (no VAD anywhere: the live
+  `whisper-server` unit ran `-m ggml-large-v3-turbo-q5_0.bin -l es --host 127.0.0.1 --port
+  8080` only, no Silero model on disk; the TUI sends the whole F4 clip; no transcript filter),
+  user: "dale vamos con esos ajustes". Before: 4 s WAVs of silence, hiss, 60 Hz hum and key
+  clicks posted to the live server each came back `" Gracias.\n"`. Downloaded
+  `ggml-silero-v5.1.2.bin` (885098 bytes, sha256 29940d98…ea2cf) from ggml-org/whisper-vad and
+  added a drop-in `~/.config/systemd/user/whisper-server.service.d/vad.conf` with `--vad
+  --vad-model %h/.local/share/whisper-models/ggml-silero-v5.1.2.bin --suppress-nst`: the same
+  four WAVs come back `""`. `tools/whisper-server.sh` now passes those flags and refuses to
+  start without the VAD model. A transcript blocklist ("Gracias." etc.) was not added: "gracias"
+  is a real thing to say to Jarvis, and with VAD there is no evidence left for it; same for a
+  client-side length/RMS gate. Both wait for the user's real-speech check.
