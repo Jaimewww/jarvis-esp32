@@ -1045,7 +1045,8 @@ if ((hold)); then
 	else
 		svc_state="$(systemctl --user show -p ActiveState --value "${SVC_NAME}" 2>/dev/null)" || svc_state=""
 		svc_enabled="$(systemctl --user is-enabled "${SVC_NAME}" 2>/dev/null)" || true
-		run systemctl --user disable --now "${SVC_NAME}"
+		run systemctl --user disable --now "${SVC_NAME}" ||
+			die "falló systemctl --user disable --now ${SVC_NAME}: el servicio puede seguir en marcha o habilitado con ${CLAUDE_CONFIG_DIR} vacía, donde el agente podría escribir antes del inicio de sesión de Claude Code. Para ver por qué: journalctl --user -u ${SVC_NAME}. Para reintentar: este script con las mismas opciones."
 		if [[ "${svc_state}" != inactive && "${svc_state}" != failed ]] || [[ "${svc_enabled}" == enabled* ]]; then
 			say "Se detuvo y deshabilitó ${SVC_NAME} hasta el siguiente --enable, después del inicio de sesión de Claude Code de abajo: con ${CLAUDE_CONFIG_DIR} vacía, el agente podría escribir en ella antes de ese inicio de sesión. Ese --enable lo habilita y arranca con la unidad, las reglas y la extensión actuales."
 		fi

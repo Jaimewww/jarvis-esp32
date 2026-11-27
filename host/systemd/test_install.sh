@@ -83,16 +83,30 @@ readonly FAIL_RELOAD="${SANDBOX}/fail-reload"
 readonly FAIL_ENABLE="${SANDBOX}/fail-enable"
 # While ${FAIL_DISABLE} exists, the next `disable --now <unit named in it>` fails once (S16.4).
 readonly FAIL_DISABLE="${SANDBOX}/fail-disable"
-# While ${FAIL_CMD} exists, the next call whose arguments are exactly its content fails once (S17.3).
+# While ${FAIL_CMD} exists, the next call whose arguments are exactly its content fails once (S17.3),
+# checked before any other branch, so a state read (show, is-enabled) can fail too.
 readonly FAIL_CMD="${SANDBOX}/fail-cmd"
 # ${ACTIVE}/<unit> holds the unit's ActiveState (active, activating…) for \`show -p ActiveState
 # --value <unit>\`; inactive while it is missing. \`stop\` and \`disable --now\` remove it.
 # \`is-enabled\` says enabled while a .wants link to the unit exists; \`disable --now\` removes them.
+# \`is-active\` answers from the same state (exit 0 only for active; review R3-003).
 readonly ACTIVE="${SANDBOX}/active"
 mkdir -p "${ACTIVE}"
 cat >"${STUBS}/systemctl" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >>"${CALLS}"
+if [[ -e "${FAIL_CMD}" && "\$*" == "\$(<"${FAIL_CMD}")" ]]; then
+	rm -f -- "${FAIL_CMD}"
+	echo "Failed: stub" >&2
+	exit 1
+fi
+if [[ "\$1 \$2" == "--user is-active" ]]; then
+	s=inactive
+	[[ ! -e "${ACTIVE}/\${@: -1}" ]] || s="\$(<"${ACTIVE}/\${@: -1}")"
+	[[ "\$3" == --quiet ]] || echo "\${s}"
+	[[ "\${s}" == active ]]
+	exit
+fi
 if [[ "\$1 \$2 \$3 \$4" == "--user show -p ActiveState" && "\$5" == --value ]]; then
 	if [[ -e "${ACTIVE}/\$6" ]]; then cat -- "${ACTIVE}/\$6"; else echo inactive; fi
 	exit 0
@@ -115,11 +129,6 @@ fi
 if [[ -e "${FAIL_DISABLE}" && "\$*" == "--user disable --now \$(<"${FAIL_DISABLE}")" ]]; then
 	rm -f -- "${FAIL_DISABLE}"
 	echo "Failed to disable unit: stub" >&2
-	exit 1
-fi
-if [[ -e "${FAIL_CMD}" && "\$*" == "\$(<"${FAIL_CMD}")" ]]; then
-	rm -f -- "${FAIL_CMD}"
-	echo "Failed: stub" >&2
 	exit 1
 fi
 [[ "\$1 \$2" != "--user stop" ]] || rm -f -- "${ACTIVE}/\$3"
@@ -178,6 +187,13 @@ sandboxed() {
 }
 calls() { cat "${CALLS}"; }
 reset_calls() { : >"${CALLS}"; }
+# Review R3-003: is-active answers from the same state as show, so a future use cannot read every unit as active.
+printf 'active\n' >"${ACTIVE}/stub-check.service"
+check "the systemctl stub answers is-active from the unit state" \
+	'! "${STUBS}/systemctl" --user is-active --quiet jarvis-pibridge.service && "${STUBS}/systemctl" --user is-active --quiet stub-check.service &&
+	 [[ "$("${STUBS}/systemctl" --user is-active jarvis-pibridge.service)" == inactive ]]'
+rm -f -- "${ACTIVE}/stub-check.service"
+reset_calls
 readonly BASE=(--gentle-dot-dir "${GD}" --node "${STUBS}/node" --allow-unpinned)
 
 # 1. Dry-run install: prints the unit and the reload, writes and calls nothing.
@@ -1360,6 +1376,19 @@ reset_calls
 bridged_in "${h}" "${BRIDGE[@]}" --enable
 check "S21 a held run with the bridge inactive and disabled issues the no-op disable and says nothing about it" \
 	'[[ ${RC} -eq 0 ]] && calls_are "--user enable --now jarvis-input.service" "${HELD[@]}" && ! grep -qF "Se detuvo" <<<"${OUT}"'
+# Review R3-002: when the state cannot be read it is empty, so the stop message is printed (conservative).
+printf '%s' "${HELD[0]}" >"${FAIL_CMD}"
+reset_calls
+bridged_in "${h}" "${BRIDGE[@]}" --enable
+check "S21 a held run whose state read fails still disables the bridge and prints the stop message" \
+	'[[ ${RC} -eq 0 && ! -e "${FAIL_CMD}" ]] && calls_are "--user enable --now jarvis-input.service" "${HELD[@]}" && grep -qxF "$(held_stop "${uccd}")" <<<"${OUT}"'
+# Review R3-001: a failing held disable exits non-zero naming the command, how to see why and to retry.
+printf '%s' "${HELD[2]}" >"${FAIL_CMD}"
+reset_calls
+bridged_in "${h}" "${BRIDGE[@]}" --enable
+check "S21 a failing held disable exits non-zero, names it, says how to see why and retry; Gentle Dot untouched" \
+	'[[ ${RC} -ne 0 && ! -e "${FAIL_CMD}" ]] && calls_are "--user enable --now jarvis-input.service" "${HELD[@]}" && ! grep -qF "Se detuvo" <<<"${OUT}" &&
+	 grep -qxF "error: falló systemctl --user disable --now jarvis-pibridge.service: el servicio puede seguir en marcha o habilitado con ${uccd} vacía, donde el agente podría escribir antes del inicio de sesión de Claude Code. Para ver por qué: journalctl --user -u jarvis-pibridge.service. Para reintentar: este script con las mismas opciones." <<<"${OUT}"'
 : >"${uccd}/.claude.json" && chmod 000 "${uccd}/.claude.json"
 reset_calls
 bridged_in "${h}" "${BRIDGE[@]}" --enable
