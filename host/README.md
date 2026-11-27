@@ -618,7 +618,8 @@ cancela sin mandar nada. La grabación se corta sola a los 60 s y se envía.
 Requiere `whisper-server` (whisper.cpp) escuchando en local, con el modelo cargado una
 vez, y con VAD: sin `--vad --vad-model … --suppress-nst` el silencio o el ruido de la
 pieza salen como texto (" Gracias.") y se mandan al agente. El modelo de VAD se baja una
-vez (`tools/whisper-server.sh` muestra el `curl`). Si está instalado como servicio de
+vez (`tools/whisper-server.sh` muestra el `curl` y el `sha256sum -c` que lo comprueba: sha256
+`29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf`). Si está instalado como servicio de
 usuario (tarea T6), su `ExecStart` tiene que llevar esos flags:
 
 ```bash

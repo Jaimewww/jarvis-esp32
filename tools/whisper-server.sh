@@ -18,6 +18,8 @@
 # room noise into text (" Gracias."). Get the VAD model once with:
 #   curl -L -o ~/.local/share/whisper-models/ggml-silero-v5.1.2.bin \
 #     https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin
+# and check it (sha256 of v5.1.2; a failed check means a bad download: delete it):
+#   echo "29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf  $HOME/.local/share/whisper-models/ggml-silero-v5.1.2.bin" | sha256sum -c
 set -euo pipefail
 
 model="${JARVIS_WHISPER_MODEL:-$HOME/.local/share/whisper-models/ggml-large-v3-turbo-q5_0.bin}"
